@@ -10,7 +10,8 @@ Windows 优先的桌面电子书阅读器。产品名沿用 IcedReader，技术�
 - 显示书名、作者
 - 整章滚动阅读，上一章 / 下一章（方向键也可）
 - 记住进度：章节 href + 章内滚动比例（0～1），不存像素位置
-- **绿色软件：** 打开的书会复制进程序目录下的 `data/library/`，进度和 WebView 数据也在 `data/`。把整个文件夹拷走即带走书和状态。
+- **绿色软件：** 打开的书会复制进程序目录下的 `data/library/`，进度、字体和 WebView 数据也在 `data/`。把整个文件夹拷走即带走书和状态。
+- 字体：默认「使用原书字体」。关掉且衬线 / 无衬线 / 等宽 / 中文·CJK 四个文件都上传后，才强制用自定义字体（CJK 码位走中文/CJK 槽）。缺任何一个则仍按原书 CSS。
 
 样书：`fixtures/sample.epub`。
 
@@ -63,6 +64,8 @@ $env:ICED_READER_OPEN = "$PWD\fixtures\sample.epub"
 IcedReader.exe
 data/
   library/          导入的书
+  fonts/            用户上传的 serif/sans/mono/CJK 字体
+  settings.json     阅读设置（含「使用原书字体」）
   progress.json     阅读进度
   webview/          WebView2 用户数据
 ```

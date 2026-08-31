@@ -37,6 +37,68 @@ export type OpenedBook = {
   spine: SpineItem[];
 };
 
+export type FontSlotId = "serif" | "sans" | "mono" | "cjk";
+
+export type FontFile = {
+  file: string;
+  originalName: string;
+};
+
+export type PublisherFontDecl = {
+  selector: string;
+  value: string;
+  source: string;
+};
+
+export type UsedFontSource = "specified" | "fallback" | "generic";
+
+export type UsedFontEntry = {
+  family: string;
+  glyphCount: number;
+  source: UsedFontSource;
+  sample: string;
+};
+
+export type UsedFontReport = {
+  fonts: UsedFontEntry[];
+  missingSpecified: string[];
+  error?: string;
+};
+
+export type PublisherFontReport = {
+  declarations: PublisherFontDecl[];
+  faces: string[];
+  truncated: boolean;
+};
+
+export type ChapterPayload = {
+  html: string;
+  publisherFonts: PublisherFontReport;
+};
+
+export type FontSettings = {
+  useOriginalFonts: boolean;
+  fonts: {
+    serif: FontFile | null;
+    sans: FontFile | null;
+    mono: FontFile | null;
+    cjk: FontFile | null;
+  };
+  missingSlots: FontSlotId[];
+  customFontsActive: boolean;
+};
+
+export const FONT_SLOTS: { id: FontSlotId; label: string }[] = [
+  { id: "serif", label: "衬线（serif）" },
+  { id: "sans", label: "无衬线（sans）" },
+  { id: "mono", label: "等宽（mono）" },
+  { id: "cjk", label: "中文 / CJK" },
+];
+
+export function slotLabel(id: FontSlotId): string {
+  return FONT_SLOTS.find((s) => s.id === id)?.label ?? id;
+}
+
 export function normHref(href: string): string {
   return href.split("#")[0].split("?")[0].replace(/^\/+/, "").toLowerCase();
 }

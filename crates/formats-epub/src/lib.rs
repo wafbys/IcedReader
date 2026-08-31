@@ -267,7 +267,8 @@ mod tests {
         .unwrap();
 
         zip.start_file("EPUB/style.css", deflated).unwrap();
-        zip.write_all(b"h1 { color: #8a3b1d; }").unwrap();
+        zip.write_all(b"h1 { color: #8a3b1d; font-family: sans-serif; }\nbody { font-family: serif; }")
+            .unwrap();
         zip.finish().unwrap();
     }
 
@@ -296,6 +297,37 @@ mod tests {
         assert!(
             html.contains("http://icedreader.localhost/book/test/"),
             "resource URLs should be rewritten: {html}"
+        );
+        assert!(
+            !html.contains("data-icedreader-fonts"),
+            "format layer must not inject reader font CSS: {html}"
+        );
+
+        let fonts = iced_reader_core::collect_publisher_fonts(
+            &html,
+            "http://icedreader.localhost/book/test/",
+            &spine[0].href,
+            |href| {
+                book.resource(href)
+                    .ok()
+                    .and_then(|r| String::from_utf8(r.data).ok())
+            },
+        );
+        assert!(
+            fonts
+                .declarations
+                .iter()
+                .any(|d| d.selector == "body" && d.value == "serif"),
+            "{:?}",
+            fonts.declarations
+        );
+        assert!(
+            fonts
+                .declarations
+                .iter()
+                .any(|d| d.selector == "h1" && d.value == "sans-serif"),
+            "{:?}",
+            fonts.declarations
         );
 
         let toc = book.toc();

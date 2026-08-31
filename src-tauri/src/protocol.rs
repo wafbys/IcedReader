@@ -1,20 +1,32 @@
+use iced_reader_core::FontSlot;
 use iced_reader_epub::is_document;
 use tauri::http::{header, StatusCode};
 use tauri::{Manager, UriSchemeContext};
 
+use crate::fonts as reader_fonts;
 use crate::AppState;
+
+/// Windows/Android: `http://icedreader.localhost/...`
+/// macOS/Linux/iOS: `icedreader://localhost/...`
+pub fn origin() -> &'static str {
+    #[cfg(any(windows, target_os = "android"))]
+    {
+        "http://icedreader.localhost"
+    }
+    #[cfg(not(any(windows, target_os = "android")))]
+    {
+        "icedreader://localhost"
+    }
+}
 
 /// Windows/Android: `http://icedreader.localhost/book/{id}/...`
 /// macOS/Linux/iOS: `icedreader://localhost/book/{id}/...`
 pub fn resource_base(book_id: &str) -> String {
-    #[cfg(any(windows, target_os = "android"))]
-    {
-        format!("http://icedreader.localhost/book/{book_id}/")
-    }
-    #[cfg(not(any(windows, target_os = "android")))]
-    {
-        format!("icedreader://localhost/book/{book_id}/")
-    }
+    format!("{}/book/{book_id}/", origin())
+}
+
+pub fn font_url(slot: &str) -> String {
+    format!("{}/fonts/{slot}", origin())
 }
 
 pub fn handle<R: tauri::Runtime>(
@@ -25,7 +37,12 @@ pub fn handle<R: tauri::Runtime>(
         return cors(StatusCode::NO_CONTENT, "text/plain", Vec::new());
     }
 
-    let Some((book_id, href)) = parse_book_uri(request.uri()) else {
+    let path = percent_decode(request.uri().path());
+    if let Some(slot) = path.strip_prefix("/fonts/") {
+        return serve_font(ctx, slot);
+    }
+
+    let Some((book_id, href)) = parse_book_path(&path) else {
         return cors(
             StatusCode::BAD_REQUEST,
             "text/plain; charset=utf-8",
@@ -34,49 +51,114 @@ pub fn handle<R: tauri::Runtime>(
     };
 
     let state = ctx.app_handle().state::<AppState>();
-    let Ok(books) = state.books.lock() else {
+    let fetched = {
+        let Ok(books) = state.books.lock() else {
+            return cors(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "text/plain; charset=utf-8",
+                b"lock poisoned".to_vec(),
+            );
+        };
+        let Some(book) = books.get(&book_id) else {
+            return cors(
+                StatusCode::NOT_FOUND,
+                "text/plain; charset=utf-8",
+                b"book not open".to_vec(),
+            );
+        };
+
+        let media_guess = media_hint(&href);
+        if is_document(&media_guess, &href) {
+            book.chapter_html(&href, &resource_base(&book_id))
+                .map(Fetch::Html)
+                .map_err(|e| e.to_string())
+        } else {
+            book.resource(&href)
+                .map(|res| Fetch::Resource {
+                    media: res.media_type,
+                    data: res.data,
+                    href: href.clone(),
+                })
+                .map_err(|e| e.to_string())
+        }
+    };
+
+    match fetched {
+        Ok(Fetch::Html(html)) => {
+            let html = apply_html(html, &state);
+            cors(StatusCode::OK, "text/html; charset=utf-8", html.into_bytes())
+        }
+        Ok(Fetch::Resource { media, data, href }) => {
+            let data = if media.to_ascii_lowercase().contains("css")
+                || href.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("css"))
+            {
+                apply_css(data, &state)
+            } else {
+                data
+            };
+            cors(StatusCode::OK, &media, data)
+        }
+        Err(err) => cors(
+            StatusCode::NOT_FOUND,
+            "text/plain; charset=utf-8",
+            err.into_bytes(),
+        ),
+    }
+}
+
+enum Fetch {
+    Html(String),
+    Resource {
+        media: String,
+        data: Vec<u8>,
+        href: String,
+    },
+}
+
+fn apply_html(html: String, state: &AppState) -> String {
+    let Ok(settings) = state.settings.lock() else {
+        return html;
+    };
+    reader_fonts::apply_html_if_active(html, &settings)
+}
+
+fn apply_css(css: Vec<u8>, state: &AppState) -> Vec<u8> {
+    let Ok(settings) = state.settings.lock() else {
+        return css;
+    };
+    reader_fonts::apply_css_if_active(css, &settings)
+}
+
+fn serve_font<R: tauri::Runtime>(
+    ctx: UriSchemeContext<'_, R>,
+    slot: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    let Some(slot) = FontSlot::parse(slot.split(['#', '?']).next().unwrap_or(slot)) else {
+        return cors(
+            StatusCode::NOT_FOUND,
+            "text/plain; charset=utf-8",
+            b"unknown font slot".to_vec(),
+        );
+    };
+    let state = ctx.app_handle().state::<AppState>();
+    let Ok(settings) = state.settings.lock() else {
         return cors(
             StatusCode::INTERNAL_SERVER_ERROR,
             "text/plain; charset=utf-8",
             b"lock poisoned".to_vec(),
         );
     };
-    let Some(book) = books.get(&book_id) else {
-        return cors(
+    match reader_fonts::read_slot_font(&settings, slot) {
+        Some((data, mime)) => cors_cached(StatusCode::OK, mime, data),
+        None => cors(
             StatusCode::NOT_FOUND,
             "text/plain; charset=utf-8",
-            b"book not open".to_vec(),
-        );
-    };
-
-    let media_guess = media_hint(&href);
-    if is_document(&media_guess, &href) {
-        match book.chapter_html(&href, &resource_base(&book_id)) {
-            Ok(html) => cors(
-                StatusCode::OK,
-                "text/html; charset=utf-8",
-                html.into_bytes(),
-            ),
-            Err(err) => cors(
-                StatusCode::NOT_FOUND,
-                "text/plain; charset=utf-8",
-                err.to_string().into_bytes(),
-            ),
-        }
-    } else {
-        match book.resource(&href) {
-            Ok(res) => cors(StatusCode::OK, &res.media_type, res.data),
-            Err(err) => cors(
-                StatusCode::NOT_FOUND,
-                "text/plain; charset=utf-8",
-                err.to_string().into_bytes(),
-            ),
-        }
+            b"font not installed".to_vec(),
+        ),
     }
 }
 
-fn parse_book_uri(uri: &tauri::http::Uri) -> Option<(String, String)> {
-    let path = percent_decode(uri.path());
+fn parse_book_path(path: &str) -> Option<(String, String)> {
     let rest = path.strip_prefix("/book/")?;
     let (id, href) = rest.split_once('/')?;
     if id.is_empty() || href.is_empty() {
@@ -133,11 +215,26 @@ fn media_hint(href: &str) -> String {
 }
 
 fn cors(status: StatusCode, content_type: &str, body: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
+    cors_cache(status, content_type, body, "no-store")
+}
+
+fn cors_cached(status: StatusCode, content_type: &str, body: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
+    cors_cache(status, content_type, body, "private, max-age=31536000, immutable")
+}
+
+fn cors_cache(
+    status: StatusCode,
+    content_type: &str,
+    body: Vec<u8>,
+    cache: &str,
+) -> tauri::http::Response<Vec<u8>> {
     tauri::http::Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS")
+        .header("Cross-Origin-Resource-Policy", "cross-origin")
+        .header(header::CACHE_CONTROL, cache)
         .body(body)
         .unwrap_or_else(|_| {
             tauri::http::Response::builder()

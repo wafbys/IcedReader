@@ -19,12 +19,12 @@ IcedReader 是桌面电子书阅读器。名字不是 Iced GUI。当前实现：
 
 ## 硬约束
 
-1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`），这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰。**
+1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`），这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰。** 唯一例外：用户关掉「使用原书字体」且 serif / sans / mono / 中文·CJK 四个上传文件都在并能识别时，才注入 `@font-face`（CJK 用 `unicode-range`）并改写 `font-family`。缺任一槽位则整段不注入，实际效果仍是出版社 CSS。不要按书语言选日/韩字体，不要用系统字体。
 2. **进度只存 `Locator`：`href` + `fraction`（0～1）+ 可选 `cfi`。** 禁止存像素 `scrollTop`。CFI 等分页再填，先留字段。
 3. **进度键：** 有 EPUB identifier 用 `id:...`；否则相对便携书库用 `lib:...`。禁止用会随目录搬家失效的绝对 `path:` 当主键（仅作没有书库目录时的回退）。实现见 `progress_key`。
 4. **章节 iframe 不要开 `allow-scripts`。** 现在是 `allow-same-origin`，父页读滚动比例。不要为了省事给 EPUB 开脚本。
 5. **IPC 用 camelCase**（Rust 结构体 `#[serde(rename_all = "camelCase")]`）。
-6. **绿色软件：** 设置、进度、导入的书、WebView 缓存一律在 `{exe 目录}/data/`，禁止写入 `%APPDATA%` / 注册表当主存储。打开外部 EPUB 时复制进 `data/library/`（已在书库内则不再复制）。整个程序目录搬走即带走全部状态。目录必须可写，不要往 Program Files 里装。
+6. **绿色软件：** 设置、进度、导入的书、用户字体、WebView 缓存一律在 `{exe 目录}/data/`，禁止写入 `%APPDATA%` / 注册表当主存储。打开外部 EPUB 时复制进 `data/library/`（已在书库内则不再复制）。字体文件在 `data/fonts/`，设置在 `data/settings.json`。整个程序目录搬走即带走全部状态。目录必须可写，不要往 Program Files 里装。
 
 ## 常用命令
 
@@ -44,14 +44,18 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars。不要用 `--of
 ## Tauri 命令
 
 - `open_book` / `close_book` / `pending_book`
-- `get_chapter` / `resource_origin`
+- `get_chapter`（返回 `{ html, publisherFonts }`，`publisherFonts` 是本章原书 CSS 的 font-family 原文）/ `resource_origin`
 - `save_progress`
+- `get_font_settings` / `set_use_original_fonts` / `install_font` / `clear_font`
+- `get_platform_fonts`（Windows：Chromium `CSS.getPlatformFontsForNode`，章节 iframe 里真正绘制用的字体）
 
 协议：`src-tauri/src/protocol.rs`，scheme `icedreader`。Windows 上实际请求是 `http://icedreader.localhost/...`。
 
 ## 改 UI 时
 
 - 阅读区铺满顶栏以下的客户区。书籍栏宽居中用壳层 `.page`（iframe 外层），不要往章节 HTML 里注入 `max-width` / `margin: auto`。
+- 字体面板要列出**本章原书 CSS 如何写 font-family**（含 serif/sans-serif/monospace 泛型、选择器、@font-face 名）。这是声明，不是系统实际选用的文件。在注入自定义字体之前从原 HTML/CSS 抽取。
+- 字体面板还要列出**本章实际渲染字体**：不要用 canvas 在一堆系统字体里逐字选最近的（会把未安装的 KaiTi 算进去）。先认本机是否真有该字体（西文字宽），再认系统 CJK 回退：谁画「年」和缺失字体一样、且西文能装上，就是雅黑这类回退。原书指定未安装的只列 CSS 里的名字。
 - 界面文案默认中文。
 - 提交信息用中文，说明做了什么、为什么。
 
@@ -64,4 +68,4 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars。不要用 `--of
 
 ## 验证
 
-改阅读功能时：打开 `fixtures/sample.epub`，确认第一章中文、下一章、关开后进度还在。改布局时确认顶栏以下没有空白条。没有桌面窗口时至少跑 `cargo test -p iced-reader-epub`。
+改阅读功能时：打开 `fixtures/sample.epub`，确认第一章中文、下一章、关开后进度还在。改布局时确认顶栏以下没有空白条。改字体时：默认仍是原书 CSS；只传部分字体并关掉「使用原书字体」时正文不变；四槽都齐才覆盖，CJK 字走中文/CJK 槽。可用 `五千年掌故.epub` 核对：指定 PingFang SC / FZFangSong-Z02，Windows 上通常未安装，实际渲染应显示回退字体。没有桌面窗口时至少跑 `cargo test -p iced-reader-core` 和 `cargo test -p iced-reader-epub`。

@@ -2,7 +2,17 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ChapterFrame from "./ChapterFrame";
-import { chapterIndex, type OpenedBook } from "./types";
+import FontPanel from "./FontPanel";
+import {
+  chapterIndex,
+  type ChapterPayload,
+  type FontSettings,
+  type FontSlotId,
+  type OpenedBook,
+  type PublisherFontReport,
+  type UsedFontReport,
+} from "./types";
+import { specifiedFamiliesFromReport } from "./usedFonts";
 
 export default function App() {
   const [book, setBook] = useState<OpenedBook | null>(null);
@@ -11,6 +21,13 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [chapterHtml, setChapterHtml] = useState("");
   const [restoreFraction, setRestoreFraction] = useState(0);
+  const [fonts, setFonts] = useState<FontSettings | null>(null);
+  const [fontOpen, setFontOpen] = useState(false);
+  const [settingsRev, setSettingsRev] = useState(0);
+  const [publisherFonts, setPublisherFonts] = useState<PublisherFontReport | null>(
+    null,
+  );
+  const [usedFonts, setUsedFonts] = useState<UsedFontReport | null>(null);
 
   const bookRef = useRef(book);
   bookRef.current = book;
@@ -19,6 +36,7 @@ export default function App() {
   const pending = useRef<{ key: string; href: string; fraction: number } | null>(
     null,
   );
+  const lastFraction = useRef(0);
   const timer = useRef<number | null>(null);
 
   const spine = book?.spine ?? [];
@@ -44,6 +62,7 @@ export default function App() {
       const currentBook = bookRef.current;
       const href = currentBook?.spine[indexRef.current]?.href;
       if (!currentBook || !href) return;
+      lastFraction.current = fraction;
       pending.current = {
         key: currentBook.progressKey,
         href,
@@ -77,12 +96,17 @@ export default function App() {
   useEffect(() => {
     if (!book || !current) {
       setChapterHtml("");
+      setPublisherFonts(null);
+      setUsedFonts(null);
       return;
     }
     let cancelled = false;
-    invoke<string>("get_chapter", { id: book.id, href: current.href })
-      .then((html) => {
-        if (!cancelled) setChapterHtml(html);
+    invoke<ChapterPayload>("get_chapter", { id: book.id, href: current.href })
+      .then((chapter) => {
+        if (!cancelled) {
+          setChapterHtml(chapter.html);
+          setPublisherFonts(chapter.publisherFonts);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(String(err));
@@ -90,7 +114,77 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [book, current]);
+  }, [book, current, settingsRev]);
+
+  const applyFonts = useCallback((next: FontSettings) => {
+    setFonts(next);
+    setRestoreFraction(lastFraction.current);
+    setSettingsRev((n) => n + 1);
+  }, []);
+
+  useEffect(() => {
+    invoke<FontSettings>("get_font_settings")
+      .then(setFonts)
+      .catch(() =>
+        setFonts({
+          useOriginalFonts: true,
+          fonts: { serif: null, sans: null, mono: null, cjk: null },
+          missingSlots: ["serif", "sans", "mono", "cjk"],
+          customFontsActive: false,
+        }),
+      );
+  }, []);
+
+  const toggleOriginalFonts = useCallback(
+    async (useOriginalFonts: boolean) => {
+      try {
+        const next = await invoke<FontSettings>("set_use_original_fonts", {
+          useOriginalFonts,
+        });
+        applyFonts(next);
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [applyFonts],
+  );
+
+  const uploadFont = useCallback(
+    async (slot: FontSlotId) => {
+      const selected = await open({
+        multiple: false,
+        filters: [
+          {
+            name: "字体",
+            extensions: ["ttf", "otf", "woff", "woff2", "ttc"],
+          },
+        ],
+      });
+      if (!selected || Array.isArray(selected)) return;
+      try {
+        const next = await invoke<FontSettings>("install_font", {
+          slot,
+          path: selected,
+        });
+        applyFonts(next);
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [applyFonts],
+  );
+
+  const clearFont = useCallback(
+    async (slot: FontSlotId) => {
+      try {
+        const next = await invoke<FontSettings>("clear_font", { slot });
+        applyFonts(next);
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [applyFonts],
+  );
 
   const openPath = useCallback(
     async (selected: string) => {
@@ -106,10 +200,13 @@ export default function App() {
         const restored = chapterIndex(opened.spine, opened.progress?.href);
         setBook(opened);
         setIndex(restored >= 0 ? restored : 0);
-        setRestoreFraction(
-          restored >= 0 && opened.progress ? opened.progress.fraction : 0,
-        );
+        const frac =
+          restored >= 0 && opened.progress ? opened.progress.fraction : 0;
+        lastFraction.current = frac;
+        setRestoreFraction(frac);
         setChapterHtml("");
+        setPublisherFonts(null);
+        setUsedFonts(null);
       } catch (err) {
         setError(String(err));
         setBook(null);
@@ -140,6 +237,7 @@ export default function App() {
 
   const go = (delta: number) => {
     flushProgress();
+    lastFraction.current = 0;
     setRestoreFraction(0);
     setIndex((i) => Math.min(spine.length - 1, Math.max(0, i + delta)));
   };
@@ -159,6 +257,13 @@ export default function App() {
         <div className="brand">IcedReader</div>
         <button type="button" className="btn" onClick={openEpub} disabled={busy}>
           {busy ? "打开中…" : "打开 EPUB"}
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={() => setFontOpen((openNow) => !openNow)}
+        >
+          字体
         </button>
         {book && (
           <>
@@ -195,7 +300,22 @@ export default function App() {
         )}
       </header>
 
+      {fontOpen && fonts && (
+        <FontPanel
+          settings={fonts}
+          publisherFonts={publisherFonts}
+          usedFonts={usedFonts}
+          busy={busy}
+          onToggleOriginal={toggleOriginalFonts}
+          onUpload={uploadFont}
+          onClear={clearFont}
+        />
+      )}
+
       {error && <div className="banner">{error}</div>}
+      {book && fonts && !fonts.useOriginalFonts && !fonts.customFontsActive && (
+        <div className="banner">自定义字体未齐，当前仍按原书 CSS。</div>
+      )}
 
       <main className="stage">
         {!book && (
@@ -209,7 +329,12 @@ export default function App() {
             <ChapterFrame
               html={chapterHtml}
               restoreFraction={restoreFraction}
+              authorFamilies={specifiedFamiliesFromReport(
+                publisherFonts?.declarations.map((d) => d.value) ?? [],
+                publisherFonts?.faces ?? [],
+              )}
               onProgress={queueProgress}
+              onUsedFonts={setUsedFonts}
             />
           </div>
         )}

@@ -3,13 +3,26 @@
 //! UI and Tauri talk only to this crate. Format crates (EPUB now, others later)
 //! implement [`Book`]. Persistence (library, bookmarks) will live here too.
 
+mod fonts;
 mod progress;
+mod publisher_fonts;
+mod settings;
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use fonts::{
+    apply_custom_fonts, font_override_css, rewrite_css_font_families, sniff_font, FontKind,
+    FontUrls, CJK_UNICODE_RANGE, LATIN_UNICODE_RANGE,
+};
 pub use progress::{progress_key, ProgressRecord, ProgressStore};
+pub use publisher_fonts::{
+    collect_publisher_fonts, ChapterView, PublisherFontDecl, PublisherFontReport,
+};
+pub use settings::{
+    FontFile, FontSettingsView, FontSlot, FontSlots, ReaderSettings, SettingsStore,
+};
 
 pub const EPUB_FORMAT: &str = "epub";
 

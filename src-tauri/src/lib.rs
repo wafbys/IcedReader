@@ -1,3 +1,5 @@
+mod fonts;
+mod platform_fonts;
 mod portable;
 mod protocol;
 
@@ -5,7 +7,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use iced_reader_core::{
-    progress_key, Book, BookOpener, Locator, Metadata, ProgressStore, SpineItem, TocNode,
+    collect_publisher_fonts, progress_key, Book, BookOpener, ChapterView, FontSettingsView,
+    FontSlot, Locator, Metadata, ProgressStore, SettingsStore, SpineItem, TocNode,
 };
 use iced_reader_epub::EpubOpener;
 use serde::Serialize;
@@ -19,6 +22,7 @@ pub fn prepare_portable() {
 pub struct AppState {
     pub books: Mutex<HashMap<String, Box<dyn Book>>>,
     pub progress: Mutex<ProgressStore>,
+    pub settings: Mutex<SettingsStore>,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,11 +78,44 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
 }
 
 #[tauri::command]
-fn get_chapter(id: String, href: String, state: tauri::State<AppState>) -> Result<String, String> {
-    let books = state.books.lock().map_err(|e| e.to_string())?;
-    let book = books.get(&id).ok_or_else(|| "book not open".to_string())?;
-    book.chapter_html(&href, &protocol::resource_base(&id))
-        .map_err(|e| e.to_string())
+fn get_chapter(id: String, href: String, state: tauri::State<AppState>) -> Result<ChapterView, String> {
+    let (html, publisher_fonts) = {
+        let books = state.books.lock().map_err(|e| e.to_string())?;
+        let book = books.get(&id).ok_or_else(|| "book not open".to_string())?;
+        let base = protocol::resource_base(&id);
+        let html = book
+            .chapter_html(&href, &base)
+            .map_err(|e| e.to_string())?;
+        let publisher_fonts = collect_publisher_fonts(&html, &base, &href, |res_href| {
+            load_book_text(book.as_ref(), res_href)
+        });
+        (html, publisher_fonts)
+    };
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    Ok(ChapterView {
+        html: fonts::apply_html_if_active(html, &settings),
+        publisher_fonts,
+    })
+}
+
+fn load_book_text(book: &dyn Book, href: &str) -> Option<String> {
+    let trimmed = href
+        .split(['#', '?'])
+        .next()
+        .unwrap_or(href)
+        .trim()
+        .trim_start_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    for candidate in [trimmed.to_string(), format!("/{trimmed}")] {
+        if let Ok(res) = book.resource(&candidate) {
+            if let Ok(text) = String::from_utf8(res.data) {
+                return Some(text);
+            }
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -105,14 +142,55 @@ fn save_progress(
 
 #[tauri::command]
 fn resource_origin() -> String {
-    #[cfg(any(windows, target_os = "android"))]
-    {
-        "http://icedreader.localhost".into()
-    }
-    #[cfg(not(any(windows, target_os = "android")))]
-    {
-        "icedreader://localhost".into()
-    }
+    protocol::origin().into()
+}
+
+#[tauri::command]
+fn get_font_settings(state: tauri::State<AppState>) -> Result<FontSettingsView, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    Ok(settings.view())
+}
+
+#[tauri::command]
+fn set_use_original_fonts(
+    use_original_fonts: bool,
+    state: tauri::State<AppState>,
+) -> Result<FontSettingsView, String> {
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings
+        .set_use_original_fonts(use_original_fonts)
+        .map_err(|e| e.to_string())?;
+    Ok(settings.view())
+}
+
+#[tauri::command]
+fn install_font(
+    slot: String,
+    path: String,
+    state: tauri::State<AppState>,
+) -> Result<FontSettingsView, String> {
+    let slot = FontSlot::parse(&slot).ok_or_else(|| "未知字体槽位".to_string())?;
+    let file = fonts::copy_into_slot(slot, std::path::Path::new(&path))?;
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings.set_font(slot, file).map_err(|e| e.to_string())?;
+    Ok(settings.view())
+}
+
+#[tauri::command]
+fn clear_font(slot: String, state: tauri::State<AppState>) -> Result<FontSettingsView, String> {
+    let slot = FontSlot::parse(&slot).ok_or_else(|| "未知字体槽位".to_string())?;
+    let view = {
+        let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+        settings.clear_font(slot).map_err(|e| e.to_string())?;
+        settings.view()
+    };
+    fonts::delete_slot_files(slot);
+    Ok(view)
+}
+
+#[tauri::command]
+async fn get_platform_fonts(app: tauri::AppHandle) -> Result<Vec<platform_fonts::PlatformFontUsage>, String> {
+    platform_fonts::collect(app).await
 }
 
 #[tauri::command]
@@ -138,12 +216,20 @@ pub fn run() {
         .manage(AppState {
             books: Mutex::new(HashMap::new()),
             progress: Mutex::new(ProgressStore::in_memory()),
+            settings: Mutex::new(SettingsStore::in_memory(std::path::PathBuf::from("fonts"))),
         })
         .setup(|app| {
             portable::ensure_layout().map_err(|e| e.to_string())?;
             if let Ok(file) = portable::progress_file() {
                 if let Ok(store) = ProgressStore::open(file) {
                     if let Ok(mut slot) = app.state::<AppState>().progress.lock() {
+                        *slot = store;
+                    }
+                }
+            }
+            if let (Ok(file), Ok(fonts_dir)) = (portable::settings_file(), portable::fonts_dir()) {
+                if let Ok(store) = SettingsStore::open(file, fonts_dir) {
+                    if let Ok(mut slot) = app.state::<AppState>().settings.lock() {
                         *slot = store;
                     }
                 }
@@ -167,7 +253,12 @@ pub fn run() {
             resource_origin,
             pending_book,
             get_chapter,
-            save_progress
+            save_progress,
+            get_font_settings,
+            set_use_original_fonts,
+            install_font,
+            clear_font,
+            get_platform_fonts
         ])
         .register_uri_scheme_protocol("icedreader", protocol::handle)
         .run(tauri::generate_context!())

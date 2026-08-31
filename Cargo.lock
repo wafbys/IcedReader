@@ -1492,6 +1492,8 @@ dependencies = [
  "tauri-plugin-dialog",
  "thiserror 2.0.20",
  "uuid",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]

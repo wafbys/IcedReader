@@ -107,6 +107,130 @@ body {
   color: var(--chrome-ink);
 }
 
+.btn.small {
+  padding: 4px 9px;
+  font-size: 12px;
+}
+
+.font-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  background: #35312c;
+  color: var(--chrome-ink);
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.font-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.font-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.font-ok {
+  color: #c5d5b8;
+}
+
+.font-warn {
+  margin: 0;
+  color: #f0c9a8;
+}
+
+.font-slot {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.font-slot-name {
+  color: #e7e0d6;
+}
+
+.font-file {
+  color: #c8bfb4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.font-spec {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0 4px;
+  border-top: 1px solid var(--line);
+}
+
+.font-spec-title {
+  font-weight: 650;
+  color: #e7e0d6;
+}
+
+.font-spec-note,
+.font-spec-empty,
+.font-spec-faces {
+  margin: 0;
+  color: #c8bfb4;
+  font-size: 12px;
+}
+
+.font-spec-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  max-height: 9.5rem;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.font-spec-list li {
+  display: grid;
+  grid-template-columns: minmax(6rem, 0.9fr) minmax(0, 1.4fr) auto;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.font-spec-used li {
+  grid-template-columns: minmax(0, 1.4fr) auto;
+}
+
+.font-spec-sel,
+.font-spec-val {
+  font-family: Consolas, "Cascadia Mono", "Sarasa Mono SC", monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.font-spec-sel {
+  color: #d7cfc4;
+}
+
+.font-spec-val {
+  color: #f3eee6;
+}
+
+.font-spec-src {
+  color: #8f877e;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .banner {
   padding: 8px 14px;
   background: #f4d7cc;

@@ -21,6 +21,14 @@ pub fn progress_file() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("progress.json"))
 }
 
+pub fn settings_file() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("settings.json"))
+}
+
+pub fn fonts_dir() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("fonts"))
+}
+
 pub fn webview_dir() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("webview"))
 }
@@ -28,6 +36,7 @@ pub fn webview_dir() -> io::Result<PathBuf> {
 pub fn ensure_layout() -> io::Result<PathBuf> {
     fs::create_dir_all(library_dir()?)?;
     fs::create_dir_all(webview_dir()?)?;
+    fs::create_dir_all(fonts_dir()?)?;
     data_dir()
 }
 
