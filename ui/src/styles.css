@@ -1,0 +1,146 @@
+:root {
+  color-scheme: light;
+  --paper: #f6f1e8;
+  --ink: #1f1c18;
+  --muted: #6b645c;
+  --chrome: #2a2724;
+  --chrome-ink: #f3eee6;
+  --line: #3a3530;
+  --accent: #c46a3a;
+  font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+#root {
+  position: fixed;
+  inset: 0;
+  background: var(--paper);
+}
+
+.shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.chrome {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--chrome);
+  color: var(--chrome-ink);
+  min-height: 52px;
+}
+
+.brand {
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  margin-right: 4px;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  line-height: 1.25;
+}
+
+.meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta span {
+  color: #c8bfb4;
+  font-size: 12px;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.pos {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: #c8bfb4;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  padding: 7px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn.ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--chrome-ink);
+}
+
+.banner {
+  padding: 8px 14px;
+  background: #f4d7cc;
+  color: #6a2a16;
+  font-size: 13px;
+}
+
+.stage {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  background: var(--paper);
+}
+
+.empty {
+  height: 100%;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 8px;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chapter {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--paper);
+}

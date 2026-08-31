@@ -1,0 +1,11 @@
+[package]
+name = "iced-reader-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Format-agnostic ebook domain types and Book trait"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

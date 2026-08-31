@@ -1,0 +1,14 @@
+[package]
+name = "iced-reader-epub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EPUB 2/3 adapter for iced-reader-core"
+
+[dependencies]
+iced-reader-core = { path = "../core" }
+rbook = { version = "0.7.10", default-features = false, features = ["threadsafe"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+zip = "8"
