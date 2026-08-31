@@ -76,6 +76,8 @@ fixtures              样书
 scripts/dev.ps1       Windows 开发启动
 ```
 
+给编码助手的仓库约定见仓库根目录的 [`AGENTS.md`](AGENTS.md)，新开对话会自动读入并遵循。
+
 ## 许可
 
 MIT
