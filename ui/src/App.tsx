@@ -284,7 +284,11 @@ export default function App() {
               >
                 上一章
               </button>
-              <span className="pos">
+              <span
+                className="pos"
+                title={current?.title ?? current?.href ?? ""}
+              >
+                {current?.title ? `${current.title} · ` : ""}
                 {spine.length ? index + 1 : 0} / {spine.length}
               </span>
               <button

@@ -83,6 +83,10 @@ body {
   font-variant-numeric: tabular-nums;
   font-size: 13px;
   color: #c8bfb4;
+  max-width: min(42vw, 28rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .btn {

@@ -70,6 +70,9 @@ pub struct SpineItem {
     pub id: String,
     pub href: String,
     pub media_type: String,
+    /// TOC label when the adapter expands or annotates chapters.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// Position that survives font-size and platform changes.

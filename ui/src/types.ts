@@ -18,6 +18,7 @@ export type SpineItem = {
   id: string;
   href: string;
   mediaType: string;
+  title?: string | null;
 };
 
 export type Locator = {
@@ -99,12 +100,22 @@ export function slotLabel(id: FontSlotId): string {
   return FONT_SLOTS.find((s) => s.id === id)?.label ?? id;
 }
 
-export function normHref(href: string): string {
-  return href.split("#")[0].split("?")[0].replace(/^\/+/, "").toLowerCase();
+export function normHref(href: string, keepFragment = false): string {
+  const hash = href.indexOf("#");
+  const filePart = (hash >= 0 ? href.slice(0, hash) : href)
+    .split("?")[0]
+    .replace(/^\/+/, "")
+    .toLowerCase();
+  if (!keepFragment || hash < 0) return filePart;
+  const fragment = href.slice(hash + 1).split("?")[0];
+  return fragment ? `${filePart}#${fragment}` : filePart;
 }
 
 export function chapterIndex(spine: SpineItem[], href: string | undefined): number {
   if (!href) return -1;
-  const target = normHref(href);
-  return spine.findIndex((item) => normHref(item.href) === target);
+  const exact = normHref(href, true);
+  const exactIdx = spine.findIndex((item) => normHref(item.href, true) === exact);
+  if (exactIdx >= 0) return exactIdx;
+  const file = normHref(href);
+  return spine.findIndex((item) => normHref(item.href) === file);
 }
