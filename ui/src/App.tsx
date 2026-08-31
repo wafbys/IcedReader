@@ -205,11 +205,13 @@ export default function App() {
           </div>
         )}
         {book && chapterHtml && (
-          <ChapterFrame
-            html={chapterHtml}
-            restoreFraction={restoreFraction}
-            onProgress={queueProgress}
-          />
+          <div className="page">
+            <ChapterFrame
+              html={chapterHtml}
+              restoreFraction={restoreFraction}
+              onProgress={queueProgress}
+            />
+          </div>
         )}
       </main>
     </div>

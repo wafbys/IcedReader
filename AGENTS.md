@@ -19,7 +19,7 @@ IcedReader 是桌面电子书阅读器。名字不是 Iced GUI。当前实现：
 
 ## 硬约束
 
-1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`）。前端用 `srcDoc` 显示章节，图片/CSS 走自定义协议。
+1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`），这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰。**
 2. **进度只存 `Locator`：`href` + `fraction`（0～1）+ 可选 `cfi`。** 禁止存像素 `scrollTop`。CFI 等分页再填，先留字段。
 3. **进度键：** 有 EPUB identifier 用 `id:...`；否则相对便携书库用 `lib:...`。禁止用会随目录搬家失效的绝对 `path:` 当主键（仅作没有书库目录时的回退）。实现见 `progress_key`。
 4. **章节 iframe 不要开 `allow-scripts`。** 现在是 `allow-same-origin`，父页读滚动比例。不要为了省事给 EPUB 开脚本。
@@ -51,7 +51,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars。不要用 `--of
 
 ## 改 UI 时
 
-- 阅读区必须铺满顶栏以下的客户区（flex：顶栏 `auto`，`.stage` `flex:1`，iframe `position:absolute; inset:0`）。不要用「两行 auto + 1fr」那种会把正文挤进中间空行的 grid。
+- 阅读区铺满顶栏以下的客户区。书籍栏宽居中用壳层 `.page`（iframe 外层），不要往章节 HTML 里注入 `max-width` / `margin: auto`。
 - 界面文案默认中文。
 - 提交信息用中文，说明做了什么、为什么。
 

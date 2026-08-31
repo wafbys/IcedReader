@@ -10,22 +10,6 @@ use rbook::ebook::toc::TocEntry;
 use rbook::epub::rewrite::{EpubRewriteOptions, PathRewrite};
 use rbook::epub::Epub;
 
-const READER_CSS: &str = r#"
-html { font-size: 18px; }
-body {
-  margin: 0 auto;
-  padding: 2rem 1.75rem 4rem;
-  max-width: 42rem;
-  line-height: 1.75;
-  color: #1f1c18;
-  background: #f6f1e8;
-  font-family: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun",
-    "Georgia", "Times New Roman", serif;
-}
-img, svg, video, picture { max-width: 100%; height: auto; }
-a { color: #8a3b1d; }
-"#;
-
 pub struct EpubOpener;
 
 impl BookOpener for EpubOpener {
@@ -137,8 +121,7 @@ impl Book for EpubBook {
 
     fn chapter_html(&self, href: &str, resource_base: &str) -> Result<String, CoreError> {
         let rewrite = EpubRewriteOptions::new()
-            .rewrite_paths(PathRewrite::prefix(resource_base.to_string()))
-            .inject_css(READER_CSS);
+            .rewrite_paths(PathRewrite::prefix(resource_base.to_string()));
         self.inner
             .read_resource_str_with(href, &rewrite)
             .map_err(|e| CoreError::ChapterNotFound(format!("{href}: {e}")))
