@@ -21,10 +21,10 @@ IcedReader 是桌面电子书阅读器。名字不是 Iced GUI。当前实现：
 
 1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`）。前端用 `srcDoc` 显示章节，图片/CSS 走自定义协议。
 2. **进度只存 `Locator`：`href` + `fraction`（0～1）+ 可选 `cfi`。** 禁止存像素 `scrollTop`。CFI 等分页再填，先留字段。
-3. **进度键：** 有 EPUB identifier 用 `id:...`，否则 `path:` + 规范化路径。实现见 `progress_key`。
+3. **进度键：** 有 EPUB identifier 用 `id:...`；否则相对便携书库用 `lib:...`。禁止用会随目录搬家失效的绝对 `path:` 当主键（仅作没有书库目录时的回退）。实现见 `progress_key`。
 4. **章节 iframe 不要开 `allow-scripts`。** 现在是 `allow-same-origin`，父页读滚动比例。不要为了省事给 EPUB 开脚本。
 5. **IPC 用 camelCase**（Rust 结构体 `#[serde(rename_all = "camelCase")]`）。
-6. 书文件默认留在原处，只记路径，不要默默复制进书库。
+6. **绿色软件：** 设置、进度、导入的书、WebView 缓存一律在 `{exe 目录}/data/`，禁止写入 `%APPDATA%` / 注册表当主存储。打开外部 EPUB 时复制进 `data/library/`（已在书库内则不再复制）。整个程序目录搬走即带走全部状态。目录必须可写，不要往 Program Files 里装。
 
 ## 常用命令
 
@@ -59,7 +59,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars。不要用 `--of
 
 - 不要把解析逻辑搬进 JS（包括让 foliate-js 直接 unzip）。分页若接 foliate-js，也只让它排版，书仍由 Rust 打开。
 - 不要为了第一口去接 PDF/MOBI；接口预留即可。
-- 不要提交 `target/`、`node_modules/`、`ui/dist/`、`src-tauri/gen/`、`fixtures/verify-*.png`。
+- 不要提交 `target/`、`node_modules/`、`ui/dist/`、`src-tauri/gen/`、`data/`、`fixtures/verify-*.png`。
 - 不要在文档或代码里写用户的密钥、本机绝对路径（样例用仓库相对路径）。
 
 ## 验证

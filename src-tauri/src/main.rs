@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    iced_reader_lib::prepare_portable();
     iced_reader_lib::run()
 }

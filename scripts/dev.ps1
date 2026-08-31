@@ -1,5 +1,6 @@
 # Run IcedReader in development (Windows).
 # Requires: Node, Rust MSVC, VS Build Tools, Smart App Control off.
+# Portable data is created next to the debug exe: target/debug/data/
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root

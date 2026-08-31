@@ -69,8 +69,9 @@ impl ProgressStore {
     }
 }
 
-/// Stable key: EPUB identifier if present, otherwise a normalized filesystem path.
-pub fn progress_key(path: &Path, identifiers: &[String]) -> String {
+/// Stable key so a moved portable folder still finds progress.
+/// Prefer EPUB identifier; else a path relative to the portable library.
+pub fn progress_key(path: &Path, identifiers: &[String], library_dir: Option<&Path>) -> String {
     if let Some(id) = identifiers
         .iter()
         .map(|s| s.trim())
@@ -78,8 +79,32 @@ pub fn progress_key(path: &Path, identifiers: &[String]) -> String {
     {
         return format!("id:{id}");
     }
+    if let Some(lib) = library_dir {
+        if let Some(rel) = relative_to(path, lib) {
+            return format!("lib:{rel}");
+        }
+    }
+    let canon = normalize_path(path);
+    format!(
+        "path:{}",
+        canon.to_string_lossy().replace('\\', "/").to_lowercase()
+    )
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
     let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    format!("path:{}", canon.to_string_lossy().to_lowercase())
+    let s = canon.to_string_lossy();
+    PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s))
+}
+
+fn relative_to(path: &Path, root: &Path) -> Option<String> {
+    let path = normalize_path(path);
+    let root = normalize_path(root);
+    path.strip_prefix(&root).ok().map(|rel| {
+        rel.to_string_lossy()
+            .replace('\\', "/")
+            .to_lowercase()
+    })
 }
 
 fn unix_now() -> i64 {
@@ -120,7 +145,18 @@ mod tests {
 
     #[test]
     fn prefers_identifier() {
-        let key = progress_key(Path::new("C:/books/a.epub"), &["urn:isbn:1".into()]);
+        let key = progress_key(Path::new("C:/books/a.epub"), &["urn:isbn:1".into()], None);
         assert_eq!(key, "id:urn:isbn:1");
+    }
+
+    #[test]
+    fn library_relative_key() {
+        let dir = std::env::temp_dir().join("icedreader-lib-key");
+        let lib = dir.join("library");
+        fs::create_dir_all(&lib).unwrap();
+        let book = lib.join("Foo.epub");
+        fs::write(&book, b"x").unwrap();
+        let key = progress_key(&book, &[], Some(&lib));
+        assert_eq!(key, "lib:foo.epub");
     }
 }

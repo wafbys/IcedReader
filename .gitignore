@@ -28,6 +28,9 @@ src-tauri/target
 src-tauri/gen
 target
 
+# Portable runtime data next to the exe (also created under target/debug when developing)
+/data/
+
 # Test artifacts
 /tmp
 *.epub.bak

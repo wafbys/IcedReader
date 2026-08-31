@@ -1,3 +1,4 @@
+mod portable;
 mod protocol;
 
 use std::collections::HashMap;
@@ -10,6 +11,10 @@ use iced_reader_epub::EpubOpener;
 use serde::Serialize;
 use tauri::Manager;
 use uuid::Uuid;
+
+pub fn prepare_portable() {
+    portable::prepare_webview_env();
+}
 
 pub struct AppState {
     pub books: Mutex<HashMap<String, Box<dyn Book>>>,
@@ -32,14 +37,19 @@ pub struct OpenedBook {
 #[tauri::command]
 fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, String> {
     let opener = EpubOpener;
-    if !opener.can_open(std::path::Path::new(&path)) {
+    let source = std::path::Path::new(&path);
+    if !opener.can_open(source) {
         return Err(format!("unsupported file: {path}"));
     }
-    let book = opener
-        .open(std::path::Path::new(&path))
-        .map_err(|e| e.to_string())?;
+    let imported = portable::import_book(source).map_err(|e| e.to_string())?;
+    let book = opener.open(&imported).map_err(|e| e.to_string())?;
     let metadata = book.metadata();
-    let key = progress_key(std::path::Path::new(&path), &metadata.identifiers);
+    let library = portable::library_dir().ok();
+    let key = progress_key(
+        &imported,
+        &metadata.identifiers,
+        library.as_deref(),
+    );
     let progress = state
         .progress
         .lock()
@@ -48,7 +58,7 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
     let opened = OpenedBook {
         id: Uuid::new_v4().to_string(),
         format: book.format_id().to_string(),
-        path: path.clone(),
+        path: imported.to_string_lossy().into_owned(),
         progress_key: key,
         progress,
         metadata,
@@ -122,6 +132,7 @@ fn close_book(id: String, state: tauri::State<AppState>) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    portable::prepare_webview_env();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
@@ -129,14 +140,25 @@ pub fn run() {
             progress: Mutex::new(ProgressStore::in_memory()),
         })
         .setup(|app| {
-            if let Ok(dir) = app.path().app_data_dir() {
-                let _ = std::fs::create_dir_all(&dir);
-                if let Ok(store) = ProgressStore::open(dir.join("progress.json")) {
+            portable::ensure_layout().map_err(|e| e.to_string())?;
+            if let Ok(file) = portable::progress_file() {
+                if let Ok(store) = ProgressStore::open(file) {
                     if let Ok(mut slot) = app.state::<AppState>().progress.lock() {
                         *slot = store;
                     }
                 }
             }
+            let webview_dir = portable::webview_dir().map_err(|e| e.to_string())?;
+            let conf = app
+                .config()
+                .app
+                .windows
+                .first()
+                .cloned()
+                .ok_or("missing window config")?;
+            tauri::WebviewWindowBuilder::from_config(app, &conf)?
+                .data_directory(webview_dir)
+                .build()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

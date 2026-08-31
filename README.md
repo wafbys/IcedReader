@@ -10,6 +10,7 @@ Windows 优先的桌面电子书阅读器。产品名沿用 IcedReader，技术�
 - 显示书名、作者
 - 整章滚动阅读，上一章 / 下一章（方向键也可）
 - 记住进度：章节 href + 章内滚动比例（0～1），不存像素位置
+- **绿色软件：** 打开的书会复制进程序目录下的 `data/library/`，进度和 WebView 数据也在 `data/`。把整个文件夹拷走即带走书和状态。
 
 样书：`fixtures/sample.epub`。
 
@@ -56,7 +57,19 @@ $env:ICED_READER_OPEN = "$PWD\fixtures\sample.epub"
 .\scripts\dev.ps1
 ```
 
-进度文件：`%APPDATA%\com.icedreader.app\progress.json`。
+便携数据（相对 `IcedReader.exe` 所在目录）：
+
+```
+IcedReader.exe
+data/
+  library/          导入的书
+  progress.json     阅读进度
+  webview/          WebView2 用户数据
+```
+
+开发时 exe 在 `target/debug/`，因此 `data/` 会出现在那里（已被 git 忽略）。
+
+发布请分发「exe + 同级可写目录」，不要装进 Program Files，否则可能写不进 `data/`。系统仍需 WebView2（Win11 自带）。
 
 ## 测试
 
