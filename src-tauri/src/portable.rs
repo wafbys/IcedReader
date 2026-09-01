@@ -72,26 +72,12 @@ pub fn import_book_to(src: &Path, library: &Path) -> io::Result<PathBuf> {
         .map(|n| safe_filename(&n.to_string_lossy()))
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "book.epub".into());
-    let dest = unique_dest(&lib_n, &name);
+    let dest = lib_n.join(&name);
+    if dest.exists() {
+        return Ok(dest);
+    }
     fs::copy(&src_n, &dest)?;
     Ok(dest)
-}
-
-fn unique_dest(dir: &Path, name: &str) -> PathBuf {
-    let dest = dir.join(name);
-    if !dest.exists() {
-        return dest;
-    }
-    let path = Path::new(name);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("book");
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("epub");
-    for i in 2..10_000 {
-        let candidate = dir.join(format!("{stem}-{i}.{ext}"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    dir.join(format!("{stem}-overflow.{ext}"))
 }
 
 fn safe_filename(name: &str) -> String {
@@ -141,7 +127,8 @@ mod tests {
 
         let second_src = src_dir.join("demo.epub");
         fs::write(&second_src, b"other").unwrap();
-        let renamed = import_book_to(&second_src, &lib).unwrap();
-        assert_eq!(renamed.file_name().unwrap(), "demo-2.epub");
+        let again_named = import_book_to(&second_src, &lib).unwrap();
+        assert_eq!(again_named, copied);
+        assert_eq!(fs::read(&copied).unwrap(), b"epub-bytes");
     }
 }

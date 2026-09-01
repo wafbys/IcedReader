@@ -38,7 +38,17 @@ impl ProgressStore {
     }
 
     pub fn get(&self, key: &str) -> Option<&ProgressRecord> {
-        self.entries.get(key)
+        if let Some(rec) = self.entries.get(key) {
+            return Some(rec);
+        }
+        let Some(stem) = lib_book_stem(key) else {
+            return None;
+        };
+        self.entries
+            .iter()
+            .filter(|(k, _)| lib_book_stem(k).as_deref() == Some(stem.as_str()))
+            .max_by_key(|(_, rec)| rec.updated_at)
+            .map(|(_, rec)| rec)
     }
 
     pub fn set(&mut self, key: String, locator: Locator) -> Result<(), CoreError> {
@@ -107,6 +117,19 @@ fn relative_to(path: &Path, root: &Path) -> Option<String> {
     })
 }
 
+/// `lib:新西游记++共两册-17.epub` and `lib:新西游记++共两册.epub` share a stem.
+fn lib_book_stem(key: &str) -> Option<String> {
+    let rest = key.strip_prefix("lib:")?;
+    let rest = rest.strip_suffix(".epub").unwrap_or(rest);
+    let trimmed = rest.trim_end_matches(|c: char| c.is_ascii_digit());
+    let trimmed = trimmed.trim_end_matches('-');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.replace('\\', "/").to_lowercase())
+    }
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -158,5 +181,31 @@ mod tests {
         fs::write(&book, b"x").unwrap();
         let key = progress_key(&book, &[], Some(&lib));
         assert_eq!(key, "lib:foo.epub");
+    }
+
+    #[test]
+    fn lib_numbered_copies_share_progress() {
+        let dir = std::env::temp_dir().join("icedreader-progress-alias");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("progress.json");
+        let _ = fs::remove_file(&path);
+
+        let mut store = ProgressStore::open(path).unwrap();
+        store
+            .set(
+                "lib:新西游记++共两册-14.epub".into(),
+                Locator {
+                    href: "/OPS/chapter3.html".into(),
+                    fraction: 0.4,
+                    cfi: None,
+                },
+            )
+            .unwrap();
+
+        let rec = store
+            .get("lib:新西游记++共两册.epub")
+            .expect("alias to numbered copy");
+        assert_eq!(rec.locator.href, "/OPS/chapter3.html");
+        assert!((rec.locator.fraction - 0.4).abs() < 1e-9);
     }
 }
