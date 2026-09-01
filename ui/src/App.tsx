@@ -17,6 +17,11 @@ import {
   type UsedFontReport,
 } from "./types";
 import { specifiedFamiliesFromReport } from "./usedFonts";
+import {
+  isAppFullscreen,
+  setAppFullscreen,
+  toggleAppFullscreen,
+} from "./fullscreen";
 
 export default function App() {
   const [book, setBook] = useState<OpenedBook | null>(null);
@@ -28,6 +33,8 @@ export default function App() {
   const [fonts, setFonts] = useState<FontSettings | null>(null);
   const [fontOpen, setFontOpen] = useState(false);
   const [tocOpen, setTocOpen] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [chromeOn, setChromeOn] = useState(false);
   const [settingsRev, setSettingsRev] = useState(0);
   const [publisherFonts, setPublisherFonts] = useState<PublisherFontReport | null>(
     null,
@@ -290,10 +297,79 @@ export default function App() {
     [flushProgress],
   );
 
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      const next = await toggleAppFullscreen();
+      setFullscreen(next);
+      setChromeOn(false);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void isAppFullscreen()
+      .then((on) => {
+        if (!cancelled) setFullscreen(on);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!fullscreen) {
+      setChromeOn(false);
+      return;
+    }
+    if (fontOpen || tocOpen) {
+      setChromeOn(true);
+      return;
+    }
+    let hide: number | null = null;
+    const onMove = (e: MouseEvent) => {
+      if (e.clientY <= 56) {
+        setChromeOn(true);
+        if (hide !== null) {
+          window.clearTimeout(hide);
+          hide = null;
+        }
+        return;
+      }
+      if (hide !== null) return;
+      hide = window.setTimeout(() => {
+        setChromeOn(false);
+        hide = null;
+      }, 700);
+    };
+    window.addEventListener("mousemove", onMove);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      if (hide !== null) window.clearTimeout(hide);
+    };
+  }, [fullscreen, fontOpen, tocOpen]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === "F11") {
+        e.preventDefault();
+        void toggleFullscreen();
+        return;
+      }
       if (e.key === "Escape") {
-        setTocOpen(false);
+        if (tocOpen) {
+          setTocOpen(false);
+          return;
+        }
+        if (fullscreen) {
+          e.preventDefault();
+          void setAppFullscreen(false)
+            .then(() => setFullscreen(false))
+            .catch((err) => setError(String(err)));
+          return;
+        }
         return;
       }
       if (e.key === "ArrowRight" || e.key === "PageDown") {
@@ -307,10 +383,18 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [goPage]);
+  }, [goPage, toggleFullscreen, tocOpen, fullscreen]);
 
   return (
-    <div className="shell">
+    <div
+      className={[
+        "shell",
+        fullscreen ? "fullscreen" : "",
+        fullscreen && (chromeOn || fontOpen || tocOpen) ? "chrome-on" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <header className="chrome">
         <div className="brand">IcedReader</div>
         <button type="button" className="btn" onClick={openEpub} disabled={busy}>
@@ -330,6 +414,14 @@ export default function App() {
           onClick={() => setFontOpen((openNow) => !openNow)}
         >
           字体
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={() => void toggleFullscreen()}
+          title="F11"
+        >
+          {fullscreen ? "退出全屏" : "全屏"}
         </button>
         {book && (
           <>

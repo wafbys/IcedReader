@@ -45,6 +45,29 @@ body {
   display: flex;
 }
 
+.shell.fullscreen > .chrome,
+.shell.fullscreen > .font-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 8;
+  transform: translateY(-110%);
+  transition: transform 0.18s ease;
+}
+
+.shell.fullscreen > .chrome {
+  top: 0;
+}
+
+.shell.fullscreen > .font-bar {
+  top: 52px;
+}
+
+.shell.fullscreen.chrome-on > .chrome,
+.shell.fullscreen.chrome-on > .font-bar {
+  transform: translateY(0);
+}
+
 .chrome {
   display: flex;
   align-items: center;
