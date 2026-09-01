@@ -1,7 +1,10 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import ChapterFrame from "./ChapterFrame";
+import ChapterFrame, {
+  type ChapterFrameHandle,
+  type PageInfo,
+} from "./ChapterFrame";
 import FontPanel from "./FontPanel";
 import {
   chapterIndex,
@@ -28,6 +31,12 @@ export default function App() {
     null,
   );
   const [usedFonts, setUsedFonts] = useState<UsedFontReport | null>(null);
+  const [pageInfo, setPageInfo] = useState<PageInfo>({
+    page: 0,
+    pages: 1,
+    columns: 1,
+  });
+  const frameRef = useRef<ChapterFrameHandle>(null);
 
   const bookRef = useRef(book);
   bookRef.current = book;
@@ -235,21 +244,43 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const go = (delta: number) => {
-    flushProgress();
-    lastFraction.current = 0;
-    setRestoreFraction(0);
-    setIndex((i) => Math.min(spine.length - 1, Math.max(0, i + delta)));
-  };
+  const goChapter = useCallback(
+    (delta: number, fraction = 0) => {
+      const len = bookRef.current?.spine.length ?? 0;
+      const i = indexRef.current;
+      const next = Math.min(len - 1, Math.max(0, i + delta));
+      if (next === i) return;
+      flushProgress();
+      lastFraction.current = fraction;
+      setRestoreFraction(fraction);
+      setIndex(next);
+    },
+    [flushProgress],
+  );
+
+  const goPage = useCallback(
+    (delta: number) => {
+      const result = frameRef.current?.goPage(delta);
+      if (result === "after") goChapter(1, 0);
+      if (result === "before") goChapter(-1, 1);
+    },
+    [goChapter],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowRight") go(1);
-      if (e.key === "ArrowLeft") go(-1);
+      if (e.key === "ArrowRight" || e.key === "PageDown") {
+        e.preventDefault();
+        goPage(1);
+      }
+      if (e.key === "ArrowLeft" || e.key === "PageUp") {
+        e.preventDefault();
+        goPage(-1);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  });
+  }, [goPage]);
 
   return (
     <div className="shell">
@@ -279,7 +310,7 @@ export default function App() {
               <button
                 type="button"
                 className="btn ghost"
-                onClick={() => go(-1)}
+                onClick={() => goChapter(-1, 0)}
                 disabled={index <= 0}
               >
                 上一章
@@ -289,12 +320,14 @@ export default function App() {
                 title={current?.title ?? current?.href ?? ""}
               >
                 {current?.title ? `${current.title} · ` : ""}
-                {spine.length ? index + 1 : 0} / {spine.length}
+                {spine.length ? `${index + 1}/${spine.length}章` : "0章"}
+                {` · ${pageInfo.page + 1}/${pageInfo.pages}页`}
+                {pageInfo.columns === 2 ? " · 双栏" : ""}
               </span>
               <button
                 type="button"
                 className="btn ghost"
-                onClick={() => go(1)}
+                onClick={() => goChapter(1, 0)}
                 disabled={index >= spine.length - 1}
               >
                 下一章
@@ -325,12 +358,13 @@ export default function App() {
         {!book && (
           <div className="empty">
             <p>打开一本 EPUB，开始阅读。</p>
-            <p className="hint">进度按章节和章内比例保存，换设备、改字号也能对上。</p>
+            <p className="hint">进度按章节和页序保存，换窗口宽也能对上。</p>
           </div>
         )}
         {book && chapterHtml && (
           <div className="page">
             <ChapterFrame
+              ref={frameRef}
               html={chapterHtml}
               restoreFraction={restoreFraction}
               documentLang={book.metadata.language}
@@ -340,6 +374,8 @@ export default function App() {
               )}
               onProgress={queueProgress}
               onUsedFonts={setUsedFonts}
+              onPageInfo={setPageInfo}
+              onNeedChapter={(delta) => goChapter(delta, delta < 0 ? 1 : 0)}
             />
           </div>
         )}

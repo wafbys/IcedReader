@@ -19,10 +19,10 @@ IcedReader 是桌面电子书阅读器。名字不是 Iced GUI。当前实现：
 
 ## 硬约束
 
-1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`），这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰。** 唯一例外：用户关掉「使用原书字体」且 serif / sans / mono / 中文·CJK 四个上传文件都在并能识别时，才注入 `@font-face`（CJK 用 `unicode-range`）并改写 `font-family`。缺任一槽位则整段不注入，实际效果仍是出版社 CSS。不要按书语言选日/韩字体，不要用系统字体。
+1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`），这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰**（颜色、字号、`max-width` 居中等）。允许两处例外：① 用户关掉「使用原书字体」且 serif / sans / mono / 中文·CJK 四个上传文件都在并能识别时，注入 `@font-face`（CJK 用 `unicode-range`）并改写 `font-family`；缺任一槽位则整段不注入。② 分页 flow：父页可写入带 `id="iced-reader-flow"` 的样式，只含高度、`column-*`、`overflow`、图 `max-width: 100%`。不要按书语言选日/韩字体，不要用系统字体。
 2. **进度只存 `Locator`：`href` + `fraction`（0～1）+ 可选 `cfi`。** 禁止存像素 `scrollTop`。CFI 等分页再填，先留字段。
 3. **进度键：** 有 EPUB identifier 用 `id:...`；否则相对便携书库用 `lib:...`。禁止用会随目录搬家失效的绝对 `path:` 当主键（仅作没有书库目录时的回退）。实现见 `progress_key`。
-4. **章节 iframe 不要开 `allow-scripts`。** 现在是 `allow-same-origin`，父页读滚动比例。不要为了省事给 EPUB 开脚本。
+4. **章节 iframe 不要开 `allow-scripts`。** 现在是 `allow-same-origin`，父页做分栏翻页并读页序。不要为了省事给 EPUB 开脚本。
 5. **IPC 用 camelCase**（Rust 结构体 `#[serde(rename_all = "camelCase")]`）。
 6. **绿色软件：** 设置、进度、导入的书、用户字体、WebView 缓存一律在 `{exe 目录}/data/`，禁止写入 `%APPDATA%` / 注册表当主存储。打开外部 EPUB 时复制进 `data/library/`（已在书库内则不再复制）。字体文件在 `data/fonts/`，设置在 `data/settings.json`。整个程序目录搬走即带走全部状态。目录必须可写，不要往 Program Files 里装。
 
@@ -56,10 +56,11 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars。不要用 `--of
 - **目录锚点当章。** 不少中文 EPUB 把多章放进同一 XHTML，NCX/`nav` 用 `#id`。TOC 带 fragment、或 TOC 条目明显多于 OPF spine 时，阅读列表用摊平后的 TOC（href 保留 `#`），`chapter_html` 按锚点切到下一 TOC 锚点。正规「一章一个文件」仍走 OPF spine。
 - **路径改写要能过破烂 HTML。** rbook 按 XML 改写；未闭合 `<img>` 等会失败。失败后用宽松改写相对 `src`/`href`，不要为此给章节开脚本。
 - **`lang`。** HTML 解析不认 `xml:lang`。章节 `srcDoc` 在没有 `lang` 时从 `xml:lang` 或书的 `dc:language` 补上（跳过 `und`），好让引擎按中文映射泛型 serif。不要为此注入阅读皮肤 CSS。
+- **分页 flow。** 与 Foliate / Epub.js 相同：CSS 多栏 + `max-inline-size` 720px + `max-column-count` 2。栏数 `min(2, ceil(容器宽/720))`，竖屏强制一栏；多出的窗口宽度是页边，不拉宽正文。iframe 按页数拉宽，由外层容器 `scrollLeft` 翻页（不要在 `documentElement` 上滚）。左右键 / 点左右侧 / 滚轮翻页；章首再左翻上一章末页，章末再右翻下一章。进度仍是 `href` + 章内 `fraction`。
 
 ## 改 UI 时
 
-- 阅读区铺满顶栏以下的客户区。书籍栏宽居中用壳层 `.page`（iframe 外层），不要往章节 HTML 里注入 `max-width` / `margin: auto`。
+- 阅读区铺满顶栏以下的客户区。正文块用 `.flow-host` 栅格居中（每栏最多约 720px），不要往章节 HTML 里注入 `max-width` / `margin: auto` 做居中。
 - 字体面板要列出**本章原书 CSS 如何写 font-family**（含 serif/sans-serif/monospace 泛型、选择器、@font-face 名）。这是声明，不是系统最终选用的文件。在注入自定义字体之前从原 HTML/CSS 抽取。`@font-face` 的 `src` 若不是书内文件（如索尼 `res://`），标「书内无字体文件」，不要假装能加载。
 - 字体面板还要列出**本章实际渲染字体**：
   - 不要用 canvas 在一堆系统字体里给泛型或未安装名「选最近的」（会把 serif 汉字标成雅黑、把未安装的 KaiTi 算进去）。
@@ -78,4 +79,4 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars。不要用 `--of
 
 ## 验证
 
-改阅读功能时：打开 `fixtures/sample.epub`，确认第一章中文、下一章、关开后进度还在。改布局时确认顶栏以下没有空白条。改字体时：默认仍是原书 CSS；只传部分字体并关掉「使用原书字体」时正文不变；四槽都齐才覆盖，CJK 字走中文/CJK 槽。可用仓库旁未提交的样书核对（不要 git add）：`五千年掌故.epub` 指定 PingFang SC / FZFangSong-Z02，Windows 上通常未安装；`新西游记++共两册.epub` 指定 `cnepub, serif` 但 `@font-face` 是设备 `res://`，实际渲染应为 `（系统 serif）`，并标 cnepub 书内无字体文件。没有桌面窗口时至少跑 `cargo test -p iced-reader-core` 和 `cargo test -p iced-reader-epub`。
+改阅读功能时：打开 `fixtures/sample.epub`，确认第一章中文、左右翻页、拉宽窗口变双栏、关开后页大致还在。改布局时确认顶栏以下没有空白条、没有灰底托一条窄白纸。改字体时：默认仍是原书 CSS；只传部分字体并关掉「使用原书字体」时正文不变；四槽都齐才覆盖，CJK 字走中文/CJK 槽。可用仓库旁未提交的样书核对（不要 git add）：`五千年掌故.epub` 指定 PingFang SC / FZFangSong-Z02，Windows 上通常未安装；`新西游记++共两册.epub` 指定 `cnepub, serif` 但 `@font-face` 是设备 `res://`，实际渲染应为 `（系统 serif）`，并标 cnepub 书内无字体文件。没有桌面窗口时至少跑 `cargo test -p iced-reader-core` 和 `cargo test -p iced-reader-epub`。

@@ -247,8 +247,10 @@ body {
   min-height: 0;
   min-width: 0;
   display: flex;
-  justify-content: center;
-  background: #e8e4dc;
+  justify-content: stretch;
+  align-items: stretch;
+  background: var(--paper);
+  padding: 0;
 }
 
 .empty {
@@ -261,11 +263,52 @@ body {
 
 .page {
   height: 100%;
-  width: min(42rem, 100%);
-  max-width: 42rem;
+  width: 100%;
+  max-width: none;
   min-width: 0;
   position: relative;
   background: #fff;
+}
+
+.flow-host {
+  box-sizing: border-box;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  --flow-gap: 7%;
+  --flow-max-inline: 720px;
+  --flow-max-columns: 2;
+  --flow-half-gap: calc(var(--flow-gap) / 2);
+  --flow-max-width: calc(var(--flow-max-inline) * var(--flow-max-columns));
+  grid-template-columns:
+    minmax(var(--flow-half-gap), 1fr)
+    minmax(0, var(--flow-max-width))
+    minmax(var(--flow-half-gap), 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  background: #fff;
+}
+
+.flow-host.portrait {
+  --flow-max-columns: 1;
+}
+
+.flow-container {
+  grid-column: 2;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.flow-container .chapter {
+  position: relative;
+  inset: auto;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
 }
 
 .hint {
