@@ -6,6 +6,7 @@ import ChapterFrame, {
   type PageInfo,
 } from "./ChapterFrame";
 import FontPanel from "./FontPanel";
+import TocPanel from "./TocPanel";
 import {
   chapterIndex,
   type ChapterPayload,
@@ -26,6 +27,7 @@ export default function App() {
   const [restoreFraction, setRestoreFraction] = useState(0);
   const [fonts, setFonts] = useState<FontSettings | null>(null);
   const [fontOpen, setFontOpen] = useState(false);
+  const [tocOpen, setTocOpen] = useState(false);
   const [settingsRev, setSettingsRev] = useState(0);
   const [publisherFonts, setPublisherFonts] = useState<PublisherFontReport | null>(
     null,
@@ -216,9 +218,11 @@ export default function App() {
         setChapterHtml("");
         setPublisherFonts(null);
         setUsedFonts(null);
+        setTocOpen(false);
       } catch (err) {
         setError(String(err));
         setBook(null);
+        setTocOpen(false);
       } finally {
         setBusy(false);
       }
@@ -267,8 +271,31 @@ export default function App() {
     [goChapter],
   );
 
+  const goToHref = useCallback(
+    (href: string) => {
+      const items = bookRef.current?.spine ?? [];
+      const i = chapterIndex(items, href);
+      if (i < 0) return;
+      if (i === indexRef.current) {
+        lastFraction.current = 0;
+        setRestoreFraction(0);
+        frameRef.current?.goToPage(0);
+        return;
+      }
+      flushProgress();
+      lastFraction.current = 0;
+      setRestoreFraction(0);
+      setIndex(i);
+    },
+    [flushProgress],
+  );
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setTocOpen(false);
+        return;
+      }
       if (e.key === "ArrowRight" || e.key === "PageDown") {
         e.preventDefault();
         goPage(1);
@@ -288,6 +315,14 @@ export default function App() {
         <div className="brand">IcedReader</div>
         <button type="button" className="btn" onClick={openEpub} disabled={busy}>
           {busy ? "打开中…" : "打开 EPUB"}
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={() => setTocOpen((openNow) => !openNow)}
+          disabled={!book}
+        >
+          目录
         </button>
         <button
           type="button"
@@ -354,32 +389,51 @@ export default function App() {
         <div className="banner">自定义字体未齐，当前仍按原书 CSS。</div>
       )}
 
-      <main className="stage">
-        {!book && (
-          <div className="empty">
-            <p>打开一本 EPUB，开始阅读。</p>
-            <p className="hint">进度按章节和页序保存，换窗口宽也能对上。</p>
-          </div>
-        )}
-        {book && chapterHtml && (
-          <div className="page">
-            <ChapterFrame
-              ref={frameRef}
-              html={chapterHtml}
-              restoreFraction={restoreFraction}
-              documentLang={book.metadata.language}
-              authorFamilies={specifiedFamiliesFromReport(
-                publisherFonts?.declarations.map((d) => d.value) ?? [],
-                publisherFonts?.faces ?? [],
-              )}
-              onProgress={queueProgress}
-              onUsedFonts={setUsedFonts}
-              onPageInfo={setPageInfo}
-              onNeedChapter={(delta) => goChapter(delta, delta < 0 ? 1 : 0)}
+      <div className="workspace">
+        {tocOpen && book && (
+          <>
+            <button
+              type="button"
+              className="toc-dim"
+              aria-label="关闭目录"
+              onClick={() => setTocOpen(false)}
             />
-          </div>
+            <TocPanel
+              toc={book.toc}
+              spine={spine}
+              currentIndex={index}
+              onSelect={goToHref}
+              onClose={() => setTocOpen(false)}
+            />
+          </>
         )}
-      </main>
+        <main className="stage">
+          {!book && (
+            <div className="empty">
+              <p>打开一本 EPUB，开始阅读。</p>
+              <p className="hint">进度按章节和页序保存，换窗口宽也能对上。</p>
+            </div>
+          )}
+          {book && chapterHtml && (
+            <div className="page">
+              <ChapterFrame
+                ref={frameRef}
+                html={chapterHtml}
+                restoreFraction={restoreFraction}
+                documentLang={book.metadata.language}
+                authorFamilies={specifiedFamiliesFromReport(
+                  publisherFonts?.declarations.map((d) => d.value) ?? [],
+                  publisherFonts?.faces ?? [],
+                )}
+                onProgress={queueProgress}
+                onUsedFonts={setUsedFonts}
+                onPageInfo={setPageInfo}
+                onNeedChapter={(delta) => goChapter(delta, delta < 0 ? 1 : 0)}
+              />
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

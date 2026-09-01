@@ -25,6 +25,7 @@ export type PageInfo = {
 
 export type ChapterFrameHandle = {
   goPage: (delta: number) => "ok" | "before" | "after";
+  goToPage: (page: number) => void;
 };
 
 type Props = {
@@ -181,7 +182,14 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     return "ok";
   };
 
-  useImperativeHandle(ref, () => ({ goPage }), []);
+  useImperativeHandle(
+    ref,
+    () => ({
+      goPage,
+      goToPage: (page: number) => applyPage(page, true),
+    }),
+    [],
+  );
 
   useEffect(() => {
     fractionRef.current = restoreFraction;
