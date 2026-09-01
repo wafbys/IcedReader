@@ -5,9 +5,30 @@ type Props = {
   html: string;
   restoreFraction: number;
   authorFamilies: string[];
+  documentLang?: string | null;
   onProgress: (fraction: number) => void;
   onUsedFonts: (report: UsedFontReport) => void;
 };
+
+function usableLang(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const t = value.trim();
+  if (!t || /^und$/i.test(t) || /^zxx$/i.test(t)) return null;
+  if (!/^[\w-]+$/.test(t)) return null;
+  return t;
+}
+
+/** HTML parsers ignore xml:lang; Blink uses `lang` for generic serif/sans CJK. */
+export function ensureHtmlLang(html: string, bookLang?: string | null): string {
+  if (/\slang\s*=/i.test(html)) return html;
+  const xml = html.match(/\sxml:lang\s*=\s*["']([^"']+)["']/i);
+  const lang = usableLang(xml?.[1]) ?? usableLang(bookLang);
+  if (!lang) return html;
+  if (/<html\b/i.test(html)) {
+    return html.replace(/<html\b/i, `<html lang="${lang}"`);
+  }
+  return html;
+}
 
 function scrollingRoot(doc: Document): Element {
   return doc.scrollingElement ?? doc.documentElement;
@@ -30,6 +51,7 @@ export default function ChapterFrame({
   html,
   restoreFraction,
   authorFamilies,
+  documentLang,
   onProgress,
   onUsedFonts,
 }: Props) {
@@ -53,7 +75,7 @@ export default function ChapterFrame({
       id="iced-chapter"
       className="chapter"
       title="chapter"
-      srcDoc={html}
+      srcDoc={ensureHtmlLang(html, documentLang)}
       sandbox="allow-same-origin allow-popups-to-escape-sandbox"
       onLoad={() => {
         const doc = ref.current?.contentDocument;

@@ -72,6 +72,8 @@ export type UsedFontEntry = {
   glyphCount: number;
   source: UsedFontSource;
   sample: string;
+  /** CSS generic that resolved to this face, e.g. `serif`. */
+  via?: string;
 };
 
 export type UsedFontReport = {
@@ -243,14 +245,18 @@ export function collectUsedFonts(
   const missingSpecified = author.filter((family) => !fontInstalled(family));
   const missHan = probe([MISSING], "年");
   const missLatin = probe([MISSING], "A");
-  const cjkFallback =
-    closestInstalled(CJK_FONTS, missHan, "年", fontInstalled, probe) ?? "（系统 CJK 默认）";
-  const latinFallback =
-    closestInstalled(LATIN_FONTS, missLatin, "A", fontInstalled, probe) ?? "（系统西文默认）";
+  const cjkFallback = displayName(
+    closestInstalled(CJK_FONTS, missHan, "年", fontInstalled, probe) ??
+      "（系统 CJK 默认）",
+  );
+  const latinFallback = displayName(
+    closestInstalled(LATIN_FONTS, missLatin, "A", fontInstalled, probe) ??
+      "（系统西文默认）",
+  );
 
   const tallies = new Map<
     string,
-    { count: number; source: UsedFontSource; first: string }
+    { count: number; source: UsedFontSource; first: string; via?: string }
   >();
 
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -267,29 +273,41 @@ export function collectUsedFonts(
       if (isIgnorable(ch)) continue;
       const script = scriptOf(ch);
       const actual = fingerprint(ctx, fpCache, actualFont, ch);
-      let used: { family: string; source: UsedFontSource } | undefined;
+      let used:
+        | { family: string; source: UsedFontSource; via?: string }
+        | undefined;
       for (const family of stack) {
-        if (isGeneric(family) || !fontInstalled(family) || !coversScript(family, script)) {
+        if (isGeneric(family)) {
+          if (sameGlyph(actual, probe([family], ch))) {
+            used = {
+              family: `（系统 ${family}）`,
+              source: "generic",
+            };
+            break;
+          }
           continue;
         }
+        if (!fontInstalled(family)) continue;
+        const hanLike = isHanLike(script);
+        const coverCh = hanLike ? "年" : "A";
+        const miss = hanLike ? missHan : missLatin;
+        const fallbackName = hanLike ? cjkFallback : latinFallback;
+        const paintsOwn = !sameGlyph(probe([family], coverCh), miss);
+        const isFallbackFace =
+          family.toLowerCase() === fallbackName.toLowerCase();
+        if (!paintsOwn && !isFallbackFace) continue;
         if (sameGlyph(actual, probe([family], ch))) {
-          used = { family, source: "specified" };
+          used = { family: displayName(family), source: "specified" };
           break;
         }
       }
       if (!used) {
-        const han =
-          script === "han" ||
-          script === "cjk-punct" ||
-          script === "kana" ||
-          script === "hangul" ||
-          script === "bopomofo";
         used = {
-          family: han ? cjkFallback : latinFallback,
+          family: isHanLike(script) ? cjkFallback : latinFallback,
           source: "fallback",
         };
       }
-      addTally(tallies, used.family, used.source, ch);
+      addTally(tallies, used.family, used.source, ch, used.via);
     }
   }
 
@@ -299,6 +317,7 @@ export function collectUsedFonts(
       glyphCount: v.count,
       source: v.source,
       sample: v.first,
+      via: v.via,
     }))
     .sort((a, b) => b.glyphCount - a.glyphCount);
 
@@ -309,24 +328,65 @@ export function collectUsedFonts(
 }
 
 function addTally(
-  tallies: Map<string, { count: number; source: UsedFontSource; first: string }>,
+  tallies: Map<
+    string,
+    { count: number; source: UsedFontSource; first: string; via?: string }
+  >,
   family: string,
   source: UsedFontSource,
   ch: string,
+  via?: string,
 ) {
   let row = tallies.get(family);
   if (!row) {
-    row = { count: 0, source, first: "" };
+    row = { count: 0, source, first: "", via };
     tallies.set(family, row);
   }
   row.count += 1;
-  if (sourceRank(source) < sourceRank(row.source)) row.source = source;
+  if (sourceRank(source) < sourceRank(row.source)) {
+    row.source = source;
+    if (via) row.via = via;
+  }
+  if (!row.via && via) row.via = via;
   if ([...row.first].length < FIRST_CHARS) row.first += ch;
+}
+
+function isHanLike(script: string): boolean {
+  return (
+    script === "han" ||
+    script === "cjk-punct" ||
+    script === "kana" ||
+    script === "hangul" ||
+    script === "bopomofo"
+  );
+}
+
+function displayName(family: string): string {
+  switch (family.toLowerCase()) {
+    case "simsun":
+    case "nsimsun":
+      return "宋体";
+    case "microsoft yahei":
+    case "microsoft yahei ui":
+      return "微软雅黑";
+    case "microsoft jhenghei":
+      return "微软正黑体";
+    case "kaiti":
+      return "楷体";
+    case "fangsong":
+      return "仿宋";
+    case "simhei":
+      return "黑体";
+    case "dengxian":
+      return "等线";
+    default:
+      return family;
+  }
 }
 
 function sourceRank(s: UsedFontSource): number {
   if (s === "specified") return 0;
-  if (s === "fallback") return 1;
+  if (s === "generic") return 1;
   return 2;
 }
 
@@ -334,6 +394,7 @@ function familiesFromDocument(doc: Document): string[] {
   const out: string[] = [];
   try {
     doc.fonts?.forEach((face) => {
+      if (face.status && face.status !== "loaded") return;
       if (face.family) out.push(face.family.replace(/^["']|["']$/g, ""));
     });
   } catch {
@@ -362,22 +423,6 @@ function isGeneric(family: string): boolean {
 
 function isCssWide(family: string): boolean {
   return /^(inherit|initial|unset|revert|revert-layer)$/i.test(family.trim());
-}
-
-function coversScript(family: string, script: string): boolean {
-  const n = family.toLowerCase();
-  const cjk =
-    /icedreader|yahei|jhenghei|simsun|nsimsun|simhei|kaiti|fangsong|dengxian|mingliu|pmingliu|pingfang|stheiti|stsong|stkaiti|source han|noto.*(cjk|sc|tc)|hiragino|songti|heiti|kaiti|fangzheng|^fz[a-z]|华文|思源|黑体|宋体|楷体|微软/.test(
-      n,
-    );
-  if (script === "han" || script === "cjk-punct" || script === "bopomofo") return cjk;
-  if (script === "kana") {
-    return cjk || /yu gothic|meiryo|ms gothic|ms mincho|hiragino|noto.*jp/.test(n);
-  }
-  if (script === "hangul") {
-    return cjk || /malgun|gulim|dotum|batang|noto.*kr/.test(n);
-  }
-  return true;
 }
 
 function quoteFamily(family: string): string {

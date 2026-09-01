@@ -58,6 +58,7 @@ export type UsedFontEntry = {
   glyphCount: number;
   source: UsedFontSource;
   sample: string;
+  via?: string;
 };
 
 export type UsedFontReport = {
@@ -69,6 +70,7 @@ export type UsedFontReport = {
 export type PublisherFontReport = {
   declarations: PublisherFontDecl[];
   faces: string[];
+  unloadableFaces?: string[];
   truncated: boolean;
 };
 

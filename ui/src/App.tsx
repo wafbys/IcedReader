@@ -333,6 +333,7 @@ export default function App() {
             <ChapterFrame
               html={chapterHtml}
               restoreFraction={restoreFraction}
+              documentLang={book.metadata.language}
               authorFamilies={specifiedFamiliesFromReport(
                 publisherFonts?.declarations.map((d) => d.value) ?? [],
                 publisherFonts?.faces ?? [],

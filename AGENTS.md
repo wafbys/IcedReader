@@ -44,18 +44,28 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars。不要用 `--of
 ## Tauri 命令
 
 - `open_book` / `close_book` / `pending_book`
-- `get_chapter`（返回 `{ html, publisherFonts }`，`publisherFonts` 是本章原书 CSS 的 font-family 原文）/ `resource_origin`
+- `get_chapter`（返回 `{ html, publisherFonts }`。`publisherFonts`：本章原书 CSS 的 font-family 原文、`@font-face` 名、以及 `src` 不在书内的 `unloadableFaces`）/ `resource_origin`
 - `save_progress`
 - `get_font_settings` / `set_use_original_fonts` / `install_font` / `clear_font`
 - `get_platform_fonts`（Windows：Chromium `CSS.getPlatformFontsForNode`，章节 iframe 里真正绘制用的字体）
 
 协议：`src-tauri/src/protocol.rs`，scheme `icedreader`。Windows 上实际请求是 `http://icedreader.localhost/...`。
 
+## EPUB 章节
+
+- **目录锚点当章。** 不少中文 EPUB 把多章放进同一 XHTML，NCX/`nav` 用 `#id`。TOC 带 fragment、或 TOC 条目明显多于 OPF spine 时，阅读列表用摊平后的 TOC（href 保留 `#`），`chapter_html` 按锚点切到下一 TOC 锚点。正规「一章一个文件」仍走 OPF spine。
+- **路径改写要能过破烂 HTML。** rbook 按 XML 改写；未闭合 `<img>` 等会失败。失败后用宽松改写相对 `src`/`href`，不要为此给章节开脚本。
+- **`lang`。** HTML 解析不认 `xml:lang`。章节 `srcDoc` 在没有 `lang` 时从 `xml:lang` 或书的 `dc:language` 补上（跳过 `und`），好让引擎按中文映射泛型 serif。不要为此注入阅读皮肤 CSS。
+
 ## 改 UI 时
 
 - 阅读区铺满顶栏以下的客户区。书籍栏宽居中用壳层 `.page`（iframe 外层），不要往章节 HTML 里注入 `max-width` / `margin: auto`。
-- 字体面板要列出**本章原书 CSS 如何写 font-family**（含 serif/sans-serif/monospace 泛型、选择器、@font-face 名）。这是声明，不是系统实际选用的文件。在注入自定义字体之前从原 HTML/CSS 抽取。
-- 字体面板还要列出**本章实际渲染字体**：不要用 canvas 在一堆系统字体里逐字选最近的（会把未安装的 KaiTi 算进去）。先认本机是否真有该字体（西文字宽），再认系统 CJK 回退：谁画「年」和缺失字体一样、且西文能装上，就是雅黑这类回退。原书指定未安装的只列 CSS 里的名字。
+- 字体面板要列出**本章原书 CSS 如何写 font-family**（含 serif/sans-serif/monospace 泛型、选择器、@font-face 名）。这是声明，不是系统最终选用的文件。在注入自定义字体之前从原 HTML/CSS 抽取。`@font-face` 的 `src` 若不是书内文件（如索尼 `res://`），标「书内无字体文件」，不要假装能加载。
+- 字体面板还要列出**本章实际渲染字体**：
+  - 不要用 canvas 在一堆系统字体里给泛型或未安装名「选最近的」（会把 serif 汉字标成雅黑、把未安装的 KaiTi 算进去）。
+  - 命名字体：先认本机是否真有（西文字宽，或 `document.fonts` 且 `status === loaded`）。没装上的只列 CSS 里的名字（指定未安装）。
+  - 栈里的 **CSS 泛型**（`serif` / `sans-serif` / `monospace` 等）实际生效时，显示 `（系统 serif）` 这类标签，来源为「泛型」。不要再猜宋体或雅黑。
+  - 栈里既没有可用命名字体、也没有泛型时，才标缺字回退（`（系统 CJK 默认）` 或对上的已装 CJK 名）。
 - 界面文案默认中文。
 - 提交信息用中文，说明做了什么、为什么。
 
@@ -68,4 +78,4 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars。不要用 `--of
 
 ## 验证
 
-改阅读功能时：打开 `fixtures/sample.epub`，确认第一章中文、下一章、关开后进度还在。改布局时确认顶栏以下没有空白条。改字体时：默认仍是原书 CSS；只传部分字体并关掉「使用原书字体」时正文不变；四槽都齐才覆盖，CJK 字走中文/CJK 槽。可用 `五千年掌故.epub` 核对：指定 PingFang SC / FZFangSong-Z02，Windows 上通常未安装，实际渲染应显示回退字体。没有桌面窗口时至少跑 `cargo test -p iced-reader-core` 和 `cargo test -p iced-reader-epub`。
+改阅读功能时：打开 `fixtures/sample.epub`，确认第一章中文、下一章、关开后进度还在。改布局时确认顶栏以下没有空白条。改字体时：默认仍是原书 CSS；只传部分字体并关掉「使用原书字体」时正文不变；四槽都齐才覆盖，CJK 字走中文/CJK 槽。可用仓库旁未提交的样书核对（不要 git add）：`五千年掌故.epub` 指定 PingFang SC / FZFangSong-Z02，Windows 上通常未安装；`新西游记++共两册.epub` 指定 `cnepub, serif` 但 `@font-face` 是设备 `res://`，实际渲染应为 `（系统 serif）`，并标 cnepub 书内无字体文件。没有桌面窗口时至少跑 `cargo test -p iced-reader-core` 和 `cargo test -p iced-reader-epub`。

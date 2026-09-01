@@ -23,6 +23,10 @@ pub struct PublisherFontDecl {
 pub struct PublisherFontReport {
     pub declarations: Vec<PublisherFontDecl>,
     pub faces: Vec<String>,
+    /// `@font-face` names whose `src` is not a file inside the EPUB
+    /// (Sony `res://`, remote URL, `local()` only, etc.).
+    #[serde(default)]
+    pub unloadable_faces: Vec<String>,
     pub truncated: bool,
 }
 
@@ -42,6 +46,7 @@ pub fn collect_publisher_fonts(
     let mut ctx = CollectCtx {
         declarations: Vec::new(),
         faces: Vec::new(),
+        unloadable_faces: Vec::new(),
         seen_files: HashSet::new(),
         seen_decl: HashSet::new(),
         truncated: false,
@@ -52,6 +57,7 @@ pub fn collect_publisher_fonts(
     PublisherFontReport {
         declarations: ctx.declarations,
         faces: ctx.faces,
+        unloadable_faces: ctx.unloadable_faces,
         truncated: ctx.truncated,
     }
 }
@@ -59,6 +65,7 @@ pub fn collect_publisher_fonts(
 struct CollectCtx {
     declarations: Vec<PublisherFontDecl>,
     faces: Vec<String>,
+    unloadable_faces: Vec<String>,
     seen_files: HashSet<String>,
     seen_decl: HashSet<String>,
     truncated: bool,
@@ -126,7 +133,9 @@ fn collect_link_stylesheets(
         let attrs = parse_attrs(tag);
         let rel_v = attr(&attrs, "rel").map(|s| s.to_ascii_lowercase());
         let type_v = attr(&attrs, "type").map(|s| s.to_ascii_lowercase());
-        let is_css = rel_v.as_deref().is_some_and(|r| r.split_whitespace().any(|p| p == "stylesheet"))
+        let is_css = rel_v
+            .as_deref()
+            .is_some_and(|r| r.split_whitespace().any(|p| p == "stylesheet"))
             || type_v.as_deref() == Some("text/css");
         if is_css {
             if let Some(href) = attr(&attrs, "href") {
@@ -171,15 +180,7 @@ fn collect_style_elements(
             break;
         };
         let inner = strip_html_comment_wrappers(&html[gt + 1..close_at]);
-        ingest_css(
-            &inner,
-            "本章 <style>",
-            chapter_key,
-            load,
-            ctx,
-            0,
-            "",
-        );
+        ingest_css(&inner, "本章 <style>", chapter_key, load, ctx, 0, "");
         search = close_at + 8;
     }
 }
@@ -304,7 +305,11 @@ fn ingest_css(
             let sel = with_media(media, &compact_ws(selector));
             take_props_from_block(body, &sel, source, ctx);
         }
-        Statement::At { name, prelude, block } => {
+        Statement::At {
+            name,
+            prelude,
+            block,
+        } => {
             let name_l = name.to_ascii_lowercase();
             if name_l == "import" {
                 if let Some(url) = parse_import_target(prelude) {
@@ -313,7 +318,11 @@ fn ingest_css(
             } else if name_l == "font-face" {
                 if let Some(block) = block {
                     if let Some(family) = prop_value(block, "font-family") {
-                        push_face(ctx, &strip_quotes(family.trim()));
+                        let name = strip_quotes(family.trim());
+                        push_face(ctx, &name);
+                        if !font_src_in_book(block) {
+                            push_unloadable(ctx, &name);
+                        }
                     }
                 }
             } else if matches!(name_l.as_str(), "media" | "supports" | "layer") {
@@ -381,6 +390,78 @@ fn push_face(ctx: &mut CollectCtx, family: &str) {
         return;
     }
     ctx.faces.push(family.to_string());
+}
+
+fn push_unloadable(ctx: &mut CollectCtx, family: &str) {
+    if family.is_empty() {
+        return;
+    }
+    if ctx.unloadable_faces.iter().any(|f| f == family) {
+        return;
+    }
+    ctx.unloadable_faces.push(family.to_string());
+}
+
+fn font_src_in_book(block: &str) -> bool {
+    let Some(src) = prop_value(block, "src") else {
+        return false;
+    };
+    parse_css_urls(src).iter().any(|url| url_is_book_font(url))
+}
+
+fn parse_css_urls(value: &str) -> Vec<String> {
+    let lower = value.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut search = 0;
+    while let Some(rel) = lower[search..].find("url(") {
+        let start = search + rel + 4;
+        let slice = value[start..].trim_start();
+        let skipped = value[start..].len() - slice.len();
+        let inner_start = start + skipped;
+        if slice.starts_with('"') || slice.starts_with('\'') {
+            let end = skip_string(value.as_bytes(), inner_start);
+            if end > inner_start + 1 {
+                out.push(strip_quotes(&value[inner_start..end]));
+            }
+            search = end;
+        } else {
+            let end = slice
+                .find(')')
+                .map(|i| inner_start + i)
+                .unwrap_or(value.len());
+            out.push(value[inner_start..end].trim().to_string());
+            search = end.min(value.len());
+        }
+    }
+    out
+}
+
+fn url_is_book_font(url: &str) -> bool {
+    let url = url.trim();
+    if url.is_empty() {
+        return false;
+    }
+    let l = url.to_ascii_lowercase();
+    if l.starts_with("data:") {
+        return true;
+    }
+    if l.contains("icedreader.localhost") || l.starts_with("icedreader://localhost/") {
+        return true;
+    }
+    !has_url_scheme(url)
+}
+
+fn has_url_scheme(url: &str) -> bool {
+    let bytes = url.as_bytes();
+    let Some(colon) = bytes.iter().position(|&c| c == b':') else {
+        return false;
+    };
+    if colon == 0 || !bytes[0].is_ascii_alphabetic() {
+        return false;
+    }
+    bytes[1..colon]
+        .iter()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(*c, b'+' | b'.' | b'-'))
 }
 
 enum Statement<'a> {
@@ -728,7 +809,11 @@ fn is_external(href: &str) -> bool {
 }
 
 fn file_name(href: &str) -> String {
-    href.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(href).to_string()
+    href.rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(href)
+        .to_string()
 }
 
 fn with_media(media: &str, selector: &str) -> String {
@@ -793,7 +878,8 @@ fn parse_attrs(tag: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/' || bytes[i] == b'?')
+        while i < bytes.len()
+            && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/' || bytes[i] == b'?')
         {
             i += 1;
         }
@@ -831,7 +917,10 @@ fn parse_attrs(tag: &str) -> Vec<(String, String)> {
             strip_quotes(raw)
         } else {
             let start = i;
-            while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'/' && bytes[i] != b'>'
+            while i < bytes.len()
+                && !bytes[i].is_ascii_whitespace()
+                && bytes[i] != b'/'
+                && bytes[i] != b'>'
             {
                 i += 1;
             }
@@ -972,10 +1061,16 @@ mod tests {
         </style></head>
         <body><p style="font-family: sans-serif">x</p></body></html>"#;
         let r = report(html, &[]);
-        let values: Vec<_> = r.declarations.iter().map(|d| (d.selector.as_str(), d.value.as_str())).collect();
+        let values: Vec<_> = r
+            .declarations
+            .iter()
+            .map(|d| (d.selector.as_str(), d.value.as_str()))
+            .collect();
         assert!(values.contains(&("body", "serif")), "{values:?}");
         assert!(
-            values.iter().any(|(s, v)| *s == "h1" && v.contains("Source Han Serif SC") && v.contains("sans-serif")),
+            values.iter().any(|(s, v)| *s == "h1"
+                && v.contains("Source Han Serif SC")
+                && v.contains("sans-serif")),
             "{values:?}"
         );
         assert!(values.contains(&("code", "monospace")), "{values:?}");
@@ -1001,12 +1096,48 @@ body { font-family: "MyEmb", serif; }"#,
         );
         assert!(r.faces.iter().any(|f| f == "MyEmb"), "{:?}", r.faces);
         assert!(
-            r.declarations.iter().any(|d| d.selector == "body" && d.value.contains("MyEmb") && d.value.contains("serif")),
+            r.declarations.iter().any(|d| d.selector == "body"
+                && d.value.contains("MyEmb")
+                && d.value.contains("serif")),
             "{:?}",
             r.declarations
         );
         assert!(
-            r.declarations.iter().any(|d| d.selector == "h2" && d.value == "sans-serif"),
+            r.declarations
+                .iter()
+                .any(|d| d.selector == "h2" && d.value == "sans-serif"),
+            "{:?}",
+            r.declarations
+        );
+        assert!(r.unloadable_faces.is_empty(), "{:?}", r.unloadable_faces);
+    }
+
+    #[test]
+    fn sony_res_font_face_is_unloadable() {
+        let html = r#"<html><head>
+            <link rel="stylesheet" href="http://icedreader.localhost/book/test/OPS/css/main.css"/>
+        </head><body></body></html>"#;
+        let r = report(
+            html,
+            &[(
+                "OPS/css/main.css",
+                r#"@font-face {
+font-family:"cnepub";
+src:url(res:///opt/sony/ebook/FONT/tt0011m_.ttf), url(res:///tt0011m_.ttf);
+}
+body { font-family:"cnepub", serif; }"#,
+            )],
+        );
+        assert!(r.faces.iter().any(|f| f == "cnepub"), "{:?}", r.faces);
+        assert!(
+            r.unloadable_faces.iter().any(|f| f == "cnepub"),
+            "{:?}",
+            r.unloadable_faces
+        );
+        assert!(
+            r.declarations
+                .iter()
+                .any(|d| d.selector == "body" && d.value.contains("cnepub")),
             "{:?}",
             r.declarations
         );
@@ -1021,7 +1152,9 @@ body { font-family: "MyEmb", serif; }"#,
         let r = report(html, &[]);
         assert!(r.declarations.iter().all(|d| !d.value.contains("fantasy")));
         assert!(
-            r.declarations.iter().any(|d| d.selector.contains("@media") && d.selector.contains("p") && d.value == "serif"),
+            r.declarations.iter().any(|d| d.selector.contains("@media")
+                && d.selector.contains("p")
+                && d.value == "serif"),
             "{:?}",
             r.declarations
         );

@@ -46,7 +46,10 @@ export default function FontPanel({
           <span className="font-ok">正在使用自定义字体</span>
         )}
       </div>
-      <UsedSpec report={usedFonts} />
+      <UsedSpec
+        report={usedFonts}
+        unloadable={publisherFonts?.unloadableFaces ?? []}
+      />
       <PublisherSpec report={publisherFonts} />
       {showWait && (
         <p className="font-warn">
@@ -95,7 +98,13 @@ function usedLabel(source: UsedFontReport["fonts"][number]["source"]): string {
   return "回退";
 }
 
-function UsedSpec({ report }: { report: UsedFontReport | null }) {
+function UsedSpec({
+  report,
+  unloadable,
+}: {
+  report: UsedFontReport | null;
+  unloadable: string[];
+}) {
   return (
     <div className="font-spec">
       <div className="font-spec-title">本章实际渲染</div>
@@ -116,6 +125,7 @@ function UsedSpec({ report }: { report: UsedFontReport | null }) {
               </code>
               <span className="font-spec-src">
                 {row.glyphCount} 字 · {usedLabel(row.source)}
+                {row.via && !row.family.includes(row.via) ? ` ${row.via}` : ""}
               </span>
             </li>
           ))}
@@ -124,7 +134,15 @@ function UsedSpec({ report }: { report: UsedFontReport | null }) {
       {report?.error && <p className="font-warn">{report.error}</p>}
       {report && report.missingSpecified.length > 0 && (
         <p className="font-spec-empty">
-          指定未安装：{report.missingSpecified.join("、")}
+          指定未安装：
+          {report.missingSpecified
+            .map((name) =>
+              unloadable.some((u) => u.toLowerCase() === name.toLowerCase())
+                ? `${name}（书内无字体文件）`
+                : name,
+            )
+            .join("、")}
+          。正文按系统回退字体绘制。
         </p>
       )}
     </div>
@@ -141,6 +159,9 @@ function PublisherSpec({ report }: { report: PublisherFontReport | null }) {
     );
   }
   const empty = report.declarations.length === 0 && report.faces.length === 0;
+  const unloadable = new Set(
+    (report.unloadableFaces ?? []).map((f) => f.toLowerCase()),
+  );
   return (
     <div className="font-spec">
       <div className="font-spec-title">本章原书指定</div>
@@ -164,7 +185,14 @@ function PublisherSpec({ report }: { report: PublisherFontReport | null }) {
       )}
       {report.faces.length > 0 && (
         <p className="font-spec-faces">
-          书中 @font-face：{report.faces.join("、")}
+          书中 @font-face：
+          {report.faces
+            .map((face) =>
+              unloadable.has(face.toLowerCase())
+                ? `${face}（书内无字体文件）`
+                : face,
+            )
+            .join("、")}
         </p>
       )}
       {report.truncated && (
