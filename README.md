@@ -82,13 +82,22 @@ data/
 npm run tauri -- build
 ```
 
+编完后必须再拷一份**独立文件**（不要改名硬链接），供分发和 Everything 检索：
+
+```powershell
+Copy-Item target\release\iced-reader.exe target\release\IcedReader-0.1.0-windows-x64.exe
+```
+
+文件名：`IcedReader-{version}-windows-x64.exe`，版本号与 `src-tauri/tauri.conf.json` 的 `version` 一致。
+
 | 产物 | 路径 |
 | --- | --- |
-| 绿色 exe | `target/release/iced-reader.exe` |
-| NSIS 安装包 | `target/release/bundle/nsis/IcedReader_0.1.0_x64-setup.exe` |
-| MSI | `target/release/bundle/msi/IcedReader_0.1.0_x64_en-US.msi` |
+| 分发用绿色 exe | `target/release/IcedReader-{version}-windows-x64.exe` |
+| Cargo 原始 exe | `target/release/iced-reader.exe`（可留给工具链，不要当发布文件） |
+| NSIS 安装包 | `target/release/bundle/nsis/` |
+| MSI | `target/release/bundle/msi/` |
 
-分发请用 exe：拷到任意可写目录再运行，同级生成 `data/`。不要装进 Program Files，否则可能写不进 `data/`。系统仍需 WebView2（Win11 自带）。
+GitHub Release 上传那份 `IcedReader-…-windows-x64.exe`。拷到任意可写目录再运行，同级生成 `data/`。不要装进 Program Files，否则可能写不进 `data/`。系统仍需 WebView2（Win11 自带）。
 
 ## 测试
 

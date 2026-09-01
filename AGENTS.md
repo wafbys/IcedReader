@@ -40,7 +40,7 @@ npm run tauri -- build
 
 自动打开样书：`$env:ICED_READER_OPEN = "$PWD\fixtures\sample.epub"`。
 
-Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前同样要载入，产物是 `target/release/iced-reader.exe`（绿色版）。安装包会进 `target/release/bundle/`，不要当主分发方式。不要用 `--offline` 除非依赖已经在本地。
+Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前同样要载入。用户说 build release 时：`npm run tauri -- build`，再用 `Copy-Item` 拷一份独立文件（禁止 Rename-Item / 硬链接）到 `target/release/IcedReader-{version}-windows-x64.exe`，`{version}` 取 `src-tauri/tauri.conf.json` 的 `version`。告诉用户这份路径；GitHub Release 上传它。不要把 `iced-reader.exe` 或 `deps/iced_reader.exe` 当发布文件。安装包会进 `target/release/bundle/`，不要当主分发方式。不要用 `--offline` 除非依赖已经在本地。
 
 ## Tauri 命令
 
