@@ -13,7 +13,7 @@ Windows 优先的桌面电子书阅读器。产品名沿用 IcedReader，技术�
 - 全屏：顶栏「全屏」或 F11；Esc 退出。全屏时顶栏收起，鼠标移到顶部再出现
 - 记住进度：章节 href（可含 `#锚点`）+ 章内滚动比例（0～1），不存像素位置
 - **绿色软件：** 打开的书会复制进程序目录下的 `data/library/`，进度、字体和 WebView 数据也在 `data/`。把整个文件夹拷走即带走书和状态。
-- 字体：默认「使用原书字体」。关掉且衬线 / 无衬线 / 等宽 / 中文·CJK 四个文件都上传后，才强制用自定义字体（CJK 码位走中文/CJK 槽）。缺任何一个则仍按原书 CSS。**每槽一个文件**（Regular 或 Book 均可；不必上传 Italic / Bold / SemiBold）。覆盖开启后，书中的斜体和粗体由引擎合成，没有单独的斜体/粗体槽。字体面板分两栏：原书 CSS 怎么写（含 `@font-face`；`src` 不在书内会标明），以及本章实际绘制。命名字体没装上只列 CSS 名；走 `serif` 等泛型时显示「（系统 serif）」，不把汉字猜成雅黑或宋体。
+- 字体：默认「使用原书字体」。关掉且衬线 / 无衬线 / 等宽 / 中文·CJK 四个文件都上传后，才强制用自定义字体（CJK 码位走中文/CJK 槽）。缺任何一个则仍按原书 CSS。**每槽一个文件**（Regular 或 Book 均可；不必上传 Italic / Bold / SemiBold）。覆盖开启后，书中的斜体和粗体由引擎合成，没有单独的斜体/粗体槽。请在字体面板上传；只把文件丢进 `data/fonts/` 不会生效（槽位要登记在 `settings.json`）。字体面板分两栏：原书 CSS 怎么写（含 `@font-face`；`src` 不在书内会标明），以及本章实际绘制。命名字体没装上只列 CSS 名；走 `serif` 等泛型时显示「（系统 serif）」，不把汉字猜成雅黑或宋体。
 
 样书：`fixtures/sample.epub`。
 
@@ -60,21 +60,35 @@ $env:ICED_READER_OPEN = "$PWD\fixtures\sample.epub"
 .\scripts\dev.ps1
 ```
 
-便携数据（相对 `IcedReader.exe` 所在目录）：
+便携数据（相对 exe 所在目录）：
 
 ```
-IcedReader.exe
+iced-reader.exe
 data/
   library/          导入的书
-  fonts/            用户上传的 serif/sans/mono/CJK 字体
-  settings.json     阅读设置（含「使用原书字体」）
+  fonts/            字体面板写入的 serif/sans/mono/cjk 文件
+  settings.json     阅读设置（含「使用原书字体」和各槽登记）
   progress.json     阅读进度
   webview/          WebView2 用户数据
 ```
 
 开发时 exe 在 `target/debug/`，因此 `data/` 会出现在那里（已被 git 忽略）。
 
-发布请分发「exe + 同级可写目录」，不要装进 Program Files，否则可能写不进 `data/`。系统仍需 WebView2（Win11 自带）。
+## 发布
+
+先载入 MSVC（与 `scripts/dev.ps1` 相同，或在「x64 Native Tools」终端里）：
+
+```powershell
+npm run tauri -- build
+```
+
+| 产物 | 路径 |
+| --- | --- |
+| 绿色 exe | `target/release/iced-reader.exe` |
+| NSIS 安装包 | `target/release/bundle/nsis/IcedReader_0.1.0_x64-setup.exe` |
+| MSI | `target/release/bundle/msi/IcedReader_0.1.0_x64_en-US.msi` |
+
+分发请用 exe：拷到任意可写目录再运行，同级生成 `data/`。不要装进 Program Files，否则可能写不进 `data/`。系统仍需 WebView2（Win11 自带）。
 
 ## 测试
 
