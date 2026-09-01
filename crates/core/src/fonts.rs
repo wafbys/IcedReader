@@ -1,8 +1,9 @@
 //! Custom fonts: CJK overlay, CSS rewrite, and `@font-face` injection.
 //!
 //! Applied only when the caller decides custom fonts are active (all four
-//! slots present and 「使用原书字体」 is off). This crate does not inject
-//! reader chrome.
+//! slots present and 「使用原书字体」 is off). One file per slot; faces have
+//! no `font-weight` / `font-style` variants (engine synthesizes bold/italic).
+//! This crate does not inject reader chrome.
 
 use crate::settings::FontSlot;
 

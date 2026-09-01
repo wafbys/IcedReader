@@ -19,7 +19,7 @@ IcedReader 是桌面电子书阅读器。名字不是 Iced GUI。当前实现：
 
 ## 硬约束
 
-1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`），这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰**（颜色、字号、`max-width` 居中等）。允许两处例外：① 用户关掉「使用原书字体」且 serif / sans / mono / 中文·CJK 四个上传文件都在并能识别时，注入 `@font-face`（CJK 用 `unicode-range`）并改写 `font-family`；缺任一槽位则整段不注入。② 分页 flow：父页可写入带 `id="iced-reader-flow"` 的样式，只含高度、`column-*`、`overflow`、图 `max-width: 100%`。不要按书语言选日/韩字体，不要用系统字体。
+1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`），这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰**（颜色、字号、`max-width` 居中等）。允许两处例外：① 用户关掉「使用原书字体」且 serif / sans / mono / 中文·CJK 四个上传文件都在并能识别时，注入 `@font-face`（CJK 用 `unicode-range`）并改写 `font-family`；缺任一槽位则整段不注入。每槽一个文件，`@font-face` 不写 `font-weight` / `font-style` 变体；覆盖开启后粗斜体走引擎合成。不要扩成 Regular/Italic/Bold 四文件族，也不要按文件名约定去配对。② 分页 flow：父页可写入带 `id="iced-reader-flow"` 的样式，只含高度、`column-*`、`overflow`、图 `max-width: 100%`。不要按书语言选日/韩字体，不要用系统字体。
 2. **进度只存 `Locator`：`href` + `fraction`（0～1）+ 可选 `cfi`。** 禁止存像素 `scrollTop`。CFI 等分页再填，先留字段。
 3. **进度键：** 有 EPUB identifier 用 `id:...`；否则相对便携书库用 `lib:...`。禁止用会随目录搬家失效的绝对 `path:` 当主键（仅作没有书库目录时的回退）。实现见 `progress_key`。外部 EPUB 按文件名进书库，同名已存在则复用，不要每次打开复制成 `书名-2.epub`（没有 identifier 的书会因此丢进度）。`lib:书名-N.epub` 与 `lib:书名.epub` 视为同一本。
 4. **章节 iframe 不要开 `allow-scripts`。** 现在是 `allow-same-origin`，父页做分栏翻页并读页序。不要为了省事给 EPUB 开脚本。
@@ -76,7 +76,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars。不要用 `--of
 
 - 不要把解析逻辑搬进 JS（包括让 foliate-js 直接 unzip）。分页若接 foliate-js，也只让它排版，书仍由 Rust 打开。
 - 不要为了第一口去接 PDF/MOBI；接口预留即可。
-- 不要提交 `target/`、`node_modules/`、`ui/dist/`、`src-tauri/gen/`、`data/`、`fixtures/verify-*.png`。
+- 不要提交 `target/`、`node_modules/`、`ui/dist/`、`src-tauri/gen/`、`data/`、`fixtures/verify-*.png`、仓库根目录的本地 EPUB（`fixtures/sample.epub` 除外）。
 - 不要在文档或代码里写用户的密钥、本机绝对路径（样例用仓库相对路径）。
 
 ## 验证
