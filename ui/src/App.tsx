@@ -35,6 +35,13 @@ export default function App() {
   const [tocOpen, setTocOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [chromeOn, setChromeOn] = useState(false);
+  const fullscreenRef = useRef(false);
+  const tocOpenRef = useRef(false);
+  const fontOpenRef = useRef(false);
+  const hideChromeTimer = useRef<number | null>(null);
+  fullscreenRef.current = fullscreen;
+  tocOpenRef.current = tocOpen;
+  fontOpenRef.current = fontOpen;
   const [settingsRev, setSettingsRev] = useState(0);
   const [publisherFonts, setPublisherFonts] = useState<PublisherFontReport | null>(
     null,
@@ -93,11 +100,18 @@ export default function App() {
   );
 
   useEffect(() => {
-    const onUnload = () => flushProgress();
-    window.addEventListener("beforeunload", onUnload);
+    const onHide = () => flushProgress();
+    window.addEventListener("beforeunload", onHide);
+    window.addEventListener("pagehide", onHide);
+    const onVis = () => {
+      if (document.visibilityState === "hidden") onHide();
+    };
+    document.addEventListener("visibilitychange", onVis);
     return () => {
-      window.removeEventListener("beforeunload", onUnload);
-      flushProgress();
+      window.removeEventListener("beforeunload", onHide);
+      window.removeEventListener("pagehide", onHide);
+      document.removeEventListener("visibilitychange", onVis);
+      onHide();
     };
   }, [flushProgress]);
 
@@ -297,77 +311,88 @@ export default function App() {
     [flushProgress],
   );
 
+  const showChrome = useCallback(() => {
+    if (hideChromeTimer.current !== null) {
+      window.clearTimeout(hideChromeTimer.current);
+      hideChromeTimer.current = null;
+    }
+    setChromeOn(true);
+  }, []);
+
+  const scheduleHideChrome = useCallback(() => {
+    if (fontOpenRef.current || tocOpenRef.current) return;
+    if (hideChromeTimer.current !== null) {
+      window.clearTimeout(hideChromeTimer.current);
+    }
+    hideChromeTimer.current = window.setTimeout(() => {
+      setChromeOn(false);
+      hideChromeTimer.current = null;
+    }, 280);
+  }, []);
+
   const toggleFullscreen = useCallback(async () => {
     try {
       const next = await toggleAppFullscreen();
       setFullscreen(next);
       setChromeOn(false);
-    } catch (err) {
-      setError(String(err));
+    } catch {
+      const on = await isAppFullscreen().catch(() => fullscreenRef.current);
+      setFullscreen(on);
     }
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+    let unlisten: (() => void) | undefined;
     void isAppFullscreen()
       .then((on) => {
         if (!cancelled) setFullscreen(on);
       })
       .catch(() => undefined);
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) =>
+        getCurrentWindow().onResized(async () => {
+          try {
+            const on = await isAppFullscreen();
+            if (!cancelled) setFullscreen(on);
+          } catch {
+            /* ignore */
+          }
+        }),
+      )
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
+      unlisten?.();
     };
   }, []);
 
   useEffect(() => {
-    if (!fullscreen) {
-      setChromeOn(false);
-      return;
-    }
-    if (fontOpen || tocOpen) {
-      setChromeOn(true);
-      return;
-    }
-    let hide: number | null = null;
-    const onMove = (e: MouseEvent) => {
-      if (e.clientY <= 56) {
-        setChromeOn(true);
-        if (hide !== null) {
-          window.clearTimeout(hide);
-          hide = null;
-        }
-        return;
-      }
-      if (hide !== null) return;
-      hide = window.setTimeout(() => {
-        setChromeOn(false);
-        hide = null;
-      }, 700);
-    };
-    window.addEventListener("mousemove", onMove);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      if (hide !== null) window.clearTimeout(hide);
-    };
+    if (fullscreen && (fontOpen || tocOpen)) setChromeOn(true);
+    if (!fullscreen) setChromeOn(false);
   }, [fullscreen, fontOpen, tocOpen]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "F11") {
+      if (e.code === "F11" || e.key === "F11") {
         e.preventDefault();
+        e.stopImmediatePropagation();
         void toggleFullscreen();
         return;
       }
       if (e.key === "Escape") {
-        if (tocOpen) {
+        if (tocOpenRef.current) {
           setTocOpen(false);
           return;
         }
-        if (fullscreen) {
+        if (fullscreenRef.current) {
           e.preventDefault();
           void setAppFullscreen(false)
-            .then(() => setFullscreen(false))
-            .catch((err) => setError(String(err)));
+            .then((on) => setFullscreen(on))
+            .catch(() => setFullscreen(false));
           return;
         }
         return;
@@ -381,9 +406,9 @@ export default function App() {
         goPage(-1);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [goPage, toggleFullscreen, tocOpen, fullscreen]);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [goPage, toggleFullscreen]);
 
   return (
     <div
@@ -395,7 +420,17 @@ export default function App() {
         .filter(Boolean)
         .join(" ")}
     >
-      <header className="chrome">
+      {fullscreen && (
+        <div
+          className="chrome-hotzone"
+          onMouseEnter={showChrome}
+        />
+      )}
+      <header
+        className="chrome"
+        onMouseEnter={showChrome}
+        onMouseLeave={scheduleHideChrome}
+      >
         <div className="brand">IcedReader</div>
         <button type="button" className="btn" onClick={openEpub} disabled={busy}>
           {busy ? "打开中…" : "打开 EPUB"}

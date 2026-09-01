@@ -95,7 +95,11 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const gen = useRef(0);
   const fractionRef = useRef(restoreFraction);
-  fractionRef.current = restoreFraction;
+  const htmlRef = useRef(html);
+  if (htmlRef.current !== html) {
+    htmlRef.current = html;
+    fractionRef.current = restoreFraction;
+  }
   const layout = useRef<LayoutState>({
     doc: null,
     metrics: null,
@@ -123,8 +127,10 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     st.page = next;
     box.scrollLeft = scrollLeftForPage(next, st.metrics.stride);
     const fraction = fractionFromPageIndex(next, pages);
-    fractionRef.current = fraction;
-    if (announce) onProgressRef.current(fraction);
+    if (announce) {
+      fractionRef.current = fraction;
+      onProgressRef.current(fraction);
+    }
     onPageInfoRef.current({
       page: next,
       pages,

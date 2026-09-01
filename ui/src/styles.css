@@ -45,12 +45,25 @@ body {
   display: flex;
 }
 
+.shell.fullscreen .chrome-hotzone {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  z-index: 9;
+}
+
+.shell.fullscreen.chrome-on .chrome-hotzone {
+  pointer-events: none;
+}
+
 .shell.fullscreen > .chrome,
 .shell.fullscreen > .font-bar {
   position: absolute;
   left: 0;
   right: 0;
-  z-index: 8;
+  z-index: 10;
   transform: translateY(-110%);
   transition: transform 0.18s ease;
 }
