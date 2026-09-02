@@ -603,3 +603,51 @@ body {
   border: 0;
   background: #fff;
 }
+
+/* Floating highlight toolbar (parent-page DOM, viewport-fixed). */
+.hl-pop {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: #fffdf7;
+  border: 1px solid #e6dccb;
+  box-shadow: 0 4px 14px rgba(60, 40, 10, 0.18);
+  transform: translate(-50%, calc(-100% - 10px));
+}
+
+.hl-pop.below {
+  transform: translate(-50%, 12px);
+}
+
+.hl-pop .btn.small {
+  font-size: 13px;
+  padding: 2px 10px;
+}
+
+.hl-pop .btn.icon {
+  padding: 2px 6px;
+  line-height: 1.4;
+}
+
+.hl-pop .btn.danger {
+  color: #a03a20;
+  border-color: #e3b8ab;
+}
+
+.hl-pop .btn:disabled {
+  color: var(--muted);
+  border-color: var(--hairline);
+  cursor: default;
+}
+
+.hl-pop .hl-pop-hint {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 2px 4px;
+  white-space: nowrap;
+}
+

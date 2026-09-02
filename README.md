@@ -17,13 +17,14 @@ Windows 优先的桌面电子书阅读器。产品名沿用 IcedReader，技术�
 - **窗口：** 默认 1120×780，最小 800×520。关闭时记住位置、大小和是否最大化（`data/window.json`），下次打开还原；全屏不记住。顶栏固定 52px；窄窗口或长书名用省略号，不换行撑高。
 - **绿色软件：** 书、进度、字体、设置、WebView 数据都在 exe 同级 `data/`。开发跑 `target/debug/`，release 跑 `target/release/`，**两套 data 互不相通**。拷走整个程序目录即带走状态。不要装进 Program Files。
 - **字号：** 顶栏 A− / A+，80%–160%，步进 10%，默认 100%。记在 `settings.json`。只改分页注入的 `html` 字号百分比，不往章节里灌阅读皮肤。原书写死 `px` 的不一定跟着变。
+- **划线：** 选中正文文字，松手浮出「划线」，点后变浅黄。单击已划线文字浮出「删除划线」；双击划线里的词也能直接删。划线是**书外之物**：不改章节 DOM、不动版式，用 CSS Custom Highlight 在原文上着色，随字号/重排/翻页/重启保持贴在原句。锚定按章内文本节点序号（加原文摘录兜底），存 `data/annotations.json`，键与阅读进度同。与已有划线重叠的选区不允许新建（先删旧的）。
 - **字体：** 默认「使用原书字体」。关掉且衬线 / 无衬线 / 等宽 / 中文·CJK 四个文件都经**字体面板**上传后，才覆盖（CJK 码位走中文槽）。缺任一槽则仍按原书 CSS。每槽一个文件（Regular 或 Book 即可）。覆盖后斜体粗体由引擎合成。只把文件丢进 `data/fonts/` 不会生效。字体面板分两栏：原书 CSS 怎么写，以及本章实际绘制（泛型显示「（系统 serif）」，不猜宋体/雅黑）。
 
 样书：`fixtures/sample.epub`。
 
 ## 接着要做
 
-书签、章内搜索。分页已实现；`Locator.cfi` 仍预留，未填写。不做主题 / 暗色模式。
+书签、章内搜索。分页已实现；`Locator.cfi` 仍预留，未填写。划线（基础版：单色划线 + 点选删除）已完成，后续可加颜色多选、标注列表、笔记。不做主题 / 暗色模式。
 
 ## 技术栈
 
@@ -74,6 +75,7 @@ data/
   settings.json     阅读设置（含「使用原书字体」和各槽登记）
   window.json       窗口位置、大小、是否最大化
   progress.json     阅读进度
+  annotations.json  划线（键同进度键）
   webview/          WebView2 用户数据
 ```
 
@@ -119,7 +121,7 @@ npx tsc --noEmit
 crates/core           格式无关的书模型、进度
 crates/formats-epub   EPUB 适配器（rbook 不外泄到前端）
 src-tauri             Tauri 命令、自定义协议 icedreader://、书库扫描
-ui                    书架（`Library.tsx`）/ 阅读壳
+ui                    书架（`Library.tsx`）/ 阅读壳（划线逻辑在 `highlights.ts`）
 fixtures              样书
 scripts/dev.ps1       Windows 开发启动
 ```

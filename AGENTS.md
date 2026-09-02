@@ -20,11 +20,12 @@ IcedReader 是桌面电子书阅读器。名字不是 Iced GUI。当前实现：
 ## 硬约束
 
 1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`），这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰**（颜色、字号、`max-width` 居中等）。允许两处例外：① 用户关掉「使用原书字体」且 serif / sans / mono / 中文·CJK 四个上传文件都在并能识别时，注入 `@font-face`（CJK 用 `unicode-range`）并改写 `font-family`；缺任一槽位则整段不注入。每槽一个文件，磁盘名为 `serif` / `sans` / `mono` / `cjk` 加识别出的扩展名，是否启用看 `settings.json` 的登记，不要扫 `data/fonts/` 当导入。用户从字体面板上传；不要做成「往 fonts 文件夹丢文件即用」。`@font-face` 不写 `font-weight` / `font-style` 变体；覆盖开启后粗斜体走引擎合成。不要扩成 Regular/Italic/Bold 四文件族，也不要按文件名约定去配对。② 分页 flow：父页可写入带 `id="iced-reader-flow"` 的样式，只含高度、`column-*`、`overflow`、页边 `padding`、图 `max-width` / `max-height`、以及用户字号（`html { font-size: N% }`，N 为 80–160）。不要按书语言选日/韩字体，不要用系统字体。禁止黑色主题、禁止主题切换、禁止用 `prefers-color-scheme` 把壳或正文改成暗色。
+③ **用户划线高亮（用户主动标注，非皮肤）：** 允许父页在章节 doc 里注入带 `id="iced-reader-highlight-style"` 的样式，只含 `::highlight(iced-reader-highlight)` 的背景色与 `color: inherit`，并用 CSS Custom Highlight API 上色；**不改 DOM 结构、不插 `mark`、不影响版式与内容**。选区捕获、点中判定、注入、删除全部由父页脚本完成（章节 iframe 仍不开 `allow-scripts`）。划线锚定按章内全局文本节点序号 + 节点内偏移（加原文摘录兜底），存 `data/annotations.json`；划线不属于「正文排版”，高亮随文字流动，翻页、字号变化不丢。
 2. **进度只存 `Locator`：`href` + `fraction`（0～1）+ 可选 `cfi`。** 禁止存像素 `scrollTop`。CSS 分栏分页已有；`cfi` 仍留空，不要提前填假值。
 3. **进度键：** 有 EPUB identifier 用 `id:...`；否则相对便携书库用 `lib:...`。禁止用会随目录搬家失效的绝对 `path:` 当主键（仅作没有书库目录时的回退）。实现见 `progress_key`。外部 EPUB 按文件名进书库，同名已存在则复用，不要每次打开复制成 `书名-2.epub`（没有 identifier 的书会因此丢进度）。`lib:书名-N.epub` 与 `lib:书名.epub` 视为同一本。
 4. **章节 iframe 不要开 `allow-scripts`。** 现在是 `allow-same-origin`，父页做分栏翻页并读页序。不要为了省事给 EPUB 开脚本。
 5. **IPC 用 camelCase**（Rust 结构体 `#[serde(rename_all = "camelCase")]`）。
-6. **绿色软件：** 设置、进度、窗口位置、导入的书、用户字体、WebView 缓存一律在 `{exe 目录}/data/`，禁止写入 `%APPDATA%` / 注册表当主存储。打开外部 EPUB 时复制进 `data/library/`（已在书库内则不再复制）。字体文件在 `data/fonts/`，设置在 `data/settings.json`，窗口在 `data/window.json`。整个程序目录搬走即带走全部状态。目录必须可写，不要往 Program Files 里装。不要用 tauri-plugin-window-state 之类会写用户目录的插件。
+6. **绿色软件：** 设置、进度、窗口位置、导入的书、用户字体、WebView 缓存一律在 `{exe 目录}/data/`，禁止写入 `%APPDATA%` / 注册表当主存储。打开外部 EPUB 时复制进 `data/library/`（已在书库内则不再复制）。字体文件在 `data/fonts/`，设置在 `data/settings.json`，窗口在 `data/window.json`，划线在 `data/annotations.json`（键同进度键）。整个程序目录搬走即带走全部状态。目录必须可写，不要往 Program Files 里装。不要用 tauri-plugin-window-state 之类会写用户目录的插件。
 
 ## 常用命令
 
@@ -48,6 +49,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 - `open_book` / `close_book` / `pending_book` / `list_library`
 - `get_chapter`（返回 `{ html, publisherFonts }`。`publisherFonts`：本章原书 CSS 的 font-family 原文、`@font-face` 名、以及 `src` 不在书内的 `unloadableFaces`）/ `resource_origin`
 - `save_progress`
+- `list_annotations` / `add_annotation` / `delete_annotation`（划线，键同进度键，存 `data/annotations.json`）
 - `get_font_settings` / `set_use_original_fonts` / `set_font_scale` / `install_font` / `clear_font`
 - `get_platform_fonts`（Windows：Chromium `CSS.getPlatformFontsForNode`，章节 iframe 里真正绘制用的字体）
 
@@ -88,3 +90,5 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 ## 验证
 
 改阅读功能时：无 `ICED_READER_OPEN` 时启动应进书架（看 **当前 exe 旁边** 的 `data/library/`，开发是 `target/debug/data`）。点封面打开，顶栏「书架」能回去且进度还在。打开 `fixtures/sample.epub`，确认第一章中文、左右翻页、拉宽窗口变双栏、关开后页大致还在。点「目录」能跳章，当前条目高亮。F11 全屏后正文铺满，鼠标移到顶部能再点「退出全屏」，Esc 退出全屏。改布局时确认顶栏以下没有空白条、没有灰底托一条窄白纸；窄窗口顶栏高度仍约 52px、文字不竖排。改字体时：默认仍是原书 CSS；只传部分字体并关掉「使用原书字体」时正文不变；四槽都齐才覆盖，CJK 字走中文/CJK 槽。字号 A−/A+ 应变大变小并写入 settings.json，不要出现暗色主题。可用仓库旁未提交的样书核对（不要 git add）：`五千年掌故.epub` 指定 PingFang SC / FZFangSong-Z02，Windows 上通常未安装；`新西游记++共两册.epub` 指定 `cnepub, serif` 但 `@font-face` 是设备 `res://`，实际渲染应为 `（系统 serif）`，并标 cnepub 书内无字体文件。没有桌面窗口时至少跑 `cargo test -p iced-reader-core`、`cargo test -p iced-reader-epub`、`cargo test -p iced-reader`。
+
+改划线时：选中一段文字松手应浮出「划线」，点后即时变黄；再点这段（无选区单击）浮出「删除划线」；双击已有划线中的词也应是删除而非报重叠；删除后即刻消失。A±/拉宽窗口后划线仍贴在原句上。翻走再回来、重启程序后划线仍在，且 `data/annotations.json` 已更新。选中文字点划线后不应翻页（点正文中段空白处翻页仍正常）。

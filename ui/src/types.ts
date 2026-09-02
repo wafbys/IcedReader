@@ -27,6 +27,22 @@ export type Locator = {
   cfi: string | null;
 };
 
+/**
+ * One user highlight. Anchored inside one chapter by the global text-node
+ * sequence + in-node offset (stable because chapter HTML is deterministic),
+ * plus an excerpt used for validation/display. `href` matches the spine unit.
+ */
+export type HighlightRecord = {
+  id: string;
+  href: string;
+  startText: number;
+  startOffset: number;
+  endText: number;
+  endOffset: number;
+  text: string;
+  createdAt: number;
+};
+
 export type LibraryEntry = {
   path: string;
   fileName: string;

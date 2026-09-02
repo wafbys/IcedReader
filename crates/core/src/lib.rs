@@ -3,6 +3,7 @@
 //! UI and Tauri talk only to this crate. Format crates (EPUB now, others later)
 //! implement [`Book`]. Persistence (library, bookmarks) will live here too.
 
+mod annotations;
 mod fonts;
 mod progress;
 mod publisher_fonts;
@@ -12,6 +13,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use annotations::{AnnotationStore, Highlight};
 pub use fonts::{
     apply_custom_fonts, font_override_css, rewrite_css_font_families, sniff_font, FontKind,
     FontUrls, CJK_UNICODE_RANGE, LATIN_UNICODE_RANGE,

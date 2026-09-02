@@ -21,6 +21,10 @@ pub fn progress_file() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("progress.json"))
 }
 
+pub fn annotations_file() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("annotations.json"))
+}
+
 pub fn settings_file() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("settings.json"))
 }

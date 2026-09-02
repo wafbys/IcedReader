@@ -9,8 +9,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use iced_reader_core::{
-    collect_publisher_fonts, progress_key, Book, BookOpener, ChapterView, FontSettingsView,
-    FontSlot, Locator, Metadata, ProgressStore, SettingsStore, SpineItem, TocNode,
+    collect_publisher_fonts, progress_key, AnnotationStore, Book, BookOpener, ChapterView,
+    FontSettingsView, FontSlot, Highlight, Locator, Metadata, ProgressStore, SettingsStore,
+    SpineItem, TocNode,
 };
 use iced_reader_epub::EpubOpener;
 use serde::Serialize;
@@ -25,6 +26,7 @@ pub struct AppState {
     pub books: Mutex<HashMap<String, Box<dyn Book>>>,
     pub progress: Mutex<ProgressStore>,
     pub settings: Mutex<SettingsStore>,
+    pub annotations: Mutex<AnnotationStore>,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +79,63 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
         .map_err(|e| e.to_string())?
         .insert(opened.id.clone(), book);
     Ok(opened)
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+fn list_annotations(key: String, state: tauri::State<AppState>) -> Result<Vec<Highlight>, String> {
+    state
+        .annotations
+        .lock()
+        .map_err(|e| e.to_string())
+        .map(|store| store.list(&key))
+}
+
+#[tauri::command]
+fn add_annotation(
+    key: String,
+    href: String,
+    start_text: usize,
+    start_offset: usize,
+    end_text: usize,
+    end_offset: usize,
+    text: String,
+    state: tauri::State<AppState>,
+) -> Result<Highlight, String> {
+    let highlight = Highlight {
+        id: Uuid::new_v4().to_string(),
+        href,
+        start_text,
+        start_offset,
+        end_text,
+        end_offset,
+        text,
+        created_at: unix_now(),
+    };
+    state
+        .annotations
+        .lock()
+        .map_err(|e| e.to_string())?
+        .add(key, highlight.clone())
+        .map_err(|e| e.to_string())?;
+    Ok(highlight)
+}
+
+#[tauri::command]
+fn delete_annotation(key: String, id: String, state: tauri::State<AppState>) -> Result<(), String> {
+    state
+        .annotations
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&key, &id)
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -256,6 +315,7 @@ pub fn run() {
             books: Mutex::new(HashMap::new()),
             progress: Mutex::new(ProgressStore::in_memory()),
             settings: Mutex::new(SettingsStore::in_memory(std::path::PathBuf::from("fonts"))),
+            annotations: Mutex::new(AnnotationStore::in_memory()),
         })
         .setup(|app| {
             portable::ensure_layout().map_err(|e| e.to_string())?;
@@ -269,6 +329,13 @@ pub fn run() {
             if let (Ok(file), Ok(fonts_dir)) = (portable::settings_file(), portable::fonts_dir()) {
                 if let Ok(store) = SettingsStore::open(file, fonts_dir) {
                     if let Ok(mut slot) = app.state::<AppState>().settings.lock() {
+                        *slot = store;
+                    }
+                }
+            }
+            if let Ok(file) = portable::annotations_file() {
+                if let Ok(store) = AnnotationStore::open(file) {
+                    if let Ok(mut slot) = app.state::<AppState>().annotations.lock() {
                         *slot = store;
                     }
                 }
@@ -296,6 +363,9 @@ pub fn run() {
             pending_book,
             get_chapter,
             save_progress,
+            list_annotations,
+            add_annotation,
+            delete_annotation,
             get_font_settings,
             set_use_original_fonts,
             set_font_scale,

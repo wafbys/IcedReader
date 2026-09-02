@@ -3,6 +3,7 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
 } from "react";
 import {
   FLOW_STYLE_ID,
@@ -15,7 +16,18 @@ import {
   scrollLeftForPage,
   type FlowMetrics,
 } from "./flowLayout";
+import {
+  anchorFromRange,
+  anchorOverlapInfo,
+  charAtPoint,
+  highlightSupported,
+  paintHighlights,
+  spanAtChar,
+  type AppliedSpan,
+  type HighlightAnchor,
+} from "./highlights";
 import { collectUsedFonts, type UsedFontReport } from "./usedFonts";
+import type { HighlightRecord } from "./types";
 
 export type PageInfo = {
   page: number;
@@ -37,8 +49,30 @@ type Props = {
   onUsedFonts: (report: UsedFontReport) => void;
   onPageInfo: (info: PageInfo) => void;
   onNeedChapter: (delta: -1 | 1) => void;
+  /** Highlights belonging to the currently displayed chapter. */
+  highlights: HighlightRecord[];
+  /** Spine href of the chapter this frame is showing (for paint sync). */
+  chapterHref: string;
+  onCreateHighlight: (href: string, anchor: HighlightAnchor) => Promise<void>;
+  onDeleteHighlight: (id: string) => Promise<void>;
   fontScale?: number;
 };
+
+/** Floating mini toolbar; x/y are parent-viewport CSS pixels. */
+type ToolbarState =
+  | {
+      kind: "create";
+      x: number;
+      y: number;
+      /** Chapter href captured together with the anchor (doc this frame shows). */
+      href: string;
+      anchor: HighlightAnchor;
+      overlaps: boolean;
+      /** Single existing highlight fully containing the selection (delete it). */
+      containedId?: string | null;
+    }
+  | { kind: "delete"; x: number; y: number; id: string }
+  | null;
 
 function usableLang(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -88,6 +122,10 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     onUsedFonts,
     onPageInfo,
     onNeedChapter,
+    highlights,
+    chapterHref,
+    onCreateHighlight,
+    onDeleteHighlight,
     fontScale = 100,
   },
   ref,
@@ -120,7 +158,43 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   authorRef.current = authorFamilies;
   const fontScaleRef = useRef(fontScale);
   fontScaleRef.current = fontScale;
+  const highlightsRef = useRef(highlights);
+  highlightsRef.current = highlights;
+  const onCreateHighlightRef = useRef(onCreateHighlight);
+  onCreateHighlightRef.current = onCreateHighlight;
+  const onDeleteHighlightRef = useRef(onDeleteHighlight);
+  onDeleteHighlightRef.current = onDeleteHighlight;
+
   const wheelLock = useRef(false);
+  const appliedRef = useRef<AppliedSpan[]>([]);
+  const paintedRef = useRef<{ doc: Document | null; hl: readonly HighlightRecord[] | null }>({
+    doc: null,
+    hl: null,
+  });
+  /** Doc currently shown in the iframe and the chapter it was built for. */
+  const docForRef = useRef<{ doc: Document | null; href: string }>({
+    doc: null,
+    href: "",
+  });
+  /** Set when a mouseup lands on an existing highlight; the following click
+   *  inside the chapter doc is then swallowed (no link navigation) so the
+   *  delete toolbar stays the sole result. */
+  const swallowDocClick = useRef(false);
+  const [toolbar, setToolbar] = useState<ToolbarState>(null);
+  const [toolbarBusy, setToolbarBusy] = useState(false);
+
+  /** Repaint highlights on the current iframe document (doc must be ready). */
+  const paintDoc = () => {
+    const f = docForRef.current;
+    const doc = iframeRef.current?.contentDocument ?? null;
+    if (!f.doc || f.doc !== doc || !doc?.body) return;
+    if (paintedRef.current.doc === doc && paintedRef.current.hl === highlightsRef.current) {
+      return;
+    }
+    const applied = paintHighlights(doc, highlightsRef.current);
+    appliedRef.current = applied ?? [];
+    paintedRef.current = { doc, hl: highlightsRef.current };
+  };
 
   const applyPage = (page: number, announce: boolean) => {
     const st = layout.current;
@@ -134,6 +208,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     if (announce) {
       fractionRef.current = fraction;
       onProgressRef.current(fraction);
+      setToolbar(null);
     }
     onPageInfoRef.current({
       page: next,
@@ -205,14 +280,95 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     fractionRef.current = restoreFraction;
   }, [restoreFraction, html]);
 
+  // Chapter content changed: the old doc's toolbar is stale and its anchor
+  // would be committed against the wrong chapter, so drop it now.
+  useEffect(() => {
+    setToolbar(null);
+    setToolbarBusy(false);
+  }, [html]);
+
   useEffect(() => {
     relayout(true);
   }, [fontScale]);
 
+  useEffect(() => {
+    const f = docForRef.current;
+    if (f.href === chapterHref) paintDoc();
+  }, [highlights, chapterHref]);
+
   const turn = (dir: -1 | 1) => {
+    setToolbar(null);
     const result = goPage(dir);
     if (result === "before") onNeedChapterRef.current(-1);
     if (result === "after") onNeedChapterRef.current(1);
+  };
+
+  const hideToolbar = () => setToolbar(null);
+
+  /** Show a highlight; called with parent-viewport coordinates. */
+  const docMouseUp = (e: MouseEvent, doc: Document, iframe: HTMLIFrameElement) => {
+    const iframeRect = iframe.getBoundingClientRect();
+    const parentX = iframeRect.left + e.clientX;
+    const parentY = iframeRect.top + e.clientY;
+    const sel = doc.getSelection();
+    const text = sel ? sel.toString() : "";
+
+    if (sel && !sel.isCollapsed && text.trim()) {
+      if (!highlightSupported(doc)) return;
+      const range = sel.getRangeAt(0);
+      const anchor = anchorFromRange(doc, range);
+      if (!anchor) return;
+      const info = anchorOverlapInfo(doc, highlightsRef.current, anchor);
+      const rect = range.getBoundingClientRect();
+      const x = iframeRect.left + rect.left + rect.width / 2;
+      const y = iframeRect.top + rect.top;
+      setToolbar({
+        kind: "create",
+        x,
+        y,
+        href: chapterHref,
+        anchor,
+        overlaps: info.overlapIds.length > 0,
+        containedId: info.containedId,
+      });
+      return;
+    }
+
+    // No text selection: clicking inside an existing highlight offers delete.
+    const char = charAtPoint(doc, e.clientX, e.clientY);
+    const span = char !== null ? spanAtChar(appliedRef.current, char) : null;
+    if (span) {
+      swallowDocClick.current = true;
+      setToolbar({ kind: "delete", x: parentX, y: parentY, id: span.id });
+    } else {
+      setToolbar(null);
+    }
+  };
+
+  const doCreate = async (href: string, anchor: HighlightAnchor) => {
+    if (toolbarBusy) return;
+    setToolbarBusy(true);
+    try {
+      await onCreateHighlightRef.current(href, anchor);
+      setToolbar(null);
+      const doc = iframeRef.current?.contentDocument;
+      doc?.getSelection()?.removeAllRanges();
+    } finally {
+      setToolbarBusy(false);
+    }
+  };
+
+  const doDelete = async (id: string) => {
+    if (toolbarBusy) return;
+    setToolbarBusy(true);
+    try {
+      await onDeleteHighlightRef.current(id);
+      setToolbar(null);
+      const doc = iframeRef.current?.contentDocument;
+      doc?.getSelection()?.removeAllRanges();
+    } finally {
+      setToolbarBusy(false);
+    }
   };
 
   return (
@@ -221,8 +377,20 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
         className="flow-container"
         ref={containerRef}
         onClick={(e) => {
-          const doc = iframeRef.current?.contentDocument;
+          const iframe = iframeRef.current;
+          const doc = iframe?.contentDocument;
           if (doc?.getSelection()?.toString()) return;
+          // A click on an existing highlight must not page-turn; the mouseup
+          // handler already opened the delete toolbar for it.
+          if (iframe && doc) {
+            const iframeRect = iframe.getBoundingClientRect();
+            const docX = e.clientX - iframeRect.left;
+            const docY = e.clientY - iframeRect.top;
+            const char = charAtPoint(doc, docX, docY);
+            if (char !== null && spanAtChar(appliedRef.current, char)) {
+              return;
+            }
+          }
           const box = containerRef.current;
           if (!box) return;
           const ratio = (e.clientX - box.getBoundingClientRect().left) / (box.clientWidth || 1);
@@ -255,10 +423,12 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             if (!iframe || !box || !doc) return;
             const token = ++gen.current;
             const live = () => token === gen.current;
+            docForRef.current = { doc, href: chapterHref };
 
             const paint = (keep: boolean) => {
               if (!live()) return;
               relayout(keep);
+              paintDoc();
             };
 
             paint(true);
@@ -289,6 +459,22 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             };
             doc.addEventListener("wheel", onDocWheel, { passive: false });
 
+            const onDocMouseUp = (e: MouseEvent) => {
+              if (!live()) return;
+              docMouseUp(e, doc, iframe);
+            };
+            doc.addEventListener("mouseup", onDocMouseUp);
+
+            const onDocClick = (e: MouseEvent) => {
+              if (!live()) return;
+              if (swallowDocClick.current) {
+                swallowDocClick.current = false;
+                e.preventDefault();
+                e.stopPropagation();
+              }
+            };
+            doc.addEventListener("click", onDocClick);
+
             const ro = new ResizeObserver(() => {
               if (!live()) return;
               paint(true);
@@ -299,11 +485,79 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             const cleanup = () => {
               ro.disconnect();
               doc.removeEventListener("wheel", onDocWheel);
+              doc.removeEventListener("mouseup", onDocMouseUp);
+              doc.removeEventListener("click", onDocClick);
+              appliedRef.current = [];
             };
             iframe.addEventListener("load", cleanup, { once: true });
           }}
         />
       </div>
+
+      {toolbar && (
+        <div
+          className={`hl-pop ${toolbar.y < 90 ? "below" : "above"}`}
+          style={{ left: toolbar.x, top: toolbar.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {toolbar.kind === "create" ? (
+            <>
+              {toolbar.overlaps && !toolbar.containedId ? (
+                <span className="hl-pop-hint">与已有划线重叠</span>
+              ) : (
+                <button
+                  type="button"
+                  className={`btn ghost small ${toolbar.overlaps ? "danger" : ""}`}
+                  disabled={toolbarBusy}
+                  title={
+                    toolbar.overlaps
+                      ? "已划线的这处文字，点击删除此划线"
+                      : undefined
+                  }
+                  onClick={() => {
+                    if (toolbar.overlaps && toolbar.containedId) {
+                      void doDelete(toolbar.containedId);
+                    } else {
+                      void doCreate(toolbar.href, toolbar.anchor);
+                    }
+                  }}
+                >
+                  {toolbar.overlaps ? "删除此划线" : "划线"}
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn ghost small icon"
+                aria-label="关闭"
+                title="关闭"
+                onClick={hideToolbar}
+              >
+                ✕
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn ghost small danger"
+                disabled={toolbarBusy}
+                onClick={() => void doDelete(toolbar.id)}
+              >
+                删除划线
+              </button>
+              <button
+                type="button"
+                className="btn ghost small icon"
+                aria-label="关闭"
+                title="关闭"
+                onClick={hideToolbar}
+              >
+                ✕
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 });

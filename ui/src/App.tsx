@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChapterFrame, {
   type ChapterFrameHandle,
   type PageInfo,
@@ -10,15 +10,18 @@ import Library from "./Library";
 import TocPanel from "./TocPanel";
 import {
   chapterIndex,
+  normHref,
   type ChapterPayload,
   type FontSettings,
   type FontSlotId,
+  type HighlightRecord,
   type LibraryEntry,
   type OpenedBook,
   type PublisherFontReport,
   type UsedFontReport,
 } from "./types";
 import { specifiedFamiliesFromReport } from "./usedFonts";
+import type { HighlightAnchor } from "./highlights";
 import {
   isAppFullscreen,
   setAppFullscreen,
@@ -51,6 +54,8 @@ export default function App() {
     null,
   );
   const [usedFonts, setUsedFonts] = useState<UsedFontReport | null>(null);
+  /** Highlights of the open book (filtered per chapter when handed to the frame). */
+  const [highlights, setHighlights] = useState<HighlightRecord[]>([]);
   const [pageInfo, setPageInfo] = useState<PageInfo>({
     page: 0,
     pages: 1,
@@ -70,6 +75,43 @@ export default function App() {
 
   const spine = book?.spine ?? [];
   const current = spine[index];
+
+  /** Highlights belonging to the currently displayed chapter. */
+  const chapterHighlights = useMemo(() => {
+    if (!current) return [];
+    const exact = normHref(current.href, true);
+    return highlights.filter((h) => normHref(h.href, true) === exact);
+  }, [highlights, current]);
+
+  const createHighlight = useCallback(async (href: string, anchor: HighlightAnchor) => {
+    const b = bookRef.current;
+    if (!b) return;
+    try {
+      const rec = await invoke<HighlightRecord>("add_annotation", {
+        key: b.progressKey,
+        href,
+        startText: anchor.start.seq,
+        startOffset: anchor.start.offset,
+        endText: anchor.end.seq,
+        endOffset: anchor.end.offset,
+        text: anchor.text,
+      });
+      setHighlights((prev) => [...prev, rec]);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, []);
+
+  const deleteHighlight = useCallback(async (id: string) => {
+    const b = bookRef.current;
+    if (!b) return;
+    try {
+      await invoke("delete_annotation", { key: b.progressKey, id });
+      setHighlights((prev) => prev.filter((h) => h.id !== id));
+    } catch (err) {
+      setError(String(err));
+    }
+  }, []);
 
   const flushProgress = useCallback(async () => {
     const next = pending.current;
@@ -277,6 +319,7 @@ export default function App() {
     setChapterHtml("");
     setPublisherFonts(null);
     setUsedFonts(null);
+    setHighlights([]);
     setTocOpen(false);
     await loadLibrary();
   }, [persistReadingPosition, loadLibrary]);
@@ -292,6 +335,15 @@ export default function App() {
           await invoke("close_book", { id: currentBook.id }).catch(() => undefined);
         }
         const opened = await invoke<OpenedBook>("open_book", { path: selected });
+        setHighlights([]);
+        void invoke<HighlightRecord[]>("list_annotations", { key: opened.progressKey })
+          .then((list) => {
+            // Ignore stale results when another book was opened meanwhile.
+            if (bookRef.current?.id === opened.id) setHighlights(list);
+          })
+          .catch(() => {
+            if (bookRef.current?.id === opened.id) setHighlights([]);
+          });
         const restored = chapterIndex(opened.spine, opened.progress?.href);
         setBook(opened);
         setIndex(restored >= 0 ? restored : 0);
@@ -659,6 +711,10 @@ export default function App() {
                   publisherFonts?.declarations.map((d) => d.value) ?? [],
                   publisherFonts?.faces ?? [],
                 )}
+                highlights={chapterHighlights}
+                chapterHref={current.href}
+                onCreateHighlight={createHighlight}
+                onDeleteHighlight={deleteHighlight}
                 onProgress={queueProgress}
                 onUsedFonts={setUsedFonts}
                 onPageInfo={setPageInfo}
