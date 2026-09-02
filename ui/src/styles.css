@@ -628,6 +628,22 @@ body {
   padding: 2px 10px;
 }
 
+/* .hl-pop 是浅底，不能沿用暗色 chrome 的 .ghost 近白字（对比度约 1.1:1）；
+   此处先落深墨色，danger / disabled 在下面按需覆盖。 */
+.hl-pop .btn.ghost {
+  color: var(--ink);
+  border-color: #cfc3ab;
+}
+
+/* 「划线」按钮背景 = 正文实际划线色，与 highlights.ts 注入章节的
+   ::highlight(iced-reader-highlight) 背景 rgba(255, 208, 96, 0.55) 同源，
+   叠在浮条浅底上合成约 #ffe5a8。danger / disabled 按钮不套此背景。 */
+.hl-pop .btn.paint {
+  background: rgba(255, 208, 96, 0.55);
+  color: var(--ink);
+  border-color: #e0c478;
+}
+
 .hl-pop .btn.icon {
   padding: 2px 6px;
   line-height: 1.4;

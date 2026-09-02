@@ -507,7 +507,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
               ) : (
                 <button
                   type="button"
-                  className={`btn ghost small ${toolbar.overlaps ? "danger" : ""}`}
+                  className={`btn ghost small ${toolbar.overlaps ? "danger" : "paint"}`}
                   disabled={toolbarBusy}
                   title={
                     toolbar.overlaps
