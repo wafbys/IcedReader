@@ -39,3 +39,6 @@ fixtures/verify-*.png
 # Local test books next to the repo (keep fixtures/sample.epub)
 *.epub
 !fixtures/*.epub
+
+# Codewhale agent runtime state
+.codewhale/
