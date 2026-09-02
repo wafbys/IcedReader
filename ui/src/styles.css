@@ -83,29 +83,37 @@ body {
 
 .chrome {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 12px;
-  padding: 10px 14px;
+  padding: 0 14px;
   background: var(--chrome);
   color: var(--chrome-ink);
+  height: 52px;
   min-height: 52px;
+  max-height: 52px;
+  overflow: hidden;
 }
 
 .brand {
   font-weight: 650;
   letter-spacing: 0.04em;
   margin-right: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .meta {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 8rem;
   line-height: 1.25;
 }
 
-.meta strong {
+.meta strong,
+.meta span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -121,16 +129,30 @@ body {
   align-items: center;
   gap: 8px;
   margin-left: auto;
+  min-width: 0;
+  flex: 1 1 12rem;
 }
 
 .pos {
   font-variant-numeric: tabular-nums;
   font-size: 13px;
   color: #c8bfb4;
-  max-width: min(42vw, 28rem);
+  flex: 1 1 4rem;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chrome .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 960px) {
+  .brand {
+    display: none;
+  }
 }
 
 .btn {
