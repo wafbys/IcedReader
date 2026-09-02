@@ -6,12 +6,14 @@ import ChapterFrame, {
   type PageInfo,
 } from "./ChapterFrame";
 import FontPanel from "./FontPanel";
+import Library from "./Library";
 import TocPanel from "./TocPanel";
 import {
   chapterIndex,
   type ChapterPayload,
   type FontSettings,
   type FontSlotId,
+  type LibraryEntry,
   type OpenedBook,
   type PublisherFontReport,
   type UsedFontReport,
@@ -25,6 +27,8 @@ import {
 
 export default function App() {
   const [book, setBook] = useState<OpenedBook | null>(null);
+  const [library, setLibrary] = useState<LibraryEntry[]>([]);
+  const [resourceOrigin, setResourceOrigin] = useState("");
   const [index, setIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -218,6 +222,29 @@ export default function App() {
     [applyFonts],
   );
 
+  const loadLibrary = useCallback(async () => {
+    try {
+      const entries = await invoke<LibraryEntry[]>("list_library");
+      setLibrary(entries);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, []);
+
+  const goShelf = useCallback(async () => {
+    flushProgress();
+    const currentBook = bookRef.current;
+    if (currentBook) {
+      await invoke("close_book", { id: currentBook.id }).catch(() => undefined);
+    }
+    setBook(null);
+    setChapterHtml("");
+    setPublisherFonts(null);
+    setUsedFonts(null);
+    setTocOpen(false);
+    await loadLibrary();
+  }, [flushProgress, loadLibrary]);
+
   const openPath = useCallback(
     async (selected: string) => {
       flushProgress();
@@ -240,15 +267,17 @@ export default function App() {
         setPublisherFonts(null);
         setUsedFonts(null);
         setTocOpen(false);
+        void loadLibrary();
       } catch (err) {
         setError(String(err));
         setBook(null);
         setTocOpen(false);
+        void loadLibrary();
       } finally {
         setBusy(false);
       }
     },
-    [flushProgress],
+    [flushProgress, loadLibrary],
   );
 
   const openEpub = useCallback(async () => {
@@ -261,11 +290,17 @@ export default function App() {
   }, [openPath]);
 
   useEffect(() => {
+    invoke<string>("resource_origin")
+      .then(setResourceOrigin)
+      .catch(() => undefined);
     invoke<string | null>("pending_book")
       .then((path) => {
         if (path) void openPath(path);
+        else void loadLibrary();
       })
-      .catch(() => undefined);
+      .catch(() => {
+        void loadLibrary();
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -432,6 +467,16 @@ export default function App() {
         onMouseLeave={scheduleHideChrome}
       >
         <div className="brand">IcedReader</div>
+        {book && (
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => void goShelf()}
+            disabled={busy}
+          >
+            书架
+          </button>
+        )}
         <button type="button" className="btn" onClick={openEpub} disabled={busy}>
           {busy ? "打开中…" : "打开 EPUB"}
         </button>
@@ -536,10 +581,13 @@ export default function App() {
         )}
         <main className="stage">
           {!book && (
-            <div className="empty">
-              <p>打开一本 EPUB，开始阅读。</p>
-              <p className="hint">进度按章节和页序保存，换窗口宽也能对上。</p>
-            </div>
+            <Library
+              entries={library}
+              origin={resourceOrigin}
+              busy={busy}
+              onOpen={(path) => void openPath(path)}
+              onImport={() => void openEpub()}
+            />
           )}
           {book && chapterHtml && (
             <div className="page">

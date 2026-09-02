@@ -1,4 +1,5 @@
 mod fonts;
+mod library;
 mod platform_fonts;
 mod portable;
 mod protocol;
@@ -194,6 +195,12 @@ async fn get_platform_fonts(app: tauri::AppHandle) -> Result<Vec<platform_fonts:
 }
 
 #[tauri::command]
+fn list_library(state: tauri::State<AppState>) -> Result<Vec<library::LibraryEntry>, String> {
+    let progress = state.progress.lock().map_err(|e| e.to_string())?;
+    library::list_library(&progress)
+}
+
+#[tauri::command]
 fn pending_book() -> Option<String> {
     std::env::var("ICED_READER_OPEN").ok().filter(|p| !p.is_empty())
 }
@@ -270,6 +277,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_book,
             close_book,
+            list_library,
             resource_origin,
             pending_book,
             get_chapter,

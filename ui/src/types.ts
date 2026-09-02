@@ -27,6 +27,21 @@ export type Locator = {
   cfi: string | null;
 };
 
+export type LibraryEntry = {
+  path: string;
+  fileName: string;
+  title: string;
+  authors: string[];
+  progressKey: string;
+  chapterIndex: number | null;
+  chapterCount: number | null;
+  chapterTitle: string | null;
+  fraction: number | null;
+  updatedAt: number | null;
+  hasCover: boolean;
+  openError: string | null;
+};
+
 export type OpenedBook = {
   id: string;
   format: string;

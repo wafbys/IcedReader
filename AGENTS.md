@@ -44,13 +44,13 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 
 ## Tauri 命令
 
-- `open_book` / `close_book` / `pending_book`
+- `open_book` / `close_book` / `pending_book` / `list_library`
 - `get_chapter`（返回 `{ html, publisherFonts }`。`publisherFonts`：本章原书 CSS 的 font-family 原文、`@font-face` 名、以及 `src` 不在书内的 `unloadableFaces`）/ `resource_origin`
 - `save_progress`
 - `get_font_settings` / `set_use_original_fonts` / `install_font` / `clear_font`
 - `get_platform_fonts`（Windows：Chromium `CSS.getPlatformFontsForNode`，章节 iframe 里真正绘制用的字体）
 
-协议：`src-tauri/src/protocol.rs`，scheme `icedreader`。Windows 上实际请求是 `http://icedreader.localhost/...`。
+协议：`src-tauri/src/protocol.rs`，scheme `icedreader`。Windows 上实际请求是 `http://icedreader.localhost/...`。书架封面走 `/library-cover/{文件名}`，不要为此给章节 iframe 开脚本。启动无 `ICED_READER_OPEN` 时进入书架，不要再停在空白「打开一本 EPUB」。
 
 ## EPUB 章节
 
@@ -82,4 +82,4 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 
 ## 验证
 
-改阅读功能时：打开 `fixtures/sample.epub`，确认第一章中文、左右翻页、拉宽窗口变双栏、关开后页大致还在。点「目录」能跳章，当前条目高亮。F11 全屏后正文铺满，鼠标移到顶部能再点「退出全屏」，Esc 退出全屏。改布局时确认顶栏以下没有空白条、没有灰底托一条窄白纸。改字体时：默认仍是原书 CSS；只传部分字体并关掉「使用原书字体」时正文不变；四槽都齐才覆盖，CJK 字走中文/CJK 槽。可用仓库旁未提交的样书核对（不要 git add）：`五千年掌故.epub` 指定 PingFang SC / FZFangSong-Z02，Windows 上通常未安装；`新西游记++共两册.epub` 指定 `cnepub, serif` 但 `@font-face` 是设备 `res://`，实际渲染应为 `（系统 serif）`，并标 cnepub 书内无字体文件。没有桌面窗口时至少跑 `cargo test -p iced-reader-core` 和 `cargo test -p iced-reader-epub`。
+改阅读功能时：无 `ICED_READER_OPEN` 时启动应进书架（`data/library/` 里已有的书会出现）。点封面打开，顶栏「书架」能回去且进度还在。打开 `fixtures/sample.epub`，确认第一章中文、左右翻页、拉宽窗口变双栏、关开后页大致还在。点「目录」能跳章，当前条目高亮。F11 全屏后正文铺满，鼠标移到顶部能再点「退出全屏」，Esc 退出全屏。改布局时确认顶栏以下没有空白条、没有灰底托一条窄白纸。改字体时：默认仍是原书 CSS；只传部分字体并关掉「使用原书字体」时正文不变；四槽都齐才覆盖，CJK 字走中文/CJK 槽。可用仓库旁未提交的样书核对（不要 git add）：`五千年掌故.epub` 指定 PingFang SC / FZFangSong-Z02，Windows 上通常未安装；`新西游记++共两册.epub` 指定 `cnepub, serif` 但 `@font-face` 是设备 `res://`，实际渲染应为 `（系统 serif）`，并标 cnepub 书内无字体文件。没有桌面窗口时至少跑 `cargo test -p iced-reader-core` 和 `cargo test -p iced-reader-epub`。

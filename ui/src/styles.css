@@ -432,6 +432,95 @@ body {
   place-content: center;
   text-align: center;
   gap: 8px;
+  justify-items: center;
+}
+
+.lib {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 24px 32px;
+}
+
+.lib-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 20px 16px;
+}
+
+.lib-card {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lib-card:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.lib-card:not(:disabled):hover .lib-info strong {
+  color: var(--accent);
+}
+
+.lib-cover {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #e7ddd0;
+  display: block;
+  box-shadow: 0 1px 4px rgb(31 28 24 / 12%);
+}
+
+.lib-cover-fallback {
+  display: grid;
+  place-content: center;
+  background: #3a3530;
+  color: #f3eee6;
+  font-size: 2rem;
+  font-weight: 650;
+}
+
+.lib-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.lib-info strong,
+.lib-info span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib-info strong {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.lib-info span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lib-progress {
+  color: var(--accent) !important;
 }
 
 .page {

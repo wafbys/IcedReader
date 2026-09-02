@@ -41,6 +41,9 @@ pub fn handle<R: tauri::Runtime>(
     if let Some(slot) = path.strip_prefix("/fonts/") {
         return serve_font(ctx, slot);
     }
+    if let Some(name) = path.strip_prefix("/library-cover/") {
+        return serve_library_cover(name);
+    }
 
     let Some((book_id, href)) = parse_book_path(&path) else {
         return cors(
@@ -154,6 +157,28 @@ fn serve_font<R: tauri::Runtime>(
             StatusCode::NOT_FOUND,
             "text/plain; charset=utf-8",
             b"font not installed".to_vec(),
+        ),
+    }
+}
+
+fn serve_library_cover(file_name: &str) -> tauri::http::Response<Vec<u8>> {
+    let name = file_name.split(['#', '?']).next().unwrap_or(file_name);
+    let path = match crate::library::library_cover_path(name) {
+        Ok(p) => p,
+        Err(err) => {
+            return cors(
+                StatusCode::NOT_FOUND,
+                "text/plain; charset=utf-8",
+                err.into_bytes(),
+            );
+        }
+    };
+    match crate::library::cover_bytes(&path) {
+        Ok((media, data)) => cors_cached(StatusCode::OK, &media, data),
+        Err(err) => cors(
+            StatusCode::NOT_FOUND,
+            "text/plain; charset=utf-8",
+            err.into_bytes(),
         ),
     }
 }
