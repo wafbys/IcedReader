@@ -10,6 +10,10 @@ export const MAX_INLINE_SIZE = 720;
 export const MAX_COLUMN_COUNT = 2;
 /** Requested gap as a fraction of the container; actual gap is r/(1-r)·size. */
 export const GAP_RATIO = 0.07;
+/** Top/bottom inset as a fraction of view height; clamped in `blockPadding`. */
+export const BLOCK_PAD_RATIO = 0.04;
+export const BLOCK_PAD_MIN = 20;
+export const BLOCK_PAD_MAX = 40;
 
 export type FlowMetrics = {
   columns: 1 | 2;
@@ -24,6 +28,13 @@ export type FlowMetrics = {
 export function columnGap(size: number, ratio = GAP_RATIO): number {
   if (size <= 0) return 0;
   return (ratio / (1 - ratio)) * size;
+}
+
+export function blockPadding(height: number): number {
+  if (height <= 0) return BLOCK_PAD_MIN;
+  return Math.round(
+    Math.max(BLOCK_PAD_MIN, Math.min(BLOCK_PAD_MAX, height * BLOCK_PAD_RATIO)),
+  );
 }
 
 export function columnDivisor(
@@ -80,8 +91,9 @@ export function flowCss(metrics: FlowMetrics): string {
   const w = Math.trunc(metrics.columnWidth);
   const g = metrics.gap.toFixed(2);
   const h = metrics.viewHeight.toFixed(2);
-  const pad = (metrics.gap / 2).toFixed(2);
-  const imgH = Math.max(1, metrics.viewHeight - metrics.gap).toFixed(2);
+  const padX = (metrics.gap / 2).toFixed(2);
+  const padY = blockPadding(metrics.viewHeight);
+  const imgH = Math.max(1, metrics.viewHeight - padY * 2).toFixed(2);
   return `
 html.${FLOW_STYLE_ID} {
   box-sizing: border-box !important;
@@ -89,7 +101,7 @@ html.${FLOW_STYLE_ID} {
   column-width: ${w}px !important;
   column-gap: ${g}px !important;
   column-fill: auto !important;
-  padding: 0 ${pad}px !important;
+  padding: ${padY}px ${padX}px !important;
   overflow: hidden !important;
   overflow-wrap: break-word !important;
   position: static !important;
