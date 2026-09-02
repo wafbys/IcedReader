@@ -25,6 +25,10 @@ pub fn settings_file() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("settings.json"))
 }
 
+pub fn window_file() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("window.json"))
+}
+
 pub fn fonts_dir() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("fonts"))
 }

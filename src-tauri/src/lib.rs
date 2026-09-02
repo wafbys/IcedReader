@@ -3,6 +3,7 @@ mod library;
 mod platform_fonts;
 mod portable;
 mod protocol;
+mod window_state;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -271,6 +272,7 @@ pub fn run() {
             let window = tauri::WebviewWindowBuilder::from_config(app, &conf)?
                 .data_directory(webview_dir)
                 .build()?;
+            window_state::attach(&window);
             disable_browser_accelerators(&window);
             Ok(())
         })
