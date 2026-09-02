@@ -22,12 +22,14 @@ import {
   charAtPoint,
   highlightSupported,
   paintHighlights,
+  rangeForRecord,
   spanAtChar,
   type AppliedSpan,
   type HighlightAnchor,
 } from "./highlights";
 import { collectUsedFonts, type UsedFontReport } from "./usedFonts";
 import type { HighlightRecord } from "./types";
+import { normHref } from "./types";
 
 export type PageInfo = {
   page: number;
@@ -55,6 +57,10 @@ type Props = {
   chapterHref: string;
   onCreateHighlight: (href: string, anchor: HighlightAnchor) => Promise<void>;
   onDeleteHighlight: (id: string) => Promise<void>;
+  /** A highlight to scroll into view once its chapter is laid out. */
+  pendingHighlight: HighlightRecord | null;
+  /** Called once the pending highlight has been located (clears it upstream). */
+  onHighlightLocated: () => void;
   fontScale?: number;
 };
 
@@ -126,6 +132,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     chapterHref,
     onCreateHighlight,
     onDeleteHighlight,
+    pendingHighlight,
+    onHighlightLocated,
     fontScale = 100,
   },
   ref,
@@ -164,6 +172,13 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   onCreateHighlightRef.current = onCreateHighlight;
   const onDeleteHighlightRef = useRef(onDeleteHighlight);
   onDeleteHighlightRef.current = onDeleteHighlight;
+  const onLocatedRef = useRef(onHighlightLocated);
+  onLocatedRef.current = onHighlightLocated;
+  /** Locate request; `done` marks the first placement so a font reflow can
+   *  then make one precise final jump before the request is cleared. */
+  const pendingRef = useRef<{ rec: HighlightRecord; done: boolean } | null>(
+    null,
+  );
 
   const wheelLock = useRef(false);
   const appliedRef = useRef<AppliedSpan[]>([]);
@@ -217,6 +232,60 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     });
   };
 
+  /** Scroll the flow so a highlight's span sits on the current page. */
+  const locateRecord = (doc: Document, rec: HighlightRecord): boolean => {
+    const st = layout.current;
+    if (!st.metrics) return false;
+    const range = rangeForRecord(doc, rec);
+    if (!range) return false;
+    const rect = range.getBoundingClientRect();
+    const rootRect = doc.documentElement.getBoundingClientRect();
+    const x = rect.left - rootRect.left;
+    const page = Math.floor(x / st.metrics.stride);
+    applyPage(page, true);
+    return true;
+  };
+
+  /**
+   * Place the pending highlight onto the visible page. The first placement
+   * happens as soon as the chapter is laid out; when fonts are still loading
+   * (which can reflow the columns), a second precise jump runs once
+   * `document.fonts.ready` resolves.
+   */
+  const tryLocate = () => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    if (normHref(pending.rec.href, true) !== normHref(docForRef.current.href, true)) {
+      return;
+    }
+    const doc = docForRef.current.doc;
+    if (!doc?.body || !layout.current.metrics) return;
+    if (pending.done) return;
+    if (!locateRecord(doc, pending.rec)) return;
+    pending.done = true;
+    const fonts = (doc as Document & { fonts?: FontFaceSet }).fonts;
+    if (fonts && fonts.status !== "loaded") {
+      void fonts.ready.then(() => {
+        if (!pendingRef.current || pendingRef.current.rec.id !== pending.rec.id) {
+          return;
+        }
+        const now = docForRef.current;
+        if (
+          now.doc?.body &&
+          layout.current.metrics &&
+          normHref(pending.rec.href, true) === normHref(now.href, true)
+        ) {
+          locateRecord(now.doc, pending.rec);
+        }
+        pendingRef.current = null;
+        onLocatedRef.current();
+      });
+      return;
+    }
+    pendingRef.current = null;
+    onLocatedRef.current();
+  };
+
   const relayout = (keepFraction: boolean) => {
     const host = hostRef.current;
     const box = containerRef.current;
@@ -255,6 +324,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       ? pageIndexFromFraction(fractionRef.current, pages)
       : 0;
     applyPage(page, false);
+    tryLocate();
   };
 
   const goPage = (delta: number): "ok" | "before" | "after" => {
@@ -295,6 +365,20 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     const f = docForRef.current;
     if (f.href === chapterHref) paintDoc();
   }, [highlights, chapterHref]);
+
+  useEffect(() => {
+    if (pendingHighlight) {
+      const cur = pendingRef.current;
+      if (!cur || cur.rec.id !== pendingHighlight.id) {
+        pendingRef.current = { rec: pendingHighlight, done: false };
+      }
+      // Same chapter already rendered: locate immediately; a cross-chapter
+      // jump waits for the next iframe load -> relayout -> tryLocate.
+      tryLocate();
+    } else {
+      pendingRef.current = null;
+    }
+  }, [pendingHighlight]);
 
   const turn = (dir: -1 | 1) => {
     setToolbar(null);

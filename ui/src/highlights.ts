@@ -325,6 +325,29 @@ export function recordsToRanges(
   return { ranges, applied, missing };
 }
 
+/**
+ * Build the live Range for a single stored record, re-anchoring by excerpt
+ * when the text-node indexes no longer fit. Used to locate a highlight (e.g.
+ * jump from the list) without painting it.
+ */
+export function rangeForRecord(
+  doc: Document,
+  rec: HighlightRecord,
+): Range | null {
+  const texts = collectTexts(doc);
+  const prefix = textPrefix(texts);
+  let span = recordSpan(texts, prefix, rec);
+  if (!span) span = anchorByExcerpt(texts, rec);
+  if (!span) return null;
+  const fromPt = pointOfChar(texts, prefix, span.from);
+  const toPt = pointOfChar(texts, prefix, span.to);
+  if (!fromPt || !toPt || span.to <= span.from) return null;
+  const range = doc.createRange();
+  range.setStart(texts[fromPt.seq], fromPt.offset);
+  range.setEnd(texts[toPt.seq], toPt.offset);
+  return range;
+}
+
 export function highlightSupported(doc: Document): boolean {
   const win = doc.defaultView as
     | (Window & { CSS?: { highlights?: unknown }; Highlight?: unknown })

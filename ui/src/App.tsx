@@ -6,6 +6,7 @@ import ChapterFrame, {
   type PageInfo,
 } from "./ChapterFrame";
 import FontPanel from "./FontPanel";
+import HighlightsPanel from "./HighlightsPanel";
 import Library from "./Library";
 import TocPanel from "./TocPanel";
 import {
@@ -40,15 +41,18 @@ export default function App() {
   const [fonts, setFonts] = useState<FontSettings | null>(null);
   const [fontOpen, setFontOpen] = useState(false);
   const [tocOpen, setTocOpen] = useState(false);
+  const [highlightsOpen, setHighlightsOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [chromeOn, setChromeOn] = useState(false);
   const fullscreenRef = useRef(false);
   const tocOpenRef = useRef(false);
   const fontOpenRef = useRef(false);
+  const highlightsOpenRef = useRef(false);
   const hideChromeTimer = useRef<number | null>(null);
   fullscreenRef.current = fullscreen;
   tocOpenRef.current = tocOpen;
   fontOpenRef.current = fontOpen;
+  highlightsOpenRef.current = highlightsOpen;
   const [settingsRev, setSettingsRev] = useState(0);
   const [publisherFonts, setPublisherFonts] = useState<PublisherFontReport | null>(
     null,
@@ -56,6 +60,10 @@ export default function App() {
   const [usedFonts, setUsedFonts] = useState<UsedFontReport | null>(null);
   /** Highlights of the open book (filtered per chapter when handed to the frame). */
   const [highlights, setHighlights] = useState<HighlightRecord[]>([]);
+  /** Highlight to jump to (set by the list; cleared once the frame locates it). */
+  const [pendingHighlight, setPendingHighlight] = useState<HighlightRecord | null>(
+    null,
+  );
   const [pageInfo, setPageInfo] = useState<PageInfo>({
     page: 0,
     pages: 1,
@@ -82,6 +90,20 @@ export default function App() {
     const exact = normHref(current.href, true);
     return highlights.filter((h) => normHref(h.href, true) === exact);
   }, [highlights, current]);
+
+  /** All highlights in reading order: spine order, then text position. */
+  const sortedHighlights = useMemo(() => {
+    const order = new Map<string, number>();
+    spine.forEach((item, i) => order.set(normHref(item.href, true), i));
+    const rank = (h: HighlightRecord) =>
+      order.get(normHref(h.href, true)) ?? Number.MAX_SAFE_INTEGER;
+    return [...highlights].sort(
+      (a, b) =>
+        rank(a) - rank(b) ||
+        a.startText - b.startText ||
+        a.startOffset - b.startOffset,
+    );
+  }, [highlights, spine]);
 
   const createHighlight = useCallback(async (href: string, anchor: HighlightAnchor) => {
     const b = bookRef.current;
@@ -321,6 +343,8 @@ export default function App() {
     setUsedFonts(null);
     setHighlights([]);
     setTocOpen(false);
+    setHighlightsOpen(false);
+    setPendingHighlight(null);
     await loadLibrary();
   }, [persistReadingPosition, loadLibrary]);
 
@@ -355,11 +379,15 @@ export default function App() {
         setPublisherFonts(null);
         setUsedFonts(null);
         setTocOpen(false);
+        setHighlightsOpen(false);
+        setPendingHighlight(null);
         void loadLibrary();
       } catch (err) {
         setError(String(err));
         setBook(null);
         setTocOpen(false);
+        setHighlightsOpen(false);
+        setPendingHighlight(null);
         void loadLibrary();
       } finally {
         setBusy(false);
@@ -435,6 +463,24 @@ export default function App() {
     [flushProgress],
   );
 
+  const goToHighlight = useCallback(
+    (rec: HighlightRecord) => {
+      setHighlightsOpen(false);
+      const items = bookRef.current?.spine ?? [];
+      const i = chapterIndex(items, rec.href);
+      if (i < 0) return;
+      setPendingHighlight(rec);
+      if (i === indexRef.current) return;
+      flushProgress();
+      lastFraction.current = 0;
+      setRestoreFraction(0);
+      setIndex(i);
+    },
+    [flushProgress],
+  );
+
+  const onHighlightLocated = useCallback(() => setPendingHighlight(null), []);
+
   const showChrome = useCallback(() => {
     if (hideChromeTimer.current !== null) {
       window.clearTimeout(hideChromeTimer.current);
@@ -444,7 +490,9 @@ export default function App() {
   }, []);
 
   const scheduleHideChrome = useCallback(() => {
-    if (fontOpenRef.current || tocOpenRef.current) return;
+    if (fontOpenRef.current || tocOpenRef.current || highlightsOpenRef.current) {
+      return;
+    }
     if (hideChromeTimer.current !== null) {
       window.clearTimeout(hideChromeTimer.current);
     }
@@ -495,9 +543,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (fullscreen && (fontOpen || tocOpen)) setChromeOn(true);
+    if (fullscreen && (fontOpen || tocOpen || highlightsOpen)) setChromeOn(true);
     if (!fullscreen) setChromeOn(false);
-  }, [fullscreen, fontOpen, tocOpen]);
+  }, [fullscreen, fontOpen, tocOpen, highlightsOpen]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -508,6 +556,10 @@ export default function App() {
         return;
       }
       if (e.key === "Escape") {
+        if (highlightsOpenRef.current) {
+          setHighlightsOpen(false);
+          return;
+        }
         if (tocOpenRef.current) {
           setTocOpen(false);
           return;
@@ -572,10 +624,24 @@ export default function App() {
         <button
           type="button"
           className="btn ghost"
-          onClick={() => setTocOpen((openNow) => !openNow)}
+          onClick={() => {
+            setTocOpen((openNow) => !openNow);
+            setHighlightsOpen(false);
+          }}
           disabled={!book}
         >
           目录
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={() => {
+            setHighlightsOpen((openNow) => !openNow);
+            setTocOpen(false);
+          }}
+          disabled={!book}
+        >
+          划线
         </button>
         <button
           type="button"
@@ -689,6 +755,24 @@ export default function App() {
             />
           </>
         )}
+        {highlightsOpen && book && (
+          <>
+            <button
+              type="button"
+              className="toc-dim"
+              aria-label="关闭划线"
+              onClick={() => setHighlightsOpen(false)}
+            />
+            <HighlightsPanel
+              highlights={sortedHighlights}
+              spine={spine}
+              currentHref={current?.href ?? ""}
+              onSelect={goToHighlight}
+              onDelete={(id) => void deleteHighlight(id)}
+              onClose={() => setHighlightsOpen(false)}
+            />
+          </>
+        )}
         <main className="stage">
           {!book && (
             <Library
@@ -715,6 +799,8 @@ export default function App() {
                 chapterHref={current.href}
                 onCreateHighlight={createHighlight}
                 onDeleteHighlight={deleteHighlight}
+                pendingHighlight={pendingHighlight}
+                onHighlightLocated={onHighlightLocated}
                 onProgress={queueProgress}
                 onUsedFonts={setUsedFonts}
                 onPageInfo={setPageInfo}
