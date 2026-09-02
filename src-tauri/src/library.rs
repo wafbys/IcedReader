@@ -192,7 +192,14 @@ fn chapter_progress(
 ) -> (Option<u32>, Option<u32>, Option<String>, Option<f64>) {
     let spine = book.spine();
     let count = spine.len() as u32;
-    let idx = spine.iter().position(|item| hrefs_match(&item.href, &locator.href));
+    let idx = spine
+        .iter()
+        .position(|item| hrefs_match(&item.href, &locator.href, true))
+        .or_else(|| {
+            spine
+                .iter()
+                .position(|item| hrefs_match(&item.href, &locator.href, false))
+        });
     match idx {
         Some(i) => (
             Some(i as u32),
@@ -204,7 +211,7 @@ fn chapter_progress(
     }
 }
 
-fn hrefs_match(a: &str, b: &str) -> bool {
+fn hrefs_match(a: &str, b: &str, keep_fragment: bool) -> bool {
     let (file_a, frag_a) = split_href(a);
     let (file_b, frag_b) = split_href(b);
     let file_a = file_a.trim_start_matches('/');
@@ -212,11 +219,10 @@ fn hrefs_match(a: &str, b: &str) -> bool {
     if !file_a.eq_ignore_ascii_case(file_b) {
         return false;
     }
-    match (frag_a, frag_b) {
-        (None, None) => true,
-        (Some(x), Some(y)) => x == y,
-        _ => frag_a.is_none() || frag_b.is_none(),
+    if !keep_fragment {
+        return true;
     }
+    frag_a == frag_b
 }
 
 fn split_href(href: &str) -> (&str, Option<&str>) {
@@ -250,5 +256,36 @@ mod tests {
         assert!(entries[0].chapter_count.unwrap_or(0) >= 1);
         assert!(entries[0].updated_at.is_none());
         assert!(!entries[0].cover_rev.is_empty());
+    }
+
+    #[test]
+    fn lists_saved_progress_for_sample() {
+        let root = std::env::temp_dir().join("icedreader-library-progress");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
+        let dest = root.join("sample.epub");
+        fs::copy(&sample, &dest).unwrap();
+
+        let book = EpubOpener.open(&dest).unwrap();
+        let href = book.spine()[0].href.clone();
+        let key = progress_key(&dest, &book.metadata().identifiers, Some(&root));
+        let mut store = ProgressStore::in_memory();
+        store
+            .set(
+                key,
+                Locator {
+                    href,
+                    fraction: 0.5,
+                    cfi: None,
+                },
+            )
+            .unwrap();
+
+        let entries = list_library_in(&root, &store);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].chapter_index, Some(0));
+        assert!((entries[0].fraction.unwrap() - 0.5).abs() < 1e-9);
+        assert!(entries[0].updated_at.is_some());
     }
 }

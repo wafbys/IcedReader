@@ -11,12 +11,19 @@ type Props = {
 
 function progressLabel(entry: LibraryEntry): string {
   if (entry.openError) return "无法打开";
-  if (entry.chapterIndex == null || entry.chapterCount == null) {
-    return entry.chapterCount ? `共 ${entry.chapterCount} 章 · 未读` : "未读";
+  const pct =
+    entry.fraction != null
+      ? ` · ${Math.round(Math.min(1, Math.max(0, entry.fraction)) * 100)}%`
+      : "";
+  if (entry.chapterIndex != null && entry.chapterCount != null) {
+    const n = entry.chapterIndex + 1;
+    const title = entry.chapterTitle ? ` · ${entry.chapterTitle}` : "";
+    return `第 ${n}/${entry.chapterCount} 章${title}${pct}`;
   }
-  const n = entry.chapterIndex + 1;
-  const title = entry.chapterTitle ? ` · ${entry.chapterTitle}` : "";
-  return `第 ${n}/${entry.chapterCount} 章${title}`;
+  if (entry.updatedAt != null || entry.fraction != null) {
+    return `阅读中${pct}`;
+  }
+  return entry.chapterCount ? `共 ${entry.chapterCount} 章 · 未读` : "未读";
 }
 
 function coverUrl(origin: string, fileName: string, coverRev: string): string {

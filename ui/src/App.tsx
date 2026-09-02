@@ -90,6 +90,19 @@ export default function App() {
     }
   }, []);
 
+  const persistReadingPosition = useCallback(async () => {
+    const currentBook = bookRef.current;
+    const href = currentBook?.spine[indexRef.current]?.href;
+    if (currentBook && href) {
+      pending.current = {
+        key: currentBook.progressKey,
+        href,
+        fraction: lastFraction.current,
+      };
+    }
+    await flushProgress();
+  }, [flushProgress]);
+
   const queueProgress = useCallback(
     (fraction: number) => {
       const currentBook = bookRef.current;
@@ -236,7 +249,7 @@ export default function App() {
   }, []);
 
   const goShelf = useCallback(async () => {
-    await flushProgress();
+    await persistReadingPosition();
     const currentBook = bookRef.current;
     if (currentBook) {
       await invoke("close_book", { id: currentBook.id }).catch(() => undefined);
@@ -247,11 +260,11 @@ export default function App() {
     setUsedFonts(null);
     setTocOpen(false);
     await loadLibrary();
-  }, [flushProgress, loadLibrary]);
+  }, [persistReadingPosition, loadLibrary]);
 
   const openPath = useCallback(
     async (selected: string) => {
-      await flushProgress();
+      await persistReadingPosition();
       setError(null);
       setBusy(true);
       try {
@@ -281,7 +294,7 @@ export default function App() {
         setBusy(false);
       }
     },
-    [flushProgress, loadLibrary],
+    [persistReadingPosition, loadLibrary],
   );
 
   const openEpub = useCallback(async () => {
@@ -314,12 +327,13 @@ export default function App() {
       const i = indexRef.current;
       const next = Math.min(len - 1, Math.max(0, i + delta));
       if (next === i) return;
-      flushProgress();
-      lastFraction.current = fraction;
-      setRestoreFraction(fraction);
-      setIndex(next);
+      void persistReadingPosition().then(() => {
+        lastFraction.current = fraction;
+        setRestoreFraction(fraction);
+        setIndex(next);
+      });
     },
-    [flushProgress],
+    [persistReadingPosition],
   );
 
   const goPage = useCallback(
