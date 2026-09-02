@@ -37,6 +37,7 @@ type Props = {
   onUsedFonts: (report: UsedFontReport) => void;
   onPageInfo: (info: PageInfo) => void;
   onNeedChapter: (delta: -1 | 1) => void;
+  fontScale?: number;
 };
 
 function usableLang(value: string | null | undefined): string | null {
@@ -87,6 +88,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     onUsedFonts,
     onPageInfo,
     onNeedChapter,
+    fontScale = 100,
   },
   ref,
 ) {
@@ -116,6 +118,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   onNeedChapterRef.current = onNeedChapter;
   const authorRef = useRef(authorFamilies);
   authorRef.current = authorFamilies;
+  const fontScaleRef = useRef(fontScale);
+  fontScaleRef.current = fontScale;
   const wheelLock = useRef(false);
 
   const applyPage = (page: number, announce: boolean) => {
@@ -158,7 +162,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       doc.head.appendChild(style);
     }
     doc.documentElement.classList.add(FLOW_STYLE_ID);
-    style.textContent = flowCss(metrics);
+    style.textContent = flowCss(metrics, fontScaleRef.current);
     doc.documentElement.style.setProperty("width", `${metrics.stride}px`, "important");
     void doc.documentElement.offsetHeight;
 
@@ -200,6 +204,10 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   useEffect(() => {
     fractionRef.current = restoreFraction;
   }, [restoreFraction, html]);
+
+  useEffect(() => {
+    relayout(true);
+  }, [fontScale]);
 
   const turn = (dir: -1 | 1) => {
     const result = goPage(dir);

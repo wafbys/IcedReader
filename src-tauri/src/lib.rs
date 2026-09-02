@@ -166,6 +166,18 @@ fn set_use_original_fonts(
 }
 
 #[tauri::command]
+fn set_font_scale(
+    font_scale: u32,
+    state: tauri::State<AppState>,
+) -> Result<FontSettingsView, String> {
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings
+        .set_font_scale(font_scale)
+        .map_err(|e| e.to_string())?;
+    Ok(settings.view())
+}
+
+#[tauri::command]
 fn install_font(
     slot: String,
     path: String,
@@ -286,6 +298,7 @@ pub fn run() {
             save_progress,
             get_font_settings,
             set_use_original_fonts,
+            set_font_scale,
             install_font,
             clear_font,
             get_platform_fonts

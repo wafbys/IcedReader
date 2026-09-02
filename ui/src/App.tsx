@@ -184,9 +184,28 @@ export default function App() {
           fonts: { serif: null, sans: null, mono: null, cjk: null },
           missingSlots: ["serif", "sans", "mono", "cjk"],
           customFontsActive: false,
+          fontScale: 100,
         }),
       );
   }, []);
+
+  const bumpFontScale = useCallback(
+    async (delta: number) => {
+      const current = fonts?.fontScale ?? 100;
+      const nextScale = Math.min(160, Math.max(80, current + delta));
+      if (nextScale === current) return;
+      try {
+        const next = await invoke<FontSettings>("set_font_scale", {
+          fontScale: nextScale,
+        });
+        setFonts(next);
+        setRestoreFraction(lastFraction.current);
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [fonts],
+  );
 
   const toggleOriginalFonts = useCallback(
     async (useOriginalFonts: boolean) => {
@@ -513,6 +532,27 @@ export default function App() {
         >
           字体
         </button>
+        <div className="type-size">
+          <button
+            type="button"
+            className="btn ghost small"
+            disabled={!fonts || (fonts.fontScale ?? 100) <= 80}
+            onClick={() => void bumpFontScale(-10)}
+            title="缩小字号"
+          >
+            A−
+          </button>
+          <span>{fonts?.fontScale ?? 100}%</span>
+          <button
+            type="button"
+            className="btn ghost small"
+            disabled={!fonts || (fonts.fontScale ?? 100) >= 160}
+            onClick={() => void bumpFontScale(10)}
+            title="放大字号"
+          >
+            A+
+          </button>
+        </div>
         <button
           type="button"
           className="btn ghost"
@@ -613,6 +653,7 @@ export default function App() {
                 ref={frameRef}
                 html={chapterHtml}
                 restoreFraction={restoreFraction}
+                fontScale={fonts?.fontScale ?? 100}
                 documentLang={book.metadata.language}
                 authorFamilies={specifiedFamiliesFromReport(
                   publisherFonts?.declarations.map((d) => d.value) ?? [],

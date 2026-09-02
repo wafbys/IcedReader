@@ -149,6 +149,22 @@ body {
   white-space: nowrap;
 }
 
+.type-size {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.type-size span {
+  min-width: 3.2em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: #c8bfb4;
+}
+
 @media (max-width: 960px) {
   .brand {
     display: none;

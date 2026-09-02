@@ -87,13 +87,14 @@ export function scrollLeftForPage(page: number, stride: number): number {
   return Math.max(0, page) * stride;
 }
 
-export function flowCss(metrics: FlowMetrics): string {
+export function flowCss(metrics: FlowMetrics, fontScale = 100): string {
   const w = Math.trunc(metrics.columnWidth);
   const g = metrics.gap.toFixed(2);
   const h = metrics.viewHeight.toFixed(2);
   const padX = (metrics.gap / 2).toFixed(2);
   const padY = blockPadding(metrics.viewHeight);
   const imgH = Math.max(1, metrics.viewHeight - padY * 2).toFixed(2);
+  const scale = Number.isFinite(fontScale) ? Math.min(160, Math.max(80, fontScale)) : 100;
   return `
 html.${FLOW_STYLE_ID} {
   box-sizing: border-box !important;
@@ -102,6 +103,7 @@ html.${FLOW_STYLE_ID} {
   column-gap: ${g}px !important;
   column-fill: auto !important;
   padding: ${padY}px ${padX}px !important;
+  font-size: ${scale}% !important;
   overflow: hidden !important;
   overflow-wrap: break-word !important;
   position: static !important;

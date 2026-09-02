@@ -105,6 +105,7 @@ export type FontSettings = {
   };
   missingSlots: FontSlotId[];
   customFontsActive: boolean;
+  fontScale: number;
 };
 
 export const FONT_SLOTS: { id: FontSlotId; label: string }[] = [

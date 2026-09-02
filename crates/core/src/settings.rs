@@ -75,6 +75,11 @@ impl FontSlots {
     }
 }
 
+pub const FONT_SCALE_MIN: u32 = 80;
+pub const FONT_SCALE_MAX: u32 = 160;
+pub const FONT_SCALE_STEP: u32 = 10;
+pub const FONT_SCALE_DEFAULT: u32 = 100;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReaderSettings {
@@ -82,10 +87,22 @@ pub struct ReaderSettings {
     pub use_original_fonts: bool,
     #[serde(default)]
     pub fonts: FontSlots,
+    #[serde(default = "default_font_scale")]
+    pub font_scale: u32,
 }
 
 fn default_use_original() -> bool {
     true
+}
+
+fn default_font_scale() -> u32 {
+    FONT_SCALE_DEFAULT
+}
+
+pub fn clamp_font_scale(value: u32) -> u32 {
+    let v = value.clamp(FONT_SCALE_MIN, FONT_SCALE_MAX);
+    let steps = (v - FONT_SCALE_MIN) / FONT_SCALE_STEP;
+    FONT_SCALE_MIN + steps * FONT_SCALE_STEP
 }
 
 impl Default for ReaderSettings {
@@ -93,6 +110,7 @@ impl Default for ReaderSettings {
         Self {
             use_original_fonts: true,
             fonts: FontSlots::default(),
+            font_scale: FONT_SCALE_DEFAULT,
         }
     }
 }
@@ -104,6 +122,7 @@ pub struct FontSettingsView {
     pub fonts: FontSlots,
     pub missing_slots: Vec<FontSlot>,
     pub custom_fonts_active: bool,
+    pub font_scale: u32,
 }
 
 #[derive(Debug, Default)]
@@ -149,6 +168,7 @@ impl SettingsStore {
             fonts: self.data.fonts.clone(),
             custom_fonts_active: !self.data.use_original_fonts && missing.is_empty(),
             missing_slots: missing,
+            font_scale: clamp_font_scale(self.data.font_scale),
         }
     }
 
@@ -178,6 +198,11 @@ impl SettingsStore {
 
     pub fn set_use_original_fonts(&mut self, value: bool) -> Result<(), CoreError> {
         self.data.use_original_fonts = value;
+        self.persist()
+    }
+
+    pub fn set_font_scale(&mut self, value: u32) -> Result<(), CoreError> {
+        self.data.font_scale = clamp_font_scale(value);
         self.persist()
     }
 
@@ -290,5 +315,26 @@ mod tests {
             view.fonts.serif.as_ref().map(|f| f.original_name.as_str()),
             Some("MySerif.ttf")
         );
+        assert_eq!(view.font_scale, FONT_SCALE_DEFAULT);
+    }
+
+    #[test]
+    fn font_scale_clamps_and_persists() {
+        assert_eq!(clamp_font_scale(50), 80);
+        assert_eq!(clamp_font_scale(999), 160);
+        assert_eq!(clamp_font_scale(115), 110);
+
+        let root = std::env::temp_dir().join("icedreader-settings-scale");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("settings.json");
+        let fonts = root.join("fonts");
+        fs::create_dir_all(&fonts).unwrap();
+        fs::write(&path, r#"{"useOriginalFonts":true}"#).unwrap();
+        let mut store = SettingsStore::open(path.clone(), fonts.clone()).unwrap();
+        assert_eq!(store.view().font_scale, 100);
+        store.set_font_scale(130).unwrap();
+        let reloaded = SettingsStore::open(path, fonts).unwrap();
+        assert_eq!(reloaded.view().font_scale, 130);
     }
 }

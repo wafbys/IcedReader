@@ -21,7 +21,8 @@ pub use publisher_fonts::{
     collect_publisher_fonts, ChapterView, PublisherFontDecl, PublisherFontReport,
 };
 pub use settings::{
-    FontFile, FontSettingsView, FontSlot, FontSlots, ReaderSettings, SettingsStore,
+    clamp_font_scale, FontFile, FontSettingsView, FontSlot, FontSlots, ReaderSettings,
+    SettingsStore, FONT_SCALE_DEFAULT, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP,
 };
 
 pub const EPUB_FORMAT: &str = "epub";
