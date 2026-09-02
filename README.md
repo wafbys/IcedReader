@@ -6,21 +6,21 @@ Windows 优先的桌面电子书阅读器。产品名沿用 IcedReader，技术�
 
 ## 现在能做什么
 
-- 打开本地 `.epub`（EPUB 2 / 3），复制进 `data/library/`；启动先进入本地书架，点封面继续读，阅读页可回书架
-- 书架列出书名、作者、封面（有则显示）和章节进度
-- 显示书名、作者、当前章名
-- 分页阅读（Foliate / Epub.js 那套 CSS 分栏）：每栏正文最多约 720px，窗口够宽且横屏时双栏，多出的宽度当页边；左右键 / 点左右侧 / 滚轮翻页，章边界再进上一章或下一章。目录用锚点标在同一文件里的章会拆开翻
-- 目录：侧栏树，点击跳到该章；当前章高亮
-- 全屏：顶栏「全屏」或 F11；Esc 退出。全屏时顶栏收起，鼠标移到顶部再出现
-- 记住进度：章节 href（可含 `#锚点`）+ 章内滚动比例（0～1），不存像素位置
-- **绿色软件：** 打开的书会复制进程序目录下的 `data/library/`，进度、字体和 WebView 数据也在 `data/`。把整个文件夹拷走即带走书和状态。
-- 字体：默认「使用原书字体」。关掉且衬线 / 无衬线 / 等宽 / 中文·CJK 四个文件都上传后，才强制用自定义字体（CJK 码位走中文/CJK 槽）。缺任何一个则仍按原书 CSS。**每槽一个文件**（Regular 或 Book 均可；不必上传 Italic / Bold / SemiBold）。覆盖开启后，书中的斜体和粗体由引擎合成，没有单独的斜体/粗体槽。请在字体面板上传；只把文件丢进 `data/fonts/` 不会生效（槽位要登记在 `settings.json`）。字体面板分两栏：原书 CSS 怎么写（含 `@font-face`；`src` 不在书内会标明），以及本章实际绘制。命名字体没装上只列 CSS 名；走 `serif` 等泛型时显示「（系统 serif）」，不把汉字猜成雅黑或宋体。
+- **书架：** 启动进入本地书架（无 `ICED_READER_OPEN` 时）。列出 `data/library/` 里的 `.epub`（书名、作者、封面、章节进度；最近读过的在前）。点封面继续读。阅读顶栏「书架」返回。尚无删除、分类、子目录。
+- **打开书：** 本地 EPUB 2 / 3。「打开 EPUB」会复制进 `data/library/`（同名已存在则复用，不另存 `-2`）。阅读顶栏显示书名、作者、当前章与页。
+- **分页：** Foliate / Epub.js 式 CSS 分栏。每栏正文最多约 720px；窗口够宽且横屏时双栏，多出的宽度当左右页边。正文上下约 20–40px 留白。左右键 / 点左右侧 / 滚轮翻页；章边界再进上一章或下一章。目录用锚点标在同一文件里的章会拆开翻。
+- **目录：** 侧栏树，点击跳到该章；当前章高亮。
+- **全屏：** 顶栏「全屏」或 F11；Esc 先关目录再退出全屏。全屏时顶栏收起，鼠标移到窗口顶部整条热区再出现。
+- **进度：** 只存章节 `href`（可含 `#锚点`）+ 章内比例 0～1，不存像素。有 EPUB identifier 用 `id:...`，否则 `lib:文件名`。
+- **窗口：** 默认 1120×780，最小 800×520。顶栏固定 52px；窄窗口或长书名用省略号，不换行撑高。
+- **绿色软件：** 书、进度、字体、设置、WebView 数据都在 exe 同级 `data/`。开发跑 `target/debug/`，release 跑 `target/release/`，**两套 data 互不相通**。拷走整个程序目录即带走状态。不要装进 Program Files。
+- **字体：** 默认「使用原书字体」。关掉且衬线 / 无衬线 / 等宽 / 中文·CJK 四个文件都经**字体面板**上传后，才覆盖（CJK 码位走中文槽）。缺任一槽则仍按原书 CSS。每槽一个文件（Regular 或 Book 即可）。覆盖后斜体粗体由引擎合成。只把文件丢进 `data/fonts/` 不会生效。字体面板分两栏：原书 CSS 怎么写，以及本章实际绘制（泛型显示「（系统 serif）」，不猜宋体/雅黑）。
 
 样书：`fixtures/sample.epub`。
 
 ## 接着要做
 
-书签、章内搜索、字号与浅色/暗色。进度字段里预留了 CFI，等分页引擎再填。
+书签、章内搜索、字号与浅色/暗色。分页已实现；`Locator.cfi` 仍预留，未填写。
 
 ## 技术栈
 
@@ -39,7 +39,7 @@ Windows 优先的桌面电子书阅读器。产品名沿用 IcedReader，技术�
 - Visual Studio 2022 Build Tools，勾选「使用 C++ 的桌面开发」
 - Node.js LTS
 
-若本机开着 Smart App Control（强制），会拦住 Cargo 的未签名 build script，也会拦住本地编出来的 `IcedReader.exe`。开发前请先关闭。
+若本机开着 Smart App Control（强制），会拦住 Cargo 的未签名 build script，也会拦住本地编出来的 `iced-reader.exe`。开发前请先关闭。
 
 ## 开发
 
@@ -73,7 +73,7 @@ data/
   webview/          WebView2 用户数据
 ```
 
-开发时 exe 在 `target/debug/`，因此 `data/` 会出现在那里（已被 git 忽略）。
+开发时 exe 在 `target/debug/`，字体和书库在 `target/debug/data/`。release 的 `IcedReader-…-windows-x64.exe` 用的是 `target/release/data/`（没有则自行生成空目录）。两套不要混用，除非你把整个 `data` 拷过去。
 
 ## 发布
 
@@ -105,6 +105,7 @@ GitHub Release 上传那份 `IcedReader-…-windows-x64.exe`。拷到任意可�
 ```powershell
 cargo test -p iced-reader-core
 cargo test -p iced-reader-epub
+cargo test -p iced-reader
 npx tsc --noEmit
 ```
 
@@ -113,8 +114,8 @@ npx tsc --noEmit
 ```
 crates/core           格式无关的书模型、进度
 crates/formats-epub   EPUB 适配器（rbook 不外泄到前端）
-src-tauri             Tauri 命令、自定义协议 icedreader://
-ui                    书架/阅读壳
+src-tauri             Tauri 命令、自定义协议 icedreader://、书库扫描
+ui                    书架（`Library.tsx`）/ 阅读壳
 fixtures              样书
 scripts/dev.ps1       Windows 开发启动
 ```
