@@ -39,6 +39,7 @@ export type LibraryEntry = {
   fraction: number | null;
   updatedAt: number | null;
   hasCover: boolean;
+  coverRev: string;
   openError: string | null;
 };
 

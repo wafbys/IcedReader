@@ -21,6 +21,8 @@ pub struct LibraryEntry {
     pub fraction: Option<f64>,
     pub updated_at: Option<i64>,
     pub has_cover: bool,
+    /// Length + mtime so the cover URL changes when the same filename is replaced.
+    pub cover_rev: String,
     pub open_error: Option<String>,
 }
 
@@ -92,11 +94,25 @@ fn read_epub_paths(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
+fn file_rev(path: &Path) -> String {
+    let Ok(meta) = fs::metadata(path) else {
+        return String::new();
+    };
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{}-{}", meta.len(), mtime)
+}
+
 fn describe_book(path: &Path, library: &Path, progress: &ProgressStore) -> LibraryEntry {
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "book.epub".into());
+    let cover_rev = file_rev(path);
     let fallback_title = file_name
         .strip_suffix(".epub")
         .or_else(|| file_name.strip_suffix(".EPUB"))
@@ -117,6 +133,7 @@ fn describe_book(path: &Path, library: &Path, progress: &ProgressStore) -> Libra
             fraction: None,
             updated_at: None,
             has_cover: false,
+            cover_rev,
             open_error: Some("不是 EPUB".into()),
         };
     }
@@ -147,6 +164,7 @@ fn describe_book(path: &Path, library: &Path, progress: &ProgressStore) -> Libra
                 fraction,
                 updated_at: rec.map(|r| r.updated_at),
                 has_cover: meta.cover_href.is_some(),
+                cover_rev,
                 open_error: None,
             }
         }
@@ -162,6 +180,7 @@ fn describe_book(path: &Path, library: &Path, progress: &ProgressStore) -> Libra
             fraction: None,
             updated_at: None,
             has_cover: false,
+            cover_rev,
             open_error: Some(err.to_string()),
         },
     }
@@ -230,5 +249,6 @@ mod tests {
         assert!(entries[0].open_error.is_none());
         assert!(entries[0].chapter_count.unwrap_or(0) >= 1);
         assert!(entries[0].updated_at.is_none());
+        assert!(!entries[0].cover_rev.is_empty());
     }
 }

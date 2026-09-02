@@ -71,7 +71,7 @@ export default function App() {
   const spine = book?.spine ?? [];
   const current = spine[index];
 
-  const flushProgress = useCallback(() => {
+  const flushProgress = useCallback(async () => {
     const next = pending.current;
     if (!next) return;
     pending.current = null;
@@ -79,11 +79,15 @@ export default function App() {
       window.clearTimeout(timer.current);
       timer.current = null;
     }
-    void invoke("save_progress", {
-      key: next.key,
-      href: next.href,
-      fraction: next.fraction,
-    }).catch(() => undefined);
+    try {
+      await invoke("save_progress", {
+        key: next.key,
+        href: next.href,
+        fraction: next.fraction,
+      });
+    } catch {
+      /* keep reading if persist fails */
+    }
   }, []);
 
   const queueProgress = useCallback(
@@ -232,7 +236,7 @@ export default function App() {
   }, []);
 
   const goShelf = useCallback(async () => {
-    flushProgress();
+    await flushProgress();
     const currentBook = bookRef.current;
     if (currentBook) {
       await invoke("close_book", { id: currentBook.id }).catch(() => undefined);
@@ -247,7 +251,7 @@ export default function App() {
 
   const openPath = useCallback(
     async (selected: string) => {
-      flushProgress();
+      await flushProgress();
       setError(null);
       setBusy(true);
       try {

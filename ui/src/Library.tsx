@@ -19,8 +19,9 @@ function progressLabel(entry: LibraryEntry): string {
   return `第 ${n}/${entry.chapterCount} 章${title}`;
 }
 
-function coverUrl(origin: string, fileName: string): string {
-  return `${origin.replace(/\/$/, "")}/library-cover/${encodeURIComponent(fileName)}`;
+function coverUrl(origin: string, fileName: string, coverRev: string): string {
+  const base = `${origin.replace(/\/$/, "")}/library-cover/${encodeURIComponent(fileName)}`;
+  return coverRev ? `${base}?r=${encodeURIComponent(coverRev)}` : base;
 }
 
 function Cover({ entry, origin }: { entry: LibraryEntry; origin: string }) {
@@ -36,7 +37,7 @@ function Cover({ entry, origin }: { entry: LibraryEntry; origin: string }) {
   return (
     <img
       className="lib-cover"
-      src={coverUrl(origin, entry.fileName)}
+      src={coverUrl(origin, entry.fileName, entry.coverRev)}
       alt=""
       onError={() => setBroken(true)}
     />
@@ -74,7 +75,11 @@ export default function Library({
               title={entry.openError ?? entry.title}
               onClick={() => onOpen(entry.path)}
             >
-              <Cover entry={entry} origin={origin} />
+              <Cover
+                key={entry.coverRev || entry.path}
+                entry={entry}
+                origin={origin}
+              />
               <div className="lib-info">
                 <strong>{entry.title}</strong>
                 <span>

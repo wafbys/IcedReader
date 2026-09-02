@@ -174,7 +174,12 @@ fn serve_library_cover(file_name: &str) -> tauri::http::Response<Vec<u8>> {
         }
     };
     match crate::library::cover_bytes(&path) {
-        Ok((media, data)) => cors_cached(StatusCode::OK, &media, data),
+        Ok((media, data)) => cors_cache(
+            StatusCode::OK,
+            &media,
+            data,
+            "private, max-age=0, must-revalidate",
+        ),
         Err(err) => cors(
             StatusCode::NOT_FOUND,
             "text/plain; charset=utf-8",
