@@ -1,8 +1,8 @@
 # IcedReader
 
-Windows 优先的桌面电子书阅读器。产品名沿用 IcedReader，技术栈是 **Tauri 2 + React + Rust**，正文用系统 WebView 渲染 EPUB 的 HTML。
+Windows 桌面电子书阅读器。产品名沿用 IcedReader，技术栈是 **Tauri 2 + React + Rust**，正文用系统 WebView 渲染 EPUB 的 HTML。
 
-当前目标平台顺序：Windows → macOS / Linux → iOS → 鸿蒙。第一版只出品 EPUB，格式层按可扩展接口来写。
+当前只做 Windows（x64）。第一版只出品 EPUB，格式层仍按可扩展接口来写，方便以后想加格式再加。
 
 **没有黑色主题，也不会做。** 本软件就是浅色纸。禁止主题切换、禁止暗色模式、禁止用 `prefers-color-scheme` 把阅读界面弄成黑的。那些一上手就给用户默认黑色主题的程序员，自以为是的傻逼。不要往这仓库里加。
 

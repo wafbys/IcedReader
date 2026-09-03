@@ -1,4 +1,4 @@
-//! Actual rendered fonts via Chromium DevTools Protocol (same as DevTools Rendered Fonts).
+//! 实际渲染字体，经 Chromium DevTools Protocol 读取（同 DevTools Rendered Fonts，仅 Windows WebView2）。
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -21,13 +21,7 @@ pub async fn collect(app: tauri::AppHandle) -> Result<Vec<PlatformFontUsage>, St
     let (tx, rx) = mpsc::channel();
     window
         .with_webview(move |webview| {
-            #[cfg(windows)]
             windows_impl::query(webview, tx);
-            #[cfg(not(windows))]
-            {
-                let _ = tx.send(Err("实际字体目前只在 Windows 上查询引擎".into()));
-                let _ = webview;
-            }
         })
         .map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -38,7 +32,6 @@ pub async fn collect(app: tauri::AppHandle) -> Result<Vec<PlatformFontUsage>, St
     .map_err(|e| e.to_string())?
 }
 
-#[cfg(windows)]
 mod windows_impl {
     use super::PlatformFontUsage;
     use std::sync::mpsc::Sender;

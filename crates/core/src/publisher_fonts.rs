@@ -445,7 +445,7 @@ fn url_is_book_font(url: &str) -> bool {
     if l.starts_with("data:") {
         return true;
     }
-    if l.contains("icedreader.localhost") || l.starts_with("icedreader://localhost/") {
+    if l.contains("icedreader.localhost") {
         return true;
     }
     !has_url_scheme(url)
@@ -754,10 +754,9 @@ fn resolve_href(href: &str, resource_base: &str, base_file: &str) -> String {
 }
 
 fn strip_icedreader_book_path(href: &str) -> Option<&str> {
-    const PREFIXES: [&str; 3] = [
+    const PREFIXES: [&str; 2] = [
         "http://icedreader.localhost/book/",
         "https://icedreader.localhost/book/",
-        "icedreader://localhost/book/",
     ];
     for prefix in PREFIXES {
         if let Some(rest) = href.strip_prefix(prefix) {
@@ -769,7 +768,7 @@ fn strip_icedreader_book_path(href: &str) -> Option<&str> {
 
 fn join_href(base_file: &str, rel: &str) -> String {
     let rel = normalize_book_href(rel);
-    if rel.starts_with("http:") || rel.starts_with("https:") || rel.starts_with("icedreader:") {
+    if rel.starts_with("http:") || rel.starts_with("https:") {
         return rel;
     }
     let base = normalize_book_href(base_file);
@@ -803,9 +802,8 @@ fn normalize_book_href(href: &str) -> String {
 
 fn is_external(href: &str) -> bool {
     let l = href.to_ascii_lowercase();
-    (l.starts_with("http://") || l.starts_with("https://") || l.starts_with("icedreader:"))
+    (l.starts_with("http://") || l.starts_with("https://"))
         && !l.contains("icedreader.localhost")
-        && !l.starts_with("icedreader://localhost/")
 }
 
 fn file_name(href: &str) -> String {

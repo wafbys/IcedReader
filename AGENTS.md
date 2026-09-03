@@ -4,7 +4,7 @@
 
 ## 这是什么
 
-IcedReader 是桌面电子书阅读器。名字不是 Iced GUI。当前实现：Tauri 2 壳 + React 界面 + Rust 核心。Windows 先打磨；以后 Mac/Linux/iOS/鸿蒙，所以不要把业务写进 Windows 专用 API。
+IcedReader 是 Windows 桌面电子书阅读器。名字不是 Iced GUI。当前实现：Tauri 2 壳 + React 界面 + Rust 核心。只做 Windows，不要把业务写进 Windows 专用 API（Tauri/WebView 边界留在 `src-tauri`）。
 
 ## 分层（不要打穿）
 
@@ -19,7 +19,7 @@ IcedReader 是桌面电子书阅读器。名字不是 Iced GUI。当前实现：
 
 ## 硬约束
 
-1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`（非 Windows 为 `icedreader://localhost/...`），这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰**（颜色、字号、`max-width` 居中等）。允许两处例外：① 用户关掉「使用原书字体」且 serif / sans / mono / 中文·CJK 四个上传文件都在并能识别时，注入 `@font-face`（CJK 用 `unicode-range`）并改写 `font-family`；缺任一槽位则整段不注入。每槽一个文件，磁盘名为 `serif` / `sans` / `mono` / `cjk` 加识别出的扩展名，是否启用看 `settings.json` 的登记，不要扫 `data/fonts/` 当导入。用户从字体面板上传；不要做成「往 fonts 文件夹丢文件即用」。`@font-face` 不写 `font-weight` / `font-style` 变体；覆盖开启后粗斜体走引擎合成。不要扩成 Regular/Italic/Bold 四文件族，也不要按文件名约定去配对。② 分页 flow：父页可写入带 `id="iced-reader-flow"` 的样式，只含高度、`column-*`、`overflow`、页边 `padding`、图 `max-width` / `max-height`、以及用户字号（`html { font-size: N% }`，N 为 80–160）。不要按书语言选日/韩字体，不要用系统字体。禁止黑色主题、禁止主题切换、禁止用 `prefers-color-scheme` 把壳或正文改成暗色。
+1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`，这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰**（颜色、字号、`max-width` 居中等）。允许两处例外：① 用户关掉「使用原书字体」且 serif / sans / mono / 中文·CJK 四个上传文件都在并能识别时，注入 `@font-face`（CJK 用 `unicode-range`）并改写 `font-family`；缺任一槽位则整段不注入。每槽一个文件，磁盘名为 `serif` / `sans` / `mono` / `cjk` 加识别出的扩展名，是否启用看 `settings.json` 的登记，不要扫 `data/fonts/` 当导入。用户从字体面板上传；不要做成「往 fonts 文件夹丢文件即用」。`@font-face` 不写 `font-weight` / `font-style` 变体；覆盖开启后粗斜体走引擎合成。不要扩成 Regular/Italic/Bold 四文件族，也不要按文件名约定去配对。② 分页 flow：父页可写入带 `id="iced-reader-flow"` 的样式，只含高度、`column-*`、`overflow`、页边 `padding`、图 `max-width` / `max-height`、以及用户字号（`html { font-size: N% }`，N 为 80–160）。不要按书语言选日/韩字体，不要用系统字体。禁止黑色主题、禁止主题切换、禁止用 `prefers-color-scheme` 把壳或正文改成暗色。
 ③ **用户划线高亮（用户主动标注，非皮肤）：** 允许父页在章节 doc 里注入带 `id="iced-reader-highlight-style"` 的样式，只含 `::highlight(iced-reader-highlight)` 的背景色与 `color: inherit`，并用 CSS Custom Highlight API 上色；**不改 DOM 结构、不插 `mark`、不影响版式与内容**。选区捕获、点中判定、注入、删除全部由父页脚本完成（章节 iframe 仍不开 `allow-scripts`）。划线锚定按章内全局文本节点序号 + 节点内偏移（加原文摘录兜底），存 `data/annotations.json`；划线不属于「正文排版”，高亮随文字流动，翻页、字号变化不丢。
 2. **进度只存 `Locator`：`href` + `fraction`（0～1）+ 可选 `cfi`。** 禁止存像素 `scrollTop`。CSS 分栏分页已有；`cfi` 仍留空，不要提前填假值。
 3. **进度键：** 有 EPUB identifier 用 `id:...`；否则相对便携书库用 `lib:...`。禁止用会随目录搬家失效的绝对 `path:` 当主键（仅作没有书库目录时的回退）。实现见 `progress_key`。外部 EPUB 按文件名进书库，同名已存在则复用，不要每次打开复制成 `书名-2.epub`（没有 identifier 的书会因此丢进度）。`lib:书名-N.epub` 与 `lib:书名.epub` 视为同一本。
@@ -51,9 +51,9 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 - `save_progress`
 - `list_annotations` / `add_annotation` / `delete_annotation`（划线，键同进度键，存 `data/annotations.json`）
 - `get_font_settings` / `set_use_original_fonts` / `set_font_scale` / `install_font` / `clear_font`
-- `get_platform_fonts`（Windows：Chromium `CSS.getPlatformFontsForNode`，章节 iframe 里真正绘制用的字体）
+- `get_platform_fonts`（Chromium `CSS.getPlatformFontsForNode`，章节 iframe 里真正绘制用的字体）
 
-协议：`src-tauri/src/protocol.rs`，scheme `icedreader`。Windows 上实际请求是 `http://icedreader.localhost/...`。书架封面走 `/library-cover/{文件名}`，不要为此给章节 iframe 开脚本。启动无 `ICED_READER_OPEN` 时进入书架，不要再停在空白「打开一本 EPUB」。
+协议：`src-tauri/src/protocol.rs`，scheme `icedreader`，实际请求是 `http://icedreader.localhost/...`。书架封面走 `/library-cover/{文件名}`，不要为此给章节 iframe 开脚本。启动无 `ICED_READER_OPEN` 时进入书架，不要再停在空白「打开一本 EPUB」。
 
 ## EPUB 章节
 

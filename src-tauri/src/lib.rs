@@ -314,24 +314,19 @@ fn close_book(id: String, state: tauri::State<AppState>) -> Result<(), String> {
 
 fn disable_browser_accelerators(window: &tauri::WebviewWindow) {
     let _ = window.with_webview(|webview| {
-        #[cfg(windows)]
-        {
-            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
-            use windows::core::Interface;
-            let controller = webview.controller();
-            if let Ok(core) = unsafe { controller.CoreWebView2() } {
-                if let Ok(settings) = unsafe { core.Settings() } {
-                    if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
-                        let _ = unsafe { settings3.SetAreBrowserAcceleratorKeysEnabled(false) };
-                    }
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+        use windows::core::Interface;
+        let controller = webview.controller();
+        if let Ok(core) = unsafe { controller.CoreWebView2() } {
+            if let Ok(settings) = unsafe { core.Settings() } {
+                if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
+                    let _ = unsafe { settings3.SetAreBrowserAcceleratorKeysEnabled(false) };
                 }
             }
         }
-        let _ = webview;
     });
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     portable::prepare_webview_env();
     tauri::Builder::default()

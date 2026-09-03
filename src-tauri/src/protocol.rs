@@ -6,21 +6,13 @@ use tauri::{Manager, UriSchemeContext};
 use crate::fonts as reader_fonts;
 use crate::AppState;
 
-/// Windows/Android: `http://icedreader.localhost/...`
-/// macOS/Linux/iOS: `icedreader://localhost/...`
+/// 仅 Windows：章节资源统一走 `http://icedreader.localhost/...`，
+/// 让书自带的图片与 CSS 能加载。
 pub fn origin() -> &'static str {
-    #[cfg(any(windows, target_os = "android"))]
-    {
-        "http://icedreader.localhost"
-    }
-    #[cfg(not(any(windows, target_os = "android")))]
-    {
-        "icedreader://localhost"
-    }
+    "http://icedreader.localhost"
 }
 
-/// Windows/Android: `http://icedreader.localhost/book/{id}/...`
-/// macOS/Linux/iOS: `icedreader://localhost/book/{id}/...`
+/// `http://icedreader.localhost/book/{id}/...`
 pub fn resource_base(book_id: &str) -> String {
     format!("{}/book/{book_id}/", origin())
 }
