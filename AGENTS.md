@@ -46,7 +46,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 
 ## Tauri 命令
 
-- `open_book` / `close_book` / `pending_book` / `list_library`
+- `open_book` / `close_book` / `pending_book` / `list_library` / `delete_book`（`fileName` + `progressKey`：删书库内 epub，并清该书进度与划线；前端必须先弹确认框再调）
 - `get_chapter`（返回 `{ html, publisherFonts }`。`publisherFonts`：本章原书 CSS 的 font-family 原文、`@font-face` 名、以及 `src` 不在书内的 `unloadableFaces`）/ `resource_origin`
 - `save_progress`
 - `list_annotations` / `add_annotation` / `delete_annotation`（划线，键同进度键，存 `data/annotations.json`）
@@ -72,7 +72,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
   - 栈里的 **CSS 泛型**（`serif` / `sans-serif` / `monospace` 等）实际生效时，显示 `（系统 serif）` 这类标签，来源为「泛型」。不要再猜宋体或雅黑。
   - 栈里既没有可用命名字体、也没有泛型时，才标缺字回退（`（系统 CJK 默认）` 或对上的已装 CJK 名）。
 - 目录用 `book.toc`（没有则退回 spine 标题）。侧栏树、点条目跳到对应章首页。当前章高亮。不要在前端再 parse NCX。
-- **书架：** `ui/src/Library.tsx` + `list_library`。封面用协议 `/library-cover/{文件名}`，URL 带 `coverRev`（文件大小+mtime），响应不要 `immutable` 长缓存，同名替换后应换图。不要在 JS 里 unzip，也不要把封面字节塞进 `list_library` 的 JSON。回书架前要 `await` 进度写入，再 `list_library`。书库只扫 `data/library/` 一层 `*.epub`，不要做分类、子目录、删除、内容哈希去重，除非产品明确要求。开发 `target/debug/data` 与 release `target/release/data` 是两套。
+- **书架：** `ui/src/Library.tsx` + `list_library`。封面用协议 `/library-cover/{文件名}`，URL 带 `coverRev`（文件大小+mtime），响应不要 `immutable` 长缓存，同名替换后应换图。不要在 JS 里 unzip，也不要把封面字节塞进 `list_library` 的 JSON。回书架前要 `await` 进度写入，再 `list_library`。删书已实现：封面右下三点按钮弹小菜单（目前仅「从书库删除」，走命令 `delete_book`），点菜单项后必须先弹确认框；菜单状态在 `Library.tsx` 内维护，不要另加删除入口。书库只扫 `data/library/` 一层 `*.epub`，不要做分类、子目录、内容哈希去重，除非产品明确要求。开发 `target/debug/data` 与 release `target/release/data` 是两套。
 - **顶栏：** `.chrome` 固定 52px，`flex-wrap: nowrap`；按钮 `white-space: nowrap`；书名/作者/进度省略号。不要让长标题把工具栏撑高。
 - **窗口几何：** 位置/大小/最大化存 `data/window.json`。全屏当阅读态，不要作为下次启动状态。不要在 `CloseRequested` 里 `prevent_close`。
 - 全屏用 Tauri `setFullscreen`（F11 / 顶栏按钮），不要用浏览器 `requestFullscreen`；Windows 上关掉 WebView2 浏览器加速键，避免 F11 和引擎抢。Esc：先关目录，再退出全屏。全屏时顶栏默认收起，窗口顶部整条热区（含正文中间）可唤出，不要只靠左右页边的 mousemove。
@@ -92,3 +92,5 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 改阅读功能时：无 `ICED_READER_OPEN` 时启动应进书架（看 **当前 exe 旁边** 的 `data/library/`，开发是 `target/debug/data`）。点封面打开，顶栏「书架」能回去且进度还在。打开 `fixtures/sample.epub`，确认第一章中文、左右翻页、拉宽窗口变双栏、关开后页大致还在。点「目录」能跳章，当前条目高亮。F11 全屏后正文铺满，鼠标移到顶部能再点「退出全屏」，Esc 退出全屏。改布局时确认顶栏以下没有空白条、没有灰底托一条窄白纸；窄窗口顶栏高度仍约 52px、文字不竖排。改字体时：默认仍是原书 CSS；只传部分字体并关掉「使用原书字体」时正文不变；四槽都齐才覆盖，CJK 字走中文/CJK 槽。字号 A−/A+ 应变大变小并写入 settings.json，不要出现暗色主题。可用仓库旁未提交的样书核对（不要 git add）：`五千年掌故.epub` 指定 PingFang SC / FZFangSong-Z02，Windows 上通常未安装；`新西游记++共两册.epub` 指定 `cnepub, serif` 但 `@font-face` 是设备 `res://`，实际渲染应为 `（系统 serif）`，并标 cnepub 书内无字体文件。没有桌面窗口时至少跑 `cargo test -p iced-reader-core`、`cargo test -p iced-reader-epub`、`cargo test -p iced-reader`。
 
 改划线时：选中一段文字松手应浮出「划线」，点后即时变黄；再点这段（无选区单击）浮出「删除划线」；双击已有划线中的词也应是删除而非报重叠；删除后即刻消失。A±/拉宽窗口后划线仍贴在原句上。翻走再回来、重启程序后划线仍在，且 `data/annotations.json` 已更新。选中文字点划线后不应翻页（点正文中段空白处翻页仍正常）。顶栏「划线」应列出全书画线（按阅读顺序），点一条跳到所在章的那一页（跨章会切章，同章直接定位），列表里删除后即时消失。
+
+改书架删书时：封面右下三点弹出小菜单，点菜单外 / Esc 应关闭；「从书库删除」先弹确认框，取消不动书；确认后卡片消失，`data/library/` 里文件没了，`progress.json` / `annotations.json` 里该书（同 stem 的 `lib:` 键）记录也清掉；同名重新导入进度从零开始。坏书（无法打开）也能删。
