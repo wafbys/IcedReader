@@ -834,6 +834,7 @@ export default function App() {
                 onUsedFonts={setUsedFonts}
                 onPageInfo={setPageInfo}
                 onNeedChapter={(delta) => goChapter(delta, delta < 0 ? 1 : 0)}
+                onFollowBookHref={goToHref}
               />
             </div>
           )}

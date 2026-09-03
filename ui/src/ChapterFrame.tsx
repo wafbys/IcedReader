@@ -51,6 +51,8 @@ type Props = {
   onUsedFonts: (report: UsedFontReport) => void;
   onPageInfo: (info: PageInfo) => void;
   onNeedChapter: (delta: -1 | 1) => void;
+  /** A book-internal link was clicked: navigate to another chapter file. */
+  onFollowBookHref?: (href: string) => void;
   /** Highlights belonging to the currently displayed chapter. */
   highlights: HighlightRecord[];
   /** Spine href of the chapter this frame is showing (for paint sync). */
@@ -128,6 +130,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     onUsedFonts,
     onPageInfo,
     onNeedChapter,
+    onFollowBookHref,
     highlights,
     chapterHref,
     onCreateHighlight,
@@ -162,6 +165,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   onPageInfoRef.current = onPageInfo;
   const onNeedChapterRef = useRef(onNeedChapter);
   onNeedChapterRef.current = onNeedChapter;
+  const onFollowBookHrefRef = useRef(onFollowBookHref);
+  onFollowBookHrefRef.current = onFollowBookHref;
   const authorRef = useRef(authorFamilies);
   authorRef.current = authorFamilies;
   const fontScaleRef = useRef(fontScale);
@@ -244,6 +249,46 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     const page = Math.floor(x / st.metrics.stride);
     applyPage(page, true);
     return true;
+  };
+
+  /**
+   * Links inside a chapter are rewritten to the app's own origin
+   * (`http://icedreader.localhost/book/{id}/...`) so the book's images and CSS
+   * load. A plain click would navigate the iframe away from its `srcDoc` to
+   * that cross-origin resource, breaking pagination and leaving the reader
+   * unable to page. Intercept: same-file anchors scroll to the element's page,
+   * other files hand the navigation to the reader (chapter switch).
+   */
+  const followBookLink = (doc: Document, rawHref: string) => {
+    const st = layout.current;
+    if (!st.metrics) return;
+    let url: URL;
+    try {
+      url = new URL(rawHref, doc.location.href);
+    } catch {
+      return;
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return;
+    // Rewritten book links are absolute under `http://icedreader.localhost/book/{id}/`;
+    // strip that prefix to recover the spine-style path (e.g. text/part0008.html).
+    let bookPath = url.pathname;
+    const prefix = /^\/book\/[^/]+\//.exec(bookPath);
+    if (prefix) bookPath = bookPath.slice(prefix[0].length);
+    const path = normHref(bookPath, false);
+    if (!path) return;
+    const currentPath = normHref(chapterHref, false);
+    if (path === currentPath) {
+      const frag = url.hash.slice(1);
+      if (!frag) return;
+      const el = doc.getElementById(frag);
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const rootRect = doc.documentElement.getBoundingClientRect();
+      const x = rect.left - rootRect.left;
+      applyPage(Math.floor(x / st.metrics.stride), true);
+      return;
+    }
+    onFollowBookHrefRef.current?.(`${bookPath}${url.hash || ""}`);
   };
 
   /**
@@ -555,7 +600,16 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
                 swallowDocClick.current = false;
                 e.preventDefault();
                 e.stopPropagation();
+                return;
               }
+              const target = e.target as Element | null;
+              const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
+              if (!anchor) return;
+              // Never let a book link navigate the iframe away from srcDoc;
+              // route it inside the reader instead.
+              e.preventDefault();
+              e.stopPropagation();
+              followBookLink(doc, anchor.getAttribute("href") ?? anchor.href);
             };
             doc.addEventListener("click", onDocClick);
 
