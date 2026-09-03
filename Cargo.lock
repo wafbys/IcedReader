@@ -1481,7 +1481,7 @@ dependencies = [
 
 [[package]]
 name = "iced-reader"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "iced-reader-core",
  "iced-reader-epub",
@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "iced-reader-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "iced-reader-epub"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "iced-reader-core",
  "rbook",
