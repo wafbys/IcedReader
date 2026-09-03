@@ -22,6 +22,16 @@ pub fn prepare_portable() {
     portable::prepare_webview_env();
 }
 
+/// 窗口标题：产品名 + 版本号 + 构建时 git 短 hash（无 git 环境时省略 hash）。
+/// hash 由 build.rs 在编译期经 ICED_READER_GIT_HASH 注入，属「build 时」固化值。
+fn window_title(base: &str) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    match option_env!("ICED_READER_GIT_HASH") {
+        Some(hash) if !hash.is_empty() => format!("{base} {version} ({hash})"),
+        _ => format!("{base} {version}"),
+    }
+}
+
 pub struct AppState {
     pub books: Mutex<HashMap<String, Box<dyn Book>>>,
     pub progress: Mutex<ProgressStore>,
@@ -371,6 +381,7 @@ pub fn run() {
             let window = tauri::WebviewWindowBuilder::from_config(app, &conf)?
                 .data_directory(webview_dir)
                 .build()?;
+            let _ = window.set_title(&window_title(&conf.title));
             window_state::attach(&window);
             disable_browser_accelerators(&window);
             Ok(())
@@ -397,4 +408,26 @@ pub fn run() {
         .register_uri_scheme_protocol("icedreader", protocol::handle)
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_title;
+
+    #[test]
+    fn title_always_contains_version() {
+        let title = window_title("IcedReader");
+        assert!(title.starts_with(&format!("IcedReader {}", env!("CARGO_PKG_VERSION"))));
+    }
+
+    #[test]
+    fn title_has_hash_when_env_injected() {
+        let title = window_title("IcedReader");
+        match option_env!("ICED_READER_GIT_HASH") {
+            Some(hash) if !hash.is_empty() => {
+                assert_eq!(title, format!("IcedReader {} ({hash})", env!("CARGO_PKG_VERSION")));
+            }
+            _ => assert_eq!(title, format!("IcedReader {}", env!("CARGO_PKG_VERSION"))),
+        }
+    }
 }
