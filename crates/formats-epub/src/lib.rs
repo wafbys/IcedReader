@@ -1,6 +1,9 @@
 //! EPUB adapter. rbook types stay inside this crate.
 
+mod footnotes;
 mod html;
+
+use footnotes::expand_word_notes;
 
 use std::path::Path;
 
@@ -219,6 +222,7 @@ impl Book for EpubBook {
             return Err(CoreError::ChapterNotFound(href.into()));
         }
         let html = self.read_chapter_document(file, resource_base)?;
+        let html = expand_word_notes(&html);
         let until = self.next_fragment_after(href);
         Ok(slice_chapter(&html, fragment, until.as_deref()))
     }
@@ -665,6 +669,78 @@ mod tests {
             "{html}"
         );
         assert_eq!(spine[0].title.as_deref(), Some("第一回"));
+    }
+
+    #[test]
+    #[ignore = "heavy: walks every XHTML document of the multi-MB 资治通鉴 through expand_word_notes"]
+    fn word_notes_expand_all_zztj_documents() {
+        use std::time::Instant;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let zztj = root.join("资治通鉴.epub");
+        if !zztj.exists() {
+            return;
+        }
+        let book = EpubBook {
+            inner: rbook::epub::Epub::open(&zztj).expect("资治通鉴"),
+        };
+        let started = Instant::now();
+        let mut docs = 0usize;
+        let mut noted = 0usize;
+        let mut markers = 0usize;
+        for entry in book.inner.manifest().iter() {
+            let key = EpubBook::href_of_entry(&entry);
+            if !is_document(entry.kind().as_str(), &key) {
+                continue;
+            }
+            docs += 1;
+            let raw = book
+                .inner
+                .read_resource_str(&key)
+                .unwrap_or_else(|e| panic!("read {key}: {e}"));
+            let out = expand_word_notes(&raw);
+            if out.contains("wr-note-item") {
+                noted += 1;
+                if out.contains("data-wr-footernote") {
+                    let at = out.find("data-wr-footernote").unwrap();
+                    let tail: String = out[at..].chars().take(260).collect();
+                    panic!("leftover attribute in {key}: {tail}");
+                }
+                markers += out.matches("class=\"wr-note\"").count();
+            }
+            assert!(!out.contains("�"), "mojibake in {key}");
+        }
+        eprintln!(
+            "zztj docs={docs} noted={noted} markers={markers} in {:?}",
+            started.elapsed()
+        );
+        assert!(noted > 100, "expected word-note documents, got {noted}");
+    }
+
+    #[test]
+    #[ignore = "heavy: opens the multi-MB 资治通鉴 from the repo root when present"]
+    fn word_notes_expand_in_zztj() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let zztj = root.join("资治通鉴.epub");
+        if !zztj.exists() {
+            return;
+        }
+        let book = EpubOpener.open(&zztj).expect("资治通鉴");
+        let spine = book.spine();
+        let target = spine
+            .iter()
+            .find(|s| s.href.ends_with("02-Section03.xhtml"))
+            .expect("02-Section03 in spine");
+        let html = book
+            .chapter_html(&target.href, "http://icedreader.localhost/book/t/")
+            .expect("chapter");
+        assert!(html.contains("wr-note"), "markers expected");
+        assert!(
+            !html.contains("data-wr-footernote"),
+            "raw note attributes must be gone"
+        );
+        assert!(html.contains("wr-note-item"), "note blocks expected");
+        // The original annotated sentence survives.
+        assert!(html.contains("知莫大于弃疑"), "{html}");
     }
 
     #[test]

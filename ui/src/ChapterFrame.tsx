@@ -28,6 +28,7 @@ import {
   type HighlightAnchor,
 } from "./highlights";
 import { collectUsedFonts, type UsedFontReport } from "./usedFonts";
+import { ensureWordNoteStyle } from "./wordNotes";
 import type { HighlightRecord } from "./types";
 import { normHref } from "./types";
 
@@ -354,6 +355,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     style.textContent = flowCss(metrics, fontScaleRef.current);
     doc.documentElement.style.setProperty("width", `${metrics.stride}px`, "important");
     void doc.documentElement.offsetHeight;
+    ensureWordNoteStyle(doc);
 
     const pages = pageCountFromContent(contentWidth(doc), metrics.stride);
     iframe.style.width = `${pages * metrics.stride}px`;
