@@ -44,6 +44,8 @@ export default function App() {
   const [highlightsOpen, setHighlightsOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [chromeOn, setChromeOn] = useState(false);
+  /** Narrow-window overflow menu in the top bar (reading view only). */
+  const [topMenuOpen, setTopMenuOpen] = useState(false);
   const fullscreenRef = useRef(false);
   const tocOpenRef = useRef(false);
   const fontOpenRef = useRef(false);
@@ -183,6 +185,23 @@ export default function App() {
     },
     [flushProgress],
   );
+
+  useEffect(() => {
+    if (!topMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setTopMenuOpen(false);
+    };
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Element | null;
+      if (!t?.closest?.(".top-more")) setTopMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onDown);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onDown);
+    };
+  }, [topMenuOpen]);
 
   useEffect(() => {
     const onHide = () => flushProgress();
@@ -618,6 +637,7 @@ export default function App() {
     <div
       className={[
         "shell",
+        book ? "reading" : "",
         fullscreen ? "fullscreen" : "",
         fullscreen && (chromeOn || fontOpen || tocOpen) ? "chrome-on" : "",
       ]
@@ -646,12 +666,17 @@ export default function App() {
             书架
           </button>
         )}
-        <button type="button" className="btn" onClick={openEpub} disabled={busy}>
+        <button
+          type="button"
+          className="btn chrome-more"
+          onClick={openEpub}
+          disabled={busy}
+        >
           {busy ? "打开中…" : "打开 EPUB"}
         </button>
         <button
           type="button"
-          className="btn ghost"
+          className="btn ghost chrome-more"
           onClick={() => {
             setTocOpen((openNow) => !openNow);
             setHighlightsOpen(false);
@@ -662,7 +687,7 @@ export default function App() {
         </button>
         <button
           type="button"
-          className="btn ghost"
+          className="btn ghost chrome-more"
           onClick={() => {
             setHighlightsOpen((openNow) => !openNow);
             setTocOpen(false);
@@ -673,7 +698,7 @@ export default function App() {
         </button>
         <button
           type="button"
-          className="btn ghost"
+          className="btn ghost chrome-more"
           onClick={() => setFontOpen((openNow) => !openNow)}
         >
           字体
@@ -701,12 +726,88 @@ export default function App() {
         </div>
         <button
           type="button"
-          className="btn ghost"
+          className="btn ghost chrome-more"
           onClick={() => void toggleFullscreen()}
           title="F11"
         >
           {fullscreen ? "退出全屏" : "全屏"}
         </button>
+        {book && (
+          <div className="top-more">
+            <button
+              type="button"
+              className="btn ghost top-more-btn"
+              aria-label="更多操作"
+              aria-haspopup="menu"
+              aria-expanded={topMenuOpen}
+              title="更多操作"
+              onClick={() => setTopMenuOpen((openNow) => !openNow)}
+            >
+              <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+                <circle cx="8" cy="3.2" r="1.7" fill="currentColor" />
+                <circle cx="8" cy="8" r="1.7" fill="currentColor" />
+                <circle cx="8" cy="12.8" r="1.7" fill="currentColor" />
+              </svg>
+            </button>
+            {topMenuOpen && (
+              <div className="top-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={busy}
+                  onClick={() => {
+                    setTopMenuOpen(false);
+                    void openEpub();
+                  }}
+                >
+                  打开 EPUB
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setTopMenuOpen(false);
+                    setTocOpen((openNow) => !openNow);
+                    setHighlightsOpen(false);
+                  }}
+                >
+                  目录
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setTopMenuOpen(false);
+                    setHighlightsOpen((openNow) => !openNow);
+                    setTocOpen(false);
+                  }}
+                >
+                  划线
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setTopMenuOpen(false);
+                    setFontOpen((openNow) => !openNow);
+                  }}
+                >
+                  字体
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setTopMenuOpen(false);
+                    void toggleFullscreen();
+                  }}
+                >
+                  {fullscreen ? "退出全屏" : "全屏"}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
         {book && (
           <>
             <div className="meta" title={book.metadata.title}>

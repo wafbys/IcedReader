@@ -73,7 +73,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
   - 栈里既没有可用命名字体、也没有泛型时，才标缺字回退（`（系统 CJK 默认）` 或对上的已装 CJK 名）。
 - 目录用 `book.toc`（没有则退回 spine 标题）。侧栏树、点条目跳到对应章首页。当前章高亮。不要在前端再 parse NCX。
 - **书架：** `ui/src/Library.tsx` + `list_library`。封面用协议 `/library-cover/{文件名}`，URL 带 `coverRev`（文件大小+mtime），响应不要 `immutable` 长缓存，同名替换后应换图。不要在 JS 里 unzip，也不要把封面字节塞进 `list_library` 的 JSON。回书架前要 `await` 进度写入，再 `list_library`。删书已实现：封面右下三点按钮弹小菜单（目前仅「从书库删除」，走命令 `delete_book`），点菜单项后必须先弹确认框；菜单状态在 `Library.tsx` 内维护，不要另加删除入口。书库只扫 `data/library/` 一层 `*.epub`，不要做分类、子目录、内容哈希去重，除非产品明确要求。开发 `target/debug/data` 与 release `target/release/data` 是两套。
-- **顶栏：** `.chrome` 固定 52px，`flex-wrap: nowrap`；按钮 `white-space: nowrap`；书名/作者/进度省略号。不要让长标题把工具栏撑高。窗口窄时按断点收低优先项（`≤1180px` 藏 `.brand`，`≤980px` 藏章导航 `.nav`），功能按钮不要被裁切；不要用换行或横向滚动。
+- **顶栏：** `.chrome` 固定 52px，`flex-wrap: nowrap`；按钮 `white-space: nowrap`；书名/作者/进度省略号。不要让长标题把工具栏撑高。窗口窄时（`≤1180px`）阅读视图把低频按钮（打开 EPUB / 目录 / 划线 / 字体 / 全屏，`.chrome-more`）收进右上「⋯」菜单（`.top-more` / `.top-menu`，菜单 `fixed` 定位避开 `.chrome` 的 `overflow: hidden`），书架、上一章/下一章、字号、书名保持常显；`.brand` 同阈值让位。不要用换行或横向滚动，不要整体藏掉章导航。
 - **窗口几何：** 位置/大小/最大化存 `data/window.json`。全屏当阅读态，不要作为下次启动状态。不要在 `CloseRequested` 里 `prevent_close`。
 - 全屏用 Tauri `setFullscreen`（F11 / 顶栏按钮），不要用浏览器 `requestFullscreen`；Windows 上关掉 WebView2 浏览器加速键，避免 F11 和引擎抢。Esc：先关目录，再退出全屏。全屏时顶栏默认收起，窗口顶部整条热区（含正文中间）可唤出，不要只靠左右页边的 mousemove。
 - 界面文案默认中文。

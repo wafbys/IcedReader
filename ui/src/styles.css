@@ -149,18 +149,79 @@ body {
   white-space: nowrap;
 }
 
-/* 窗口越窄越收紧：先藏品牌名，再藏章导航（←→ / 点左右页边 / 章末连续翻页可替代）。
-   功能按钮与书名作者保持完整，只省略。 */
+/* 窗口窄时收紧：品牌名让位给功能按钮。阅读视图进一步把低频按钮（打开 EPUB /
+   目录 / 划线 / 字体 / 全屏）收进「⋯」菜单——上一章/下一章、字号、书名保持常显。 */
 @media (max-width: 1180px) {
   .chrome .brand {
     display: none;
   }
 }
 
-@media (max-width: 980px) {
-  .chrome .nav {
+@media (max-width: 1180px) {
+  .reading .chrome .chrome-more {
     display: none;
   }
+  .reading .chrome .top-more {
+    display: block;
+  }
+}
+
+.top-more {
+  position: relative;
+  flex-shrink: 0;
+  display: none;
+}
+
+.top-more-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
+}
+
+/* 顶栏带 overflow: hidden，菜单用 fixed 定位从右上弹出，避开裁剪。 */
+.top-menu {
+  position: fixed;
+  top: 56px;
+  right: 12px;
+  z-index: 60;
+  min-width: 144px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid rgb(31 28 24 / 14%);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(31 28 24 / 18%);
+}
+
+.top-menu button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.top-menu button:hover:not(:disabled) {
+  background: rgb(31 28 24 / 6%);
+}
+
+.top-menu button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.top-menu button:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .type-size {
