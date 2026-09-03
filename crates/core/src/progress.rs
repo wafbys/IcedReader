@@ -63,6 +63,18 @@ impl ProgressStore {
         self.persist()
     }
 
+    /// Remove one book's record: the exact key plus any `lib:` stem aliases
+    /// that [`same_book`] treats as the same book. Returns whether anything was
+    /// removed.
+    pub fn remove(&mut self, key: &str) -> Result<bool, CoreError> {
+        if !self.entries.keys().any(|k| same_book(k, key)) {
+            return Ok(false);
+        }
+        self.entries.retain(|k, _| !same_book(k, key));
+        self.persist()?;
+        Ok(true)
+    }
+
     fn persist(&self) -> Result<(), CoreError> {
         let Some(path) = &self.path else {
             return Ok(());
@@ -115,6 +127,21 @@ fn relative_to(path: &Path, root: &Path) -> Option<String> {
             .replace('\\', "/")
             .to_lowercase()
     })
+}
+
+/// Equal keys, or two `lib:` keys sharing a stem (numbered copies and the
+/// plain name are one book), address the same book.
+pub(crate) fn same_book(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    if !(a.starts_with("lib:") && b.starts_with("lib:")) {
+        return false;
+    }
+    match (lib_book_stem(a), lib_book_stem(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
 }
 
 /// `lib:新西游记++共两册-17.epub` and `lib:新西游记++共两册.epub` share a stem.
@@ -181,6 +208,45 @@ mod tests {
         fs::write(&book, b"x").unwrap();
         let key = progress_key(&book, &[], Some(&lib));
         assert_eq!(key, "lib:foo.epub");
+    }
+
+    #[test]
+    fn remove_clears_exact_key_and_lib_aliases() {
+        let loc = |f: f64| Locator {
+            href: "/OPS/chapter1.html".into(),
+            fraction: f,
+            cfi: None,
+        };
+        let mut store = ProgressStore::in_memory();
+        store.set("lib:foo.epub".into(), loc(0.1)).unwrap();
+        store.set("lib:foo-2.epub".into(), loc(0.2)).unwrap();
+        store.set("lib:bar.epub".into(), loc(0.3)).unwrap();
+        store.set("id:urn:uuid:other".into(), loc(0.4)).unwrap();
+
+        assert!(store.remove("lib:foo.epub").unwrap());
+        assert!(store.get("lib:foo.epub").is_none());
+        assert!(store.get("lib:foo-2.epub").is_none());
+        assert_eq!(store.get("lib:bar.epub").unwrap().locator.fraction, 0.3);
+        assert_eq!(
+            store.get("id:urn:uuid:other").unwrap().locator.fraction,
+            0.4
+        );
+        assert!(!store.remove("lib:foo.epub").unwrap());
+    }
+
+    #[test]
+    fn remove_id_key_only_touches_that_id() {
+        let loc = Locator {
+            href: "/OPS/chapter1.html".into(),
+            fraction: 0.5,
+            cfi: None,
+        };
+        let mut store = ProgressStore::in_memory();
+        store.set("id:a".into(), loc.clone()).unwrap();
+        store.set("id:b".into(), loc).unwrap();
+        assert!(store.remove("id:a").unwrap());
+        assert!(store.get("id:a").is_none());
+        assert!(store.get("id:b").is_some());
     }
 
     #[test]

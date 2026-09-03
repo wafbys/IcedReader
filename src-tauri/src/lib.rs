@@ -272,6 +272,31 @@ fn list_library(state: tauri::State<AppState>) -> Result<Vec<library::LibraryEnt
     library::list_library(&progress)
 }
 
+/// Remove a library book: its epub file first, then the progress and
+/// annotation records keyed to it. Callers must confirm with the user first.
+#[tauri::command]
+fn delete_book(
+    file_name: String,
+    progress_key: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    library::delete_book_from(&dir, &file_name)?;
+    state
+        .progress
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&progress_key)
+        .map_err(|e| e.to_string())?;
+    state
+        .annotations
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove_book(&progress_key)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn pending_book() -> Option<String> {
     std::env::var("ICED_READER_OPEN").ok().filter(|p| !p.is_empty())
@@ -359,6 +384,7 @@ pub fn run() {
             open_book,
             close_book,
             list_library,
+            delete_book,
             resource_origin,
             pending_book,
             get_chapter,

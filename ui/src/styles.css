@@ -538,9 +538,6 @@ body {
 
 .lib-card {
   appearance: none;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
   width: 100%;
   margin: 0;
   border: 0;
@@ -557,7 +554,131 @@ body {
   opacity: 0.55;
 }
 
-.lib-card:not(:disabled):hover .lib-info strong {
+.lib-item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lib-cover-slot {
+  position: relative;
+}
+
+.lib-cover-btn {
+  display: block;
+  line-height: 0;
+}
+
+.lib-cover-btn:not(:disabled):hover .lib-cover {
+  filter: brightness(1.05);
+}
+
+.lib-cover-btn:not(:disabled):focus-visible .lib-cover {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.lib-more-anchor {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  z-index: 2;
+}
+
+.lib-more {
+  appearance: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(24 21 17 / 55%);
+  color: #fff;
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+}
+
+.lib-more:hover:not(:disabled) {
+  background: rgb(24 21 17 / 78%);
+}
+
+.lib-more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.lib-more:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.lib-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 132px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid rgb(31 28 24 / 14%);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(31 28 24 / 18%);
+}
+
+.lib-menu button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.lib-menu button:hover {
+  background: rgb(31 28 24 / 6%);
+}
+
+.lib-menu button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.lib-menu button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.lib-info {
+  appearance: none;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.lib-info:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.lib-info:not(:disabled):hover strong {
   color: var(--accent);
 }
 
@@ -578,13 +699,6 @@ body {
   color: #f3eee6;
   font-size: 2rem;
   font-weight: 650;
-}
-
-.lib-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
 }
 
 .lib-info strong,

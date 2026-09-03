@@ -19,6 +19,7 @@ pub use fonts::{
     FontUrls, CJK_UNICODE_RANGE, LATIN_UNICODE_RANGE,
 };
 pub use progress::{progress_key, ProgressRecord, ProgressStore};
+pub(crate) use progress::same_book;
 pub use publisher_fonts::{
     collect_publisher_fonts, ChapterView, PublisherFontDecl, PublisherFontReport,
 };

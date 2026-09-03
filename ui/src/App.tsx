@@ -1,4 +1,4 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChapterFrame, {
@@ -330,6 +330,34 @@ export default function App() {
       setError(String(err));
     }
   }, []);
+
+  const deleteBook = useCallback(
+    async (entry: LibraryEntry) => {
+      const confirmed = await ask(
+        `确定从书库删除《${entry.title}》吗？\n将同时删除这本书的阅读进度和划线。`,
+        {
+          title: "删除书籍",
+          kind: "warning",
+          okLabel: "删除",
+          cancelLabel: "取消",
+        },
+      );
+      if (!confirmed) return;
+      setBusy(true);
+      try {
+        await invoke("delete_book", {
+          fileName: entry.fileName,
+          progressKey: entry.progressKey,
+        });
+        await loadLibrary();
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadLibrary],
+  );
 
   const goShelf = useCallback(async () => {
     await persistReadingPosition();
@@ -781,6 +809,7 @@ export default function App() {
               busy={busy}
               onOpen={(path) => void openPath(path)}
               onImport={() => void openEpub()}
+              onDelete={(entry) => void deleteBook(entry)}
             />
           )}
           {book && chapterHtml && (

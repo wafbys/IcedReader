@@ -75,6 +75,24 @@ pub fn library_cover_path(file_name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Delete one library book file. Only a plain file name inside `dir` is
+/// accepted (no separators / `..`), mirroring `library_cover_path`. The caller
+/// is responsible for clearing the book's progress/annotation records.
+pub fn delete_book_from(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    let as_path = Path::new(file_name);
+    if file_name.is_empty()
+        || as_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err("invalid book file name".into());
+    }
+    let path = dir.join(file_name);
+    if !path.is_file() {
+        return Err("book not in library".into());
+    }
+    fs::remove_file(&path).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
 fn read_epub_paths(dir: &Path) -> Vec<PathBuf> {
     let Ok(read) = fs::read_dir(dir) else {
         return Vec::new();
@@ -238,6 +256,25 @@ fn split_href(href: &str) -> (&str, Option<&str>) {
 mod tests {
     use super::*;
     use iced_reader_core::ProgressStore;
+
+    #[test]
+    fn delete_book_removes_file_and_refuses_escapes() {
+        let root = std::env::temp_dir().join("icedreader-library-delete");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
+        fs::copy(&sample, root.join("sample.epub")).unwrap();
+
+        let deleted = delete_book_from(&root, "sample.epub").unwrap();
+        assert!(!deleted.exists());
+        let entries = list_library_in(&root, &ProgressStore::in_memory());
+        assert!(entries.is_empty());
+
+        assert!(delete_book_from(&root, "../sample.epub").is_err());
+        assert!(delete_book_from(&root, "sub/sample.epub").is_err());
+        assert!(delete_book_from(&root, "missing.epub").is_err());
+        assert!(delete_book_from(&root, "").is_err());
+    }
 
     #[test]
     fn lists_sample_epub_from_temp_library() {

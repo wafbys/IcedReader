@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::CoreError;
+use crate::{same_book, CoreError};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +85,18 @@ impl AnnotationStore {
         Ok(removed)
     }
 
+    /// Remove every record belonging to one book: the exact key plus any
+    /// `lib:` stem aliases that the progress key treats as the same book.
+    /// Returns whether anything was removed.
+    pub fn remove_book(&mut self, key: &str) -> Result<bool, CoreError> {
+        if !self.by_book.keys().any(|k| same_book(k, key)) {
+            return Ok(false);
+        }
+        self.by_book.retain(|k, _| !same_book(k, key));
+        self.persist()?;
+        Ok(true)
+    }
+
     fn persist(&self) -> Result<(), CoreError> {
         let Some(path) = &self.path else {
             return Ok(());
@@ -145,6 +157,32 @@ mod tests {
         assert!(store.list("k").is_empty());
         assert!(!store.remove("k", "a").unwrap());
         assert!(!store.remove("other", "a").unwrap());
+    }
+
+    #[test]
+    fn remove_book_clears_book_and_its_lib_aliases() {
+        let mut store = AnnotationStore::in_memory();
+        store.add("lib:foo.epub".into(), hl("a", 0, 0)).unwrap();
+        store.add("lib:foo-2.epub".into(), hl("b", 1, 0)).unwrap();
+        store.add("lib:bar.epub".into(), hl("c", 2, 0)).unwrap();
+        store.add("id:x".into(), hl("d", 3, 0)).unwrap();
+
+        assert!(store.remove_book("lib:foo.epub").unwrap());
+        assert!(store.list("lib:foo.epub").is_empty());
+        assert!(store.list("lib:foo-2.epub").is_empty());
+        assert_eq!(store.list("lib:bar.epub").len(), 1);
+        assert_eq!(store.list("id:x").len(), 1);
+        assert!(!store.remove_book("lib:foo.epub").unwrap());
+    }
+
+    #[test]
+    fn remove_book_leaves_other_ids_alone() {
+        let mut store = AnnotationStore::in_memory();
+        store.add("id:a".into(), hl("1", 0, 0)).unwrap();
+        store.add("id:b".into(), hl("2", 0, 0)).unwrap();
+        assert!(store.remove_book("id:a").unwrap());
+        assert!(store.list("id:a").is_empty());
+        assert_eq!(store.list("id:b").len(), 1);
     }
 
     #[test]
