@@ -2,17 +2,38 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import type { BookMetaFields, BookMetaView, LibraryEntry } from "./types";
 
-/** 非空字段用 " _ " 连接 —— 与 core::book_meta::join_title 同规则（仅预览用，
- *  裁决永远发生在 Rust 侧：md displayTitle 空 → 保存后由字段拼接接管）。 */
-export function joinPreview(
-  title: string,
-  subtitle: string,
-  volume: string,
-): string {
-  return [title, subtitle, volume]
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0)
-    .join(" _ ");
+/**
+ * 拼接预览 —— 镜像 core::book_meta::join_title（裁决永远在 Rust 侧发生）：
+ * `书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 出版年份] [ - 出版社] [ - ISBN…]`。
+ * ` _ ` 只出现在书名与副标题之间，其后一律 ` - `；空段整体跳过；
+ * 书名必填（为空则不拼接）；ISBN 未自带前缀时补 ASCII「ISBN 」。
+ */
+export function joinPreview(f: {
+  title: string;
+  subtitle: string;
+  volume: string;
+  author: string;
+  year: string;
+  publisher: string;
+  isbn: string;
+}): string {
+  const title = f.title.trim();
+  if (!title) return "";
+  let head = title;
+  const subtitle = f.subtitle.trim();
+  if (subtitle) head += " _ " + subtitle;
+  const parts = [head];
+  for (const v of [
+    f.volume.trim(),
+    f.author.trim(),
+    f.year.trim(),
+    f.publisher.trim(),
+  ]) {
+    if (v) parts.push(v);
+  }
+  const isbn = f.isbn.trim();
+  if (isbn) parts.push(/^isbn/i.test(isbn) ? isbn : `ISBN ${isbn}`);
+  return parts.join(" - ");
 }
 
 type Props = {
@@ -28,6 +49,10 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
   const [title, setTitle] = useState("");
   const [subtitle, setSubtitle] = useState("");
   const [volume, setVolume] = useState("");
+  const [author, setAuthor] = useState("");
+  const [year, setYear] = useState("");
+  const [publisher, setPublisher] = useState("");
+  const [isbn, setIsbn] = useState("");
   /** 手改框：初值 = md 里用户确认过的 displayTitle；空 = 派生模式。 */
   const [display, setDisplay] = useState("");
   const [saving, setSaving] = useState(false);
@@ -44,6 +69,10 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
         setTitle(v.title);
         setSubtitle(v.subtitle);
         setVolume(v.volume);
+        setAuthor(v.author);
+        setYear(v.year);
+        setPublisher(v.publisher);
+        setIsbn(v.isbn);
         setDisplay(v.confirmedTitle);
       })
       .catch((err) => {
@@ -66,20 +95,23 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, saving]);
 
-  const joined = view ? joinPreview(title, subtitle, volume) : "";
+  const fields = { title, subtitle, volume, author, year, publisher, isbn };
+  const joined = view ? joinPreview(fields) : "";
   // 保存后实际生效的名字：手改名 → 字段拼接 → 打开时的裁决结果（dc:title/文件名）。
   const effective =
     display.trim() || joined || view?.displayTitle.trim() || entry.title;
   // 手改框非空 = 用户确认过：自动填充不覆盖（按钮禁用）；没内容可填时也禁用。
   const canAutoFill = display.trim() === "" && joined !== "";
+  // 书名必填：留空时不能保存（标题只能回退原书名，走不了拼接）。
+  const titleMissing = view !== null && title.trim() === "";
 
   const save = async () => {
-    if (!view || saving) return;
+    if (!view || saving || titleMissing) return;
     setSaving(true);
     setError("");
     try {
-      const fields: BookMetaFields = { title, subtitle, volume, displayTitle: display };
-      await invoke("set_book_meta", { fileName: entry.fileName, fields });
+      const payload: BookMetaFields = { ...fields, displayTitle: display };
+      await invoke("set_book_meta", { fileName: entry.fileName, fields: payload });
       onSaved();
     } catch (err) {
       setError(String(err));
@@ -124,6 +156,7 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
 
         {view && (
           <form
+            id="bookmeta-form"
             className="meta-form"
             onSubmit={(e) => {
               e.preventDefault();
@@ -141,7 +174,9 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
             </div>
 
             <div className="meta-field">
-              <label htmlFor="bookmeta-title">主书名</label>
+              <label htmlFor="bookmeta-title">
+                主书名 <span className="meta-req">必填</span>
+              </label>
               <input
                 id="bookmeta-title"
                 className="meta-input"
@@ -150,6 +185,9 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
                 placeholder={view.displayTitle || "主书名"}
                 autoFocus
               />
+              {titleMissing && (
+                <p className="meta-error">主书名必填：留空时标题只能回退原书名，无法拼接。</p>
+              )}
             </div>
 
             <div className="meta-field">
@@ -169,15 +207,66 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
                 className="meta-input"
                 value={volume}
                 onChange={(e) => setVolume(e.target.value)}
+                placeholder="如 第二部、上"
               />
+            </div>
+
+            <div className="meta-field">
+              <label htmlFor="bookmeta-author">作者</label>
+              <input
+                id="bookmeta-author"
+                className="meta-input"
+                value={author}
+                onChange={(e) => setAuthor(e.target.value)}
+                placeholder="预填原书作者，可改可清空"
+              />
+              <p className="meta-note">已预填原书作者（多名用、连接）；清空则不拼入标题。</p>
+            </div>
+
+            <div className="meta-field">
+              <label htmlFor="bookmeta-year">出版年份</label>
+              <input
+                id="bookmeta-year"
+                className="meta-input"
+                value={year}
+                onChange={(e) => setYear(e.target.value)}
+                placeholder="如 2008"
+              />
+            </div>
+
+            <div className="meta-field">
+              <label htmlFor="bookmeta-publisher">出版社</label>
+              <input
+                id="bookmeta-publisher"
+                className="meta-input"
+                value={publisher}
+                onChange={(e) => setPublisher(e.target.value)}
+              />
+            </div>
+
+            <div className="meta-field">
+              <label htmlFor="bookmeta-isbn">ISBN</label>
+              <input
+                id="bookmeta-isbn"
+                className="meta-input"
+                value={isbn}
+                onChange={(e) => setIsbn(e.target.value)}
+                placeholder="如 978-7-5366-9293-0"
+              />
+              <p className="meta-note">
+                填号码即可；拼入标题时自动补 ASCII「ISBN 」前缀（你已写 ISBN 开头则保留原样）。
+              </p>
             </div>
 
             <div className="meta-preview">
               <span className="meta-cap">拼接预览</span>
-              <code className="meta-joined">{joined || "（字段留空时不拼接）"}</code>
+              <code className="meta-joined" title={joined || undefined}>
+                {joined || "（书名必填；留空则不拼接）"}
+              </code>
               <p className="meta-note">
-                非空字段按 空格 _ 空格 连接，空字段自动跳过；分隔符由程序生成
-                （只出半角），不改动原书标题里自带的字符。
+                书名 _ 副标题 - 卷册 - 作者 - 出版年份 - 出版社 - ISBN。
+                书名与副标题之间用 空格 _ 空格，其后各项用 空格 - 空格；
+                空字段自动跳过，不会出现连续分隔符。符号由程序生成（只出半角）。
               </p>
             </div>
 
@@ -201,14 +290,14 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
                       ? "显示名已手填：自动填充不覆盖手改，清空后可重新使用"
                       : joined
                         ? "把上方字段的拼接填入显示名"
-                        : "字段都为空，没有可填充的内容"
+                        : "主书名或字段都为空，没有可填充的内容"
                   }
                 >
                   自动填充
                 </button>
               </div>
               <p className="meta-note">
-                留空 = 书架/阅读自动用上方字段拼接的标题（以后改字段即跟随）。
+                留空 = 书架/阅读自动按上方模板拼接（以后改字段即跟随）。
                 填写 = 固定为该名字，字段改动和自动填充都不覆盖它；清空可回到自动拼接。
               </p>
             </div>
@@ -217,23 +306,30 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
               保存后书架将显示：
               <strong title={effective}>{effective}</strong>
             </p>
-
-            {error && <p className="meta-error">{error}</p>}
-
-            <div className="meta-actions">
-              <button type="submit" className="btn" disabled={saving || !view}>
-                {saving ? "保存中…" : "保存"}
-              </button>
-              <button
-                type="button"
-                className="btn ghost"
-                onClick={onClose}
-                disabled={saving}
-              >
-                取消
-              </button>
-            </div>
           </form>
+        )}
+
+        {view && (
+          <div className="meta-actions">
+            {error && <p className="meta-error meta-actions-error">{error}</p>}
+            <button
+              type="submit"
+              form="bookmeta-form"
+              className="btn"
+              disabled={saving || titleMissing}
+              title={titleMissing ? "主书名必填" : undefined}
+            >
+              {saving ? "保存中…" : "保存"}
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={onClose}
+              disabled={saving}
+            >
+              取消
+            </button>
+          </div>
         )}
       </div>
     </div>

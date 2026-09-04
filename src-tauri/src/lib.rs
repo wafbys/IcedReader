@@ -385,6 +385,10 @@ fn set_book_meta(
         title: clean_title(&fields.title),
         subtitle: clean_title(&fields.subtitle),
         volume: clean_title(&fields.volume),
+        author: clean_title(&fields.author),
+        year: clean_title(&fields.year),
+        publisher: clean_title(&fields.publisher),
+        isbn: clean_title(&fields.isbn),
         display_title: clean_title(&fields.display_title),
     };
     write_meta_file(&md_path, &meta).map_err(|e| e.to_string())

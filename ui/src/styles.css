@@ -1061,7 +1061,7 @@ body {
 .meta-modal {
   width: min(500px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
-  overflow: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1100,9 +1100,13 @@ body {
 }
 
 .meta-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding-right: 2px;
 }
 
 .meta-field {
@@ -1189,6 +1193,11 @@ body {
   line-height: 1.5;
 }
 
+.meta-req {
+  color: #a03a20;
+  font-weight: 650;
+}
+
 .meta-effect {
   margin: 0;
   color: var(--muted);
@@ -1205,11 +1214,19 @@ body {
   white-space: nowrap;
 }
 
+/* 字段多了之后表单自己滚，操作行常驻模态底部（不随内容滚走）。 */
 .meta-actions {
+  flex: 0 0 auto;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  padding-top: 2px;
+  border-top: 1px solid #eee2cf;
+  padding-top: 12px;
+}
+
+.meta-actions-error {
+  margin: 0 auto 0 0;
 }
 
 /* 浅色卡片里的 .ghost 按钮不能沿用暗色 chrome 的近白字（对比度不够）。 */

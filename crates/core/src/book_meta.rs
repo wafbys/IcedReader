@@ -10,22 +10,32 @@
 //! bookFile: 三体.epub
 //! originalTitle: 三体
 //! title: 三体
-//! subtitle:
-//! volume: 死神永生
-//! displayTitle: 三体 _ 死神永生
+//! subtitle: 黑暗森林
+//! volume: 第二部
+//! author: 刘慈欣
+//! year: 2008
+//! publisher: 重庆出版社
+//! isbn: 978-7-5366-9293-0
+//! displayTitle:
 //! -->
 //! ```
 //!
 //! - `bookFile` / `originalTitle`: captured on first save (the file name and
 //!   the title the program first saw, before any user edit).
-//! - `title` / `subtitle` / `volume`: structured fields edited in the panel.
+//! - `title` / `subtitle` / `volume` / `author` / `year` / `publisher` /
+//!   `isbn`: structured fields edited in the panel (md v2).
 //! - `displayTitle`: the title the user confirmed for display. Empty means
 //!   "derive it"; when non-empty it wins over everything else (never silently
 //!   overwritten by auto-generation).
 //!
-//! Symbols: auto-generated separators are ASCII only — `" _ "` joins
-//! title/subtitle/volume. Full-width characters inside the original
-//! `dc:title` are preserved as-is (they belong to the book title).
+//! Display-title join template (AGENTS): `书名 [ _ 副标题] [ - 卷册]
+//! [ - 作者] [ - 出版年份] [ - 出版社] [ - ISBN…]`. Auto-generated separators
+//! are ASCII only — `" _ "` appears **only** between 书名 and 副标题;
+//! every later segment (卷册 and the bibliographic data) is joined with
+//! `" - "`. Empty segments are skipped (never an empty segment between two
+//! separators); 书名 is required — without it nothing is derived. Full-width
+//! characters inside the original `dc:title` are preserved as-is (they belong
+//! to the book title).
 
 use std::fs;
 use std::io;
@@ -33,15 +43,18 @@ use std::path::Path;
 
 /// Marker that opens the metadata comment block in the md file.
 pub const META_OPEN: &str = "<!-- icedreader-meta";
-/// Joins title / subtitle / volume into the derived display title.
+/// Separates 书名 from 副标题 in the derived display title (the **only**
+/// place `_` is used; see the join template in the module doc).
 pub const TITLE_JOIN_SEP: &str = " _ ";
 
-/// Separator reserved for joining fields of *different* kinds (e.g. a future
-/// `作者 - 书名`) — user-confirmed 2026-09-04. The current four fields are all
-/// same-kind (`title`/`subtitle`/`volume`), so this stays unused until such a
-/// cross-kind join exists; declared here so the convention lives next to the
-/// code instead of only in docs.
+/// Separator between every later segment of the derived display title: 卷册
+/// and the bibliographic fields (`作者 - 出版年份 - 出版社 - ISBN`).
+/// User-confirmed 2026-09-04.
 pub const FIELD_SEP: &str = " - ";
+
+/// ASCII label prepended when a non-empty ISBN value does not already start
+/// with `ISBN` (so the join reads `… - ISBN 978-7-…`, never `- ISBN-…`).
+pub const ISBN_LABEL: &str = "ISBN ";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BookMeta {
@@ -49,12 +62,20 @@ pub struct BookMeta {
     pub book_file: Option<String>,
     /// Title the program first saw for this book, before any user edit.
     pub original_title: Option<String>,
-    /// 主书名 (main title).
+    /// 主书名 (main title; required for the join).
     pub title: String,
     /// 副标题 (subtitle).
     pub subtitle: String,
     /// 卷册 (volume).
     pub volume: String,
+    /// 作者 (author, single line; multiple names joined with 、 by the panel).
+    pub author: String,
+    /// 出版年份 (year of publication).
+    pub year: String,
+    /// 出版社 (publisher).
+    pub publisher: String,
+    /// ISBN（号码本身；拼接时自动补 ASCII 前缀，见 [`ISBN_LABEL`]）。
+    pub isbn: String,
     /// User-confirmed display title; empty = derive from the fields.
     pub display_title: String,
 }
@@ -64,6 +85,10 @@ impl BookMeta {
         self.title.trim().is_empty()
             && self.subtitle.trim().is_empty()
             && self.volume.trim().is_empty()
+            && self.author.trim().is_empty()
+            && self.year.trim().is_empty()
+            && self.publisher.trim().is_empty()
+            && self.isbn.trim().is_empty()
             && self.display_title.trim().is_empty()
     }
 }
@@ -90,16 +115,51 @@ pub fn clean_title(s: &str) -> String {
     out
 }
 
-/// Join non-empty fields with `" _ "` (ASCII only, never full-width).
-pub fn join_title(title: &str, subtitle: &str, volume: &str) -> String {
-    let mut parts = Vec::with_capacity(3);
-    for p in [title, subtitle, volume] {
+/// Render the display-title per the join template (module doc):
+/// `书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 出版年份] [ - 出版社] [ - ISBN…]`.
+/// Empty segments are skipped entirely — no empty segment between two
+/// separators ever appears. 书名 is required: with no title the function
+/// returns `""` and the resolution chain falls back to the base title.
+/// An ISBN value not already starting with `ISBN` gets the ASCII
+/// [`ISBN_LABEL`] prefix so the segment reads `ISBN 978-7-…`.
+pub fn join_title(
+    title: &str,
+    subtitle: &str,
+    volume: &str,
+    author: &str,
+    year: &str,
+    publisher: &str,
+    isbn: &str,
+) -> String {
+    let title = title.trim();
+    if title.is_empty() {
+        return String::new();
+    }
+    // The one `_` slot: between 书名 and 副标题 only.
+    let mut head = title.to_string();
+    let subtitle = subtitle.trim();
+    if !subtitle.is_empty() {
+        head.push_str(TITLE_JOIN_SEP);
+        head.push_str(subtitle);
+    }
+    // Everything after 副标题 joins with ` - `.
+    let mut parts = Vec::with_capacity(6);
+    parts.push(head);
+    for p in [volume, author, year, publisher] {
         let p = p.trim();
         if !p.is_empty() {
-            parts.push(p);
+            parts.push(p.to_string());
         }
     }
-    parts.join(TITLE_JOIN_SEP)
+    let isbn = isbn.trim();
+    if !isbn.is_empty() {
+        let labeled = match isbn.get(..ISBN_LABEL.trim().len()) {
+            Some(head) if head.eq_ignore_ascii_case(ISBN_LABEL.trim()) => isbn.to_string(),
+            _ => format!("{ISBN_LABEL}{isbn}"),
+        };
+        parts.push(labeled);
+    }
+    parts.join(FIELD_SEP)
 }
 
 /// Display-title resolution chain (single source of truth, mirrored in
@@ -110,7 +170,9 @@ pub fn resolved_title(overlay: Option<&BookMeta>, base: &str) -> String {
     match overlay {
         Some(m) if !m.display_title.trim().is_empty() => m.display_title.trim().to_string(),
         Some(m) => {
-            let joined = join_title(&m.title, &m.subtitle, &m.volume);
+            let joined = join_title(
+                &m.title, &m.subtitle, &m.volume, &m.author, &m.year, &m.publisher, &m.isbn,
+            );
             if joined.is_empty() {
                 base.to_string()
             } else {
@@ -146,6 +208,10 @@ pub fn parse_meta(text: &str) -> Option<BookMeta> {
             "title" => meta.title = value,
             "subtitle" => meta.subtitle = value,
             "volume" => meta.volume = value,
+            "author" => meta.author = value,
+            "year" => meta.year = value,
+            "publisher" => meta.publisher = value,
+            "isbn" => meta.isbn = value,
             "displayTitle" => meta.display_title = value,
             _ => {}
         }
@@ -178,6 +244,10 @@ pub fn format_meta(meta: &BookMeta) -> String {
     write_field(&mut out, "title", &meta.title);
     write_field(&mut out, "subtitle", &meta.subtitle);
     write_field(&mut out, "volume", &meta.volume);
+    write_field(&mut out, "author", &meta.author);
+    write_field(&mut out, "year", &meta.year);
+    write_field(&mut out, "publisher", &meta.publisher);
+    write_field(&mut out, "isbn", &meta.isbn);
     write_field(&mut out, "displayTitle", &meta.display_title);
     out.push_str("-->\n");
     out
@@ -208,13 +278,48 @@ mod tests {
     }
 
     #[test]
-    fn join_skips_empty_fields_and_uses_ascii_sep() {
-        assert_eq!(join_title("三体", "", ""), "三体");
-        assert_eq!(join_title("三体", "黑暗森林", ""), "三体 _ 黑暗森林");
-        assert_eq!(join_title("三体", "", "第二部"), "三体 _ 第二部");
-        assert_eq!(join_title("三体", "黑暗森林", "第二部"), "三体 _ 黑暗森林 _ 第二部");
-        assert_eq!(join_title("", "", ""), "");
-        assert_eq!(join_title(" The Lord of the Rings ", " The Two Towers ", ""), "The Lord of the Rings _ The Two Towers");
+    fn join_uses_underscore_only_between_title_and_subtitle() {
+        // 书名 required: with no title nothing is derived.
+        assert_eq!(join_title("", "黑暗森林", "", "", "", "", ""), "");
+        assert_eq!(join_title("   ", "", "", "", "", "", ""), "");
+
+        // Just a title.
+        assert_eq!(join_title("三体", "", "", "", "", "", ""), "三体");
+
+        // The single ` _ ` slot: 书名 ↔ 副标题.
+        assert_eq!(join_title("三体", "黑暗森林", "", "", "", "", ""), "三体 _ 黑暗森林");
+
+        // 卷册 and later bibliographic fields join with ` - ` (no ` _ ` there).
+        assert_eq!(join_title("三体", "", "第二部", "", "", "", ""), "三体 - 第二部");
+        assert_eq!(
+            join_title("三体", "黑暗森林", "第二部", "", "", "", ""),
+            "三体 _ 黑暗森林 - 第二部"
+        );
+
+        // Full template with a missing publisher in the middle: no empty
+        // segment, no doubled separator.
+        assert_eq!(
+            join_title("三体", "黑暗森林", "第二部", "刘慈欣", "2008", "", "978-7-5366-9293-0"),
+            "三体 _ 黑暗森林 - 第二部 - 刘慈欣 - 2008 - ISBN 978-7-5366-9293-0"
+        );
+
+        // A value that already begins with ISBN (any case) is kept as-is.
+        assert_eq!(join_title("三体", "", "", "", "", "", "isbn 978-7-1"), "三体 - isbn 978-7-1");
+        assert_eq!(
+            join_title("三体", "", "", "", "", "", "ISBN-13 978-7-1"),
+            "三体 - ISBN-13 978-7-1"
+        );
+
+        // Multi-author and full-width author input pass through untouched
+        // (the label/symbols the program emits stay ASCII).
+        assert_eq!(
+            join_title("三体", "", "", "刘慈欣、王晋康", "二〇〇八", "", ""),
+            "三体 - 刘慈欣、王晋康 - 二〇〇八"
+        );
+        assert_eq!(
+            join_title(" The Lord of the Rings ", " The Two Towers ", "", "", "", "", ""),
+            "The Lord of the Rings _ The Two Towers"
+        );
     }
 
     #[test]
@@ -239,6 +344,24 @@ mod tests {
         };
         assert_eq!(resolved_title(Some(&fields), base), "字段主书名 _ 副");
 
+        // Bibliographic fields participate in the derived title.
+        let full = BookMeta {
+            title: "三体".into(),
+            subtitle: "黑暗森林".into(),
+            author: "刘慈欣".into(),
+            year: "2008".into(),
+            ..Default::default()
+        };
+        assert_eq!(resolved_title(Some(&full), base), "三体 _ 黑暗森林 - 刘慈欣 - 2008");
+
+        // Title empty (everything else set) → falls through to base.
+        let no_title = BookMeta {
+            volume: "第二部".into(),
+            author: "刘慈欣".into(),
+            ..Default::default()
+        };
+        assert_eq!(resolved_title(Some(&no_title), base), base);
+
         // Completely empty overlay falls through to base.
         assert_eq!(resolved_title(Some(&BookMeta::default()), base), base);
     }
@@ -249,13 +372,32 @@ mod tests {
             book_file: Some("三体.epub".into()),
             original_title: Some("三体".into()),
             title: "三体".into(),
-            subtitle: String::new(),
-            volume: "死神永生".into(),
-            display_title: "三体 _ 死神永生".into(),
+            subtitle: "黑暗森林".into(),
+            volume: "第二部".into(),
+            author: "刘慈欣".into(),
+            year: "2008".into(),
+            publisher: "重庆出版社".into(),
+            isbn: "978-7-5366-9293-0".into(),
+            display_title: String::new(),
         };
         let text = format_meta(&meta);
         let back = parse_meta(&text).expect("parse own output");
         assert_eq!(back, meta);
+        // The v2 keys are on disk.
+        for key in ["author", "year", "publisher", "isbn", "displayTitle"] {
+            assert!(text.contains(&format!("{key}: ")), "missing {key} in {text}");
+        }
+
+        // A v1 md (no v2 keys) parses with empty v2 fields — no data loss.
+        let v1 = parse_meta(
+            "<!-- icedreader-meta\ntitle: 三体\nvolume: 第二部\ndisplayTitle:\n-->",
+        )
+        .unwrap();
+        assert_eq!(v1.title, "三体");
+        assert_eq!(v1.volume, "第二部");
+        assert_eq!(v1.author, "");
+        assert_eq!(v1.publisher, "");
+        assert_eq!(v1.isbn, "");
 
         // Values may contain colons; the first one separates key from value.
         let with_colon = parse_meta("<!-- icedreader-meta\ntitle: 书名：副标题\n-->\n").unwrap();
@@ -291,6 +433,10 @@ mod tests {
             title: "三体".into(),
             subtitle: "黑暗森林".into(),
             volume: String::new(),
+            author: "刘慈欣".into(),
+            year: "2008".into(),
+            publisher: "重庆出版社".into(),
+            isbn: "978-7-5366-9293-0".into(),
             display_title: String::new(),
         };
         write_meta_file(&path, &meta).unwrap();

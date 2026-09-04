@@ -72,10 +72,16 @@ export type BookMetaView = {
   fileName: string;
   /** 只读：首次导入时程序见到的书名（before any user edit）。 */
   originalTitle: string;
-  /** 主书名 — 预填伴生 md 值或清洗后的当前书名。 */
+  /** 主书名 — 预填伴生 md 值或清洗后的当前书名（必填）。 */
   title: string;
   subtitle: string;
   volume: string;
+  /** 作者 — 预填伴生 md 值或原书 dc:creator（多名用、连接）。 */
+  author: string;
+  /** 出版年份。 */
+  year: string;
+  publisher: string;
+  isbn: string;
   /** 手改框初值：md 里用户确认过的 displayTitle；空 = 未确认，由字段拼接接管。 */
   confirmedTitle: string;
   /** 当前裁决结果（书架/阅读正在显示的名字，永远非空）。 */
@@ -89,6 +95,10 @@ export type BookMetaFields = {
   title: string;
   subtitle: string;
   volume: string;
+  author: string;
+  year: string;
+  publisher: string;
+  isbn: string;
   displayTitle: string;
 };
 
