@@ -15,7 +15,7 @@ IcedReader 是 Windows 桌面电子书阅读器。名字不是 Iced GUI。当前
 | `src-tauri` | 命令、文件对话框、`icedreader` 协议、便携目录、书库扫描（经 `BookOpener`） | 自己 unzip/解析 OPF、排版 |
 | `ui` | 阅读壳、交互 | 读磁盘上的 epub 字节 |
 
-新格式（TXT / PDF 等）只加适配器，实现 `Book` + `BookOpener`。前端命令形状尽量不动。
+格式层按 `Book` + `BookOpener` 抽象（当前只有 EPUB 适配器 `crates/formats-epub`），解析/排版逻辑不进 JS；前端命令形状尽量不动。
 
 ## 硬约束
 
@@ -44,7 +44,7 @@ npm run tauri -- build
 
 自动打开样书：`$env:ICED_READER_OPEN = "$PWD\fixtures\sample.epub"`。
 
-Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前同样要载入。用户说 build release 时：`npm run tauri -- build`，再用 `Copy-Item` 拷一份独立文件（禁止 Rename-Item / 硬链接）到 `target/release/IcedReader-{version}-windows-x64.exe`，`{version}` 取 `src-tauri/tauri.conf.json` 的 `version`。告诉用户这份路径；GitHub Release 上传它。不要把 `iced-reader.exe` 或 `deps/iced_reader.exe` 当发布文件。安装包会进 `target/release/bundle/`，不要当主分发方式。不要用 `--offline` 除非依赖已经在本地。只分发独立 exe 时可用 `npm run tauri -- build --no-bundle` 跳过安装包（免去 WiX/NSIS 下载与打包）；安装包 `targets: all` 在 Windows 含 MSI，打包工具 WiX 首次自动下载到 `%LOCALAPPDATA%\tauri\` 缓存，重跑不再下。
+Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前同样要载入。用户说 build release 时：`npm run tauri -- build --no-bundle`，再用 `Copy-Item` 拷一份独立文件（禁止 Rename-Item / 硬链接）到 `target/release/IcedReader-{version}-windows-x64.exe`，`{version}` 取 `src-tauri/tauri.conf.json` 的 `version`。告诉用户这份路径；GitHub Release 上传它。不要把 `iced-reader.exe` 或 `deps/iced_reader.exe` 当发布文件。只构建绿色版独立 exe（`--no-bundle`），发布时不要跑不带 `--no-bundle` 的 `build`。不要用 `--offline` 除非依赖已经在本地。
 
 ## Tauri 命令
 
@@ -96,7 +96,6 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 ## 不要做
 
 - 不要把解析逻辑搬进 JS（包括让 foliate-js 直接 unzip）。分页若接 foliate-js，也只让它排版，书仍由 Rust 打开。
-- 暂不接 PDF/MOBI；接口预留即可。
 - 不要做黑色主题、暗色模式、主题切换。本软件就是浅色纸。
 - 不要提交 `target/`、`node_modules/`、`ui/dist/`、`src-tauri/gen/`、`data/`、`fixtures/verify-*.png`、仓库根目录的本地 EPUB（`fixtures/sample.epub` 除外）。
 - 不要在文档或代码里写用户的密钥、本机绝对路径（样例用仓库相对路径）。

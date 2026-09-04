@@ -2,7 +2,7 @@
 
 Windows 桌面电子书阅读器。产品名沿用 IcedReader，技术栈是 **Tauri 2 + React + Rust**，正文用系统 WebView 渲染 EPUB 的 HTML。
 
-当前只做 Windows（x64）。第一版只出品 EPUB，格式层仍按可扩展接口来写，方便以后想加格式再加。
+当前只做 Windows（x64）。目前只出品 EPUB。
 
 **没有黑色主题，也不会做。**
 
@@ -85,21 +85,13 @@ data/
 
 ## 发布
 
-先载入 MSVC（与 `scripts/dev.ps1` 相同，或在「x64 Native Tools」终端里）：
-
-```powershell
-npm run tauri -- build
-```
-
-若只想要那份分发 exe、不要安装包（本机没有 WiX/NSIS 时还能省掉首次自动下载），打包环节可以跳过：
+只构建绿色版（独立 exe）。先载入 MSVC（与 `scripts/dev.ps1` 相同，或在「x64 Native Tools」终端里）：
 
 ```powershell
 npm run tauri -- build --no-bundle
 ```
 
-两种方式产物都是 `target/release/iced-reader.exe`；前者多生成安装包（`bundle.targets` 是 `all`，Windows 上含 NSIS 与 MSI，打包工具 WiX 首次会下载到 `%LOCALAPPDATA%\tauri\` 缓存，之后复用，不进项目仓库）。
-
-编完后必须再拷一份**独立文件**（不要改名硬链接），供分发和 Everything 检索：
+产物为 `target/release/iced-reader.exe`。编完后必须再拷一份**独立文件**（不要改名硬链接），供分发和 Everything 检索：
 
 ```powershell
 Copy-Item target\release\iced-reader.exe target\release\IcedReader-0.9.0-windows-x64.exe
@@ -111,8 +103,6 @@ Copy-Item target\release\iced-reader.exe target\release\IcedReader-0.9.0-windows
 | --- | --- |
 | 分发用绿色 exe | `target/release/IcedReader-{version}-windows-x64.exe` |
 | Cargo 原始 exe | `target/release/iced-reader.exe`（可留给工具链，不要当发布文件） |
-| NSIS 安装包 | `target/release/bundle/nsis/` |
-| MSI | `target/release/bundle/msi/` |
 
 GitHub Release 上传那份 `IcedReader-…-windows-x64.exe`。拷到任意可写目录再运行，同级生成 `data/`。不要装进 Program Files，否则可能写不进 `data/`。系统仍需 WebView2（Win11 自带）。
 

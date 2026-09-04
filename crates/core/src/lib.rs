@@ -1,7 +1,7 @@
 //! Format-agnostic types for IcedReader.
 //!
-//! UI and Tauri talk only to this crate. Format crates (EPUB now, others later)
-//! implement [`Book`]. Persistence (library, bookmarks) will live here too.
+//! UI and Tauri talk only to this crate. Format crates implement [`Book`].
+//! Persistence (library, bookmarks) will live here too.
 
 mod annotations;
 mod book_meta;
