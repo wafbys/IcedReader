@@ -108,10 +108,23 @@ export default function Library({
         if (menuFor && !target.closest(".lib-menu, .lib-more")) closeMenu();
       }}
     >
+      {busy && (
+        <div className="lib-busy" role="status">
+          正在导入并分析排版与质量…
+        </div>
+      )}
       <ul className="lib-grid">
         {entries.map((entry) => (
           <li key={entry.path} className="lib-item">
             <div className="lib-cover-slot">
+              {entry.quality && !entry.openError && (
+                <span
+                  className={`lib-grade g-${entry.quality}`}
+                  title={entry.qualityReasons.join("；") || `质量：${entry.quality}`}
+                >
+                  {entry.quality}
+                </span>
+              )}
               <button
                 type="button"
                 className="lib-card lib-cover-btn"
@@ -166,6 +179,14 @@ export default function Library({
                 {entry.authors.length ? entry.authors.join("、") : "未知作者"}
               </span>
               <span className="lib-progress">{progressLabel(entry)}</span>
+              {entry.duplicates.length > 0 && (
+                <span
+                  className="lib-dup"
+                  title={`与以下书为同一本：\n${entry.duplicates.join("\n")}`}
+                >
+                  同书 ×{entry.duplicates.length}
+                </span>
+              )}
             </button>
           </li>
         ))}

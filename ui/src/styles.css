@@ -637,6 +637,36 @@ body {
   position: relative;
 }
 
+/* Quality badge (优/良/中), top-left of the cover; bottom-right stays for
+   the overflow menu. Reasons are shown on hover via title. */
+.lib-grade {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  z-index: 2;
+  min-width: 20px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.5;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgb(31 28 24 / 25%);
+}
+.lib-grade.g-优 {
+  background: #dff0e0;
+  color: #2e7d46;
+}
+.lib-grade.g-良 {
+  background: #f5e9c8;
+  color: #8a6d1a;
+}
+.lib-grade.g-中 {
+  background: #e8e6e2;
+  color: #6f6b66;
+}
+
 .lib-cover-btn {
   display: block;
   line-height: 0;
@@ -817,6 +847,24 @@ body {
 .lib-progress {
   color: var(--accent) !important;
 }
+
+/* Duplicate hint: another shelf book is judged the same book (no auto
+   action; hover lists the file names). */
+.lib-info .lib-dup {
+  color: #7a5a1e;
+  font-weight: 600;
+}
+
+/* First-import analysis feedback (shown while open_book analyzes signals). */
+.lib-busy {
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: #f0ead9;
+  color: #6f5b22;
+  font-size: 13px;
+  text-align: center;
+}
+
 
 .page {
   height: 100%;

@@ -29,6 +29,11 @@ pub fn settings_file() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("settings.json"))
 }
 
+/// Book signals cache (fingerprint + quality), keyed by file name.
+pub fn signals_file() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("book-signals.json"))
+}
+
 pub fn window_file() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("window.json"))
 }

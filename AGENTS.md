@@ -27,7 +27,7 @@ IcedReader 是 Windows 桌面电子书阅读器。名字不是 Iced GUI。当前
 3. **进度键：** 有 EPUB identifier 用 `id:...`；否则相对便携书库用 `lib:...`。禁止用会随目录搬家失效的绝对 `path:` 当主键（仅作没有书库目录时的回退）。实现见 `progress_key`。外部 EPUB 按文件名进书库，同名已存在则复用，不要每次打开复制成 `书名-2.epub`（没有 identifier 的书会因此丢进度）。`lib:书名-N.epub` 与 `lib:书名.epub` 视为同一本。
 4. **章节 iframe 不要开 `allow-scripts`。** 现在是 `allow-same-origin`，父页做分栏翻页并读页序。EPUB 内容一律不开脚本。
 5. **IPC 用 camelCase**（Rust 结构体 `#[serde(rename_all = "camelCase")]`）。
-6. **绿色软件：** 设置、进度、窗口位置、导入的书、用户字体、WebView 缓存一律在 `{exe 目录}/data/`，禁止写入 `%APPDATA%` / 注册表当主存储。打开外部 EPUB 时复制进 `data/library/`（已在书库内则不再复制）。字体文件在 `data/fonts/`，设置在 `data/settings.json`，窗口在 `data/window.json`，划线在 `data/annotations.json`（键同进度键）。整个程序目录搬走即带走全部状态。目录必须可写，不要往 Program Files 里装。不要用 tauri-plugin-window-state 之类会写用户目录的插件。
+6. **绿色软件：** 设置、进度、窗口位置、导入的书、用户字体、WebView 缓存一律在 `{exe 目录}/data/`，禁止写入 `%APPDATA%` / 注册表当主存储。打开外部 EPUB 时复制进 `data/library/`（已在书库内则不再复制）。字体文件在 `data/fonts/`，设置在 `data/settings.json`，窗口在 `data/window.json`，划线在 `data/annotations.json`（键同进度键），同书/质量信号缓存 `data/book-signals.json`（键=文件名，文件变才重算）。整个程序目录搬走即带走全部状态。目录必须可写，不要往 Program Files 里装。不要用 tauri-plugin-window-state 之类会写用户目录的插件。
 
 ## 常用命令
 
@@ -75,7 +75,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
   - 栈里的 **CSS 泛型**（`serif` / `sans-serif` / `monospace` 等）实际生效时，显示 `（系统 serif）` 这类标签，来源为「泛型」。不要再猜宋体或雅黑。
   - 栈里既没有可用命名字体、也没有泛型时，才标缺字回退（`（系统 CJK 默认）` 或对上的已装 CJK 名）。
 - 目录用 `book.toc`（没有则退回 spine 标题）。侧栏树、点条目跳到对应章首页。当前章高亮。不要在前端再 parse NCX。
-- **书架：** `ui/src/Library.tsx` + `list_library`。封面用协议 `/library-cover/{文件名}`，URL 带 `coverRev`（文件大小+mtime），响应不要 `immutable` 长缓存，同名替换后应换图。不要在 JS 里 unzip，也不要把封面字节塞进 `list_library` 的 JSON。回书架前要 `await` 进度写入，再 `list_library`。删书已实现：封面右下三点按钮（**悬停封面才显示**，键盘聚焦 / 菜单展开时保持可见，触屏无 hover 则常显）弹小菜单（目前仅「从书库删除」，走命令 `delete_book`），点菜单项后必须先弹确认框；菜单状态在 `Library.tsx` 内维护，不要另加删除入口。书架列数 auto-fill、列宽下限随窗口伸缩（clamp），封面随窗口变宽而变大；封面图按自身比例随列宽缩放（fit 卡片、不裁切不拉伸，无固定槽高），无封面卡片用 2:3 占位。书库只扫 `data/library/` 一层 `*.epub`，不要做分类、子目录、内容哈希去重，除非产品明确要求。开发 `target/debug/data` 与 release `target/release/data` 是两套。
+- **书架：** `ui/src/Library.tsx` + `list_library`。封面用协议 `/library-cover/{文件名}`，URL 带 `coverRev`（文件大小+mtime），响应不要 `immutable` 长缓存，同名替换后应换图。不要在 JS 里 unzip，也不要把封面字节塞进 `list_library` 的 JSON。回书架前要 `await` 进度写入，再 `list_library`。删书已实现：封面右下三点按钮（**悬停封面才显示**，键盘聚焦 / 菜单展开时保持可见，触屏无 hover 则常显）弹小菜单（目前仅「从书库删除」，走命令 `delete_book`），点菜单项后必须先弹确认框；菜单状态在 `Library.tsx` 内维护，不要另加删除入口。书架列数 auto-fill、列宽下限随窗口伸缩（clamp），封面随窗口变宽而变大；封面图按自身比例随列宽缩放（fit 卡片、不裁切不拉伸，无固定槽高），无封面卡片用 2:3 占位。书库只扫 `data/library/` 一层 `*.epub`，不要做分类、子目录、内容哈希去重，除非产品明确要求——同书识别与质量分属明确要求：首次导入（`open_book`，界面显示分析反馈）算正文指纹与质量信号并缓存 `data/book-signals.json`；`list_library` 只读缓存不在列表热路径计算；正文指纹一致或同书异版只作「同书」提示（`LibraryEntry.duplicates`），不自动合并/删除；质量 优/良/中 参与未读排序并显示在封面左上角标（`quality`/`qualityReasons`）；删除书时清除该书缓存。开发 `target/debug/data` 与 release `target/release/data` 是两套。
 - **顶栏：** `.chrome` 固定 52px，`flex-wrap: nowrap`；按钮 `white-space: nowrap`；书名/作者/进度省略号。不要让长标题把工具栏撑高。窗口窄时（`≤1180px`）阅读视图把低频按钮（打开 EPUB / 目录 / 划线 / 字体 / 全屏，`.chrome-more`）收进右上「⋯」菜单（`.top-more` / `.top-menu`，菜单 `fixed` 定位避开 `.chrome` 的 `overflow: hidden`），书架、上一章/下一章、字号、书名保持常显；`.brand` 同阈值让位。不要用换行或横向滚动，不要整体藏掉章导航。
 - **窗口几何：** 位置/大小/最大化存 `data/window.json`。全屏当阅读态，不要作为下次启动状态。不要在 `CloseRequested` 里 `prevent_close`。
 - 全屏用 Tauri `setFullscreen`（F11 / 顶栏按钮），不要用浏览器 `requestFullscreen`；Windows 上关掉 WebView2 浏览器加速键，避免 F11 和引擎抢。Esc：先关目录，再退出全屏。全屏时顶栏默认收起，窗口顶部整条热区（含正文中间）可唤出，不要只靠左右页边的 mousemove。

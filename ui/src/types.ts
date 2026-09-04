@@ -57,6 +57,12 @@ export type LibraryEntry = {
   hasCover: boolean;
   coverRev: string;
   openError: string | null;
+  /** 优/良/中 from the cached first-import signals (null when unknown). */
+  quality: string | null;
+  /** Plain-language reasons behind the grade. */
+  qualityReasons: string[];
+  /** Other library books judged the same book (hint only). */
+  duplicates: string[];
 };
 
 export type OpenedBook = {

@@ -6,6 +6,7 @@ use iced_reader_core::{progress_key, BookOpener, Locator, ProgressStore};
 use iced_reader_epub::EpubOpener;
 use serde::Serialize;
 
+use crate::book_signals;
 use crate::portable;
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +26,12 @@ pub struct LibraryEntry {
     /// Length + mtime so the cover URL changes when the same filename is replaced.
     pub cover_rev: String,
     pub open_error: Option<String>,
+    /// 优/良/中 from the cached first-import book signals (rev valid only).
+    pub quality: Option<String>,
+    /// Plain-language reasons behind the grade.
+    pub quality_reasons: Vec<String>,
+    /// File names of other library books judged the same book (hint only).
+    pub duplicates: Vec<String>,
 }
 
 /// Un-cached shelf listing used by the in-crate tests below.
@@ -89,15 +96,123 @@ pub fn list_library_cached(
     progress: &ProgressStore,
     cache: &mut LibraryMetaCache,
 ) -> Vec<LibraryEntry> {
-    let mut entries: Vec<LibraryEntry> = read_epub_paths(dir)
+    let entries: Vec<LibraryEntry> = read_epub_paths(dir)
         .into_iter()
         .map(|path| entry_from(&path, &cache.profile(&path, dir), progress))
         .collect();
-    entries.sort_by(|a, b| match (b.updated_at, a.updated_at) {
-        (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.title.cmp(&b.title)),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => a.title.cmp(&b.title),
+    enrich_and_sort(entries)
+}
+
+fn quality_rank(quality: Option<&str>) -> u8 {
+    match quality {
+        Some("优") => 3,
+        Some("良") => 2,
+        Some("中") => 1,
+        _ => 0,
+    }
+}
+
+/// Attach cached quality grades (rev-valid only), hint duplicate books
+/// (same-typesetting repack, or a same-edition different repack), then sort:
+/// recently read first, then grade, then title.
+fn enrich_and_sort(mut entries: Vec<LibraryEntry>) -> Vec<LibraryEntry> {
+    let all = book_signals::read_all();
+    for e in &mut entries {
+        if e.open_error.is_some() {
+            continue;
+        }
+        let Some(sig) = all.get(&e.file_name) else {
+            continue;
+        };
+        if sig.rev != e.cover_rev {
+            continue; // file changed since the cached analysis; keep unknown
+        }
+        let (grade, reasons) = book_signals::grade(sig);
+        e.quality = Some(grade.to_string());
+        e.quality_reasons = reasons;
+    }
+
+    // Same-typesetting groups (equal chapter-text fingerprint).
+    let valid: Vec<(usize, &book_signals::BookSignals)> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            let s = all.get(&e.file_name)?;
+            (s.rev == e.cover_rev).then_some((i, s))
+        })
+        .collect();
+    let mut by_fp: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, s) in &valid {
+        by_fp.entry(s.fingerprint.as_str()).or_default().push(*i);
+    }
+    for idxs in by_fp.values().filter(|v| v.len() > 1) {
+        for i in idxs {
+            let others: Vec<String> = idxs
+                .iter()
+                .filter(|j| *j != i)
+                .map(|j| entries[*j].file_name.clone())
+                .collect();
+            for other in others {
+                if !entries[*i].duplicates.contains(&other) {
+                    entries[*i].duplicates.push(other);
+                }
+            }
+        }
+    }
+    // Same-edition hint across different fingerprints: identical heading
+    // sequence and near-equal total length (repacks that moved files around).
+    for a in 0..valid.len() {
+        for b in (a + 1)..valid.len() {
+            let (ia, sa) = valid[a];
+            let (ib, sb) = valid[b];
+            if sa.fingerprint == sb.fingerprint {
+                continue;
+            }
+            if sa.headings != sb.headings {
+                continue;
+            }
+            if sa.chars == 0 || sb.chars == 0 {
+                continue;
+            }
+            let ratio = (sa.chars.max(sb.chars) - sa.chars.min(sb.chars)) as f64
+                / sa.chars.max(sb.chars) as f64;
+            if ratio > 0.02 {
+                continue;
+            }
+            let name_a = entries[ia].file_name.clone();
+            let name_b = entries[ib].file_name.clone();
+            if !entries[ia].duplicates.contains(&name_b) {
+                entries[ia].duplicates.push(name_b);
+            }
+            if !entries[ib].duplicates.contains(&name_a) {
+                entries[ib].duplicates.push(name_a);
+            }
+        }
+    }
+    // De-duplicate hints regardless of which pass added them.
+    for e in &mut entries {
+        let mut seen: Vec<String> = Vec::with_capacity(e.duplicates.len());
+        for d in e.duplicates.drain(..) {
+            if !seen.contains(&d) {
+                seen.push(d);
+            }
+        }
+        e.duplicates = seen;
+    }
+
+    entries.sort_by(|a, b| {
+        let q = |e: &LibraryEntry| quality_rank(e.quality.as_deref());
+        match (b.updated_at, a.updated_at) {
+            (Some(x), Some(y)) => x
+                .cmp(&y)
+                .then_with(|| q(b).cmp(&q(a)))
+                .then_with(|| a.title.cmp(&b.title)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => q(b)
+                .cmp(&q(a))
+                .then_with(|| a.title.cmp(&b.title)),
+        }
     });
     entries
 }
@@ -220,7 +335,7 @@ fn read_epub_paths(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn file_rev(path: &Path) -> String {
+pub(crate) fn file_rev(path: &Path) -> String {
     let Ok(meta) = fs::metadata(path) else {
         return String::new();
     };
@@ -331,6 +446,9 @@ fn entry_from(path: &Path, profile: &BookProfile, progress: &ProgressStore) -> L
         has_cover: profile.has_cover,
         cover_rev: file_rev(path),
         open_error: profile.open_error.clone(),
+        quality: None,
+        quality_reasons: Vec::new(),
+        duplicates: Vec::new(),
     }
 }
 

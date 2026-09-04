@@ -1,4 +1,5 @@
 mod fonts;
+mod book_signals;
 mod library;
 mod portable;
 mod protocol;
@@ -76,6 +77,33 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
         .lock()
         .ok()
         .and_then(|store| store.get(&key).map(|r| r.locator.clone()));
+
+    // First-import book signals (fingerprint + quality), cached by file rev.
+    // Only computed when the cache is missing/stale; list_library never
+    // recomputes. UI shows a busy state while this runs (AGENTS: 导入时计算
+    // 且要有界面反馈；同书只提示，质量分入书架排序与封面角标).
+    let rev = library::file_rev(&imported);
+    let file_name = imported
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !file_name.is_empty() {
+        let need = book_signals::read_all()
+            .get(&file_name)
+            .map(|s| s.rev != rev)
+            .unwrap_or(true);
+        if need {
+            if let Ok(signals) = book_signals::analyze_book(
+                book.as_ref(),
+                &metadata.identifiers,
+                !metadata.authors.is_empty(),
+                &rev,
+            ) {
+                book_signals::write_one(&file_name, &signals);
+            }
+        }
+    }
+
     let opened = OpenedBook {
         id: Uuid::new_v4().to_string(),
         format: book.format_id().to_string(),
@@ -315,6 +343,7 @@ fn delete_book(
     if let Ok(mut cache) = state.covers.lock() {
         cache.remove(&file_name);
     }
+    book_signals::remove(&file_name);
     Ok(())
 }
 
