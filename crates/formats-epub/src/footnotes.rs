@@ -8,18 +8,30 @@
 //! ```html
 //! <p>…弃疑<span class="reader js_readerFooterNote" data-wr-footernote="弃疑：…"></span>，…</p>
 //! ```
-//! becomes
+//! becomes (with `doc_base` = the rewritten absolute URL of this document,
+//! e.g. `http://icedreader.localhost/book/{id}/OEBPS/Text/x.xhtml`):
 //! ```html
-//! <p>…弃疑<a class="wr-note" data-label="1" title="弃疑：…" href="#wr-note-3"></a>，…</p>
-//! <div class="wr-notes"><p class="wr-note-item" id="wr-note-3"><span class="wr-note-no">[1]</span>弃疑：…</p></div>
+//! <p>…弃疑<a id="wr-note-back-3" class="wr-note" data-label="1" data-note="弃疑：…" href="http://…/x.xhtml#wr-note-3"></a>，…</p>
+//! <div class="wr-notes"><p class="wr-note-item" id="wr-note-3"><a class="wr-note-back" href="http://…/x.xhtml#wr-note-back-3" title="返回正文">[1]</a>弃疑：…</p></div>
 //! ```
 //!
 //! The marker `<a>` carries no text of its own (the visible number is drawn
 //! via CSS `::after`), so the chapter's text-node sequence only gains the
 //! trailing note blocks — deterministically on every render, keeping
-//! highlight anchoring stable. Hovering the marker shows the note through the
-//! native `title` tooltip; clicking jumps to the full note block via the
-//! reader's existing in-chapter link handling.
+//! highlight anchoring stable. The full note text rides in the marker's
+//! `data-note` (no `title`, so the browser never shows a competing native
+//! tooltip); the parent page paints a dark hover bubble from it. Clicking
+//! jumps to the full note block, and the label at the start of each note
+//! (`[n]`) is itself the back link to its marker — the same `[n]`↔note shape
+//! as an ordinary annotated EPUB (东周列国志). Both links are absolute
+//! same-document URLs (`doc_base#…`) because the chapter is displayed via
+//! `srcDoc`, where bare `#fragment` hrefs cannot be routed by the reader; the
+//! pair lets the reader jump either way. Note items avoid column breaks
+//! (`break-inside: avoid`) so they stay whole like a printed footnote; an
+//! item too tall for one column still splits, and each item then carries a
+//! textless trailing back link (`a.wr-note-back.wr-note-back-tail`, visible
+//! only through a `wr-note-cross` class the parent page adds when a split
+//! actually happened) so the continuation page can jump back too.
 
 /// Blocks we treat as note-hosting containers. Paragraph text and headings
 /// (e.g. an annotated volume title in a WeRead-export book) both carry word
@@ -27,10 +39,23 @@
 const CONTAINER_TAGS: [&str; 7] = ["p", "h1", "h2", "h3", "h4", "h5", "h6"];
 const NOTE_ATTR: &str = "data-wr-footernote";
 const MARKER_CLASS: &str = "wr-note";
+/// id on the in-text marker; the note block's 返回 link targets it.
+const MARKER_ID_PREFIX: &str = "wr-note-back-";
+/// class of the note block's back-to-text link.
+const BACK_CLASS: &str = "wr-note-back";
+/// extra class of the trailing back link inside each note item. It is empty
+/// and invisible by default; when a column break actually splits an item
+/// (very long note under a large font / short viewport), the parent page adds
+/// `wr-note-cross` to the item and the trailing link becomes visible, so the
+/// reader sitting on the continuation page can still jump back to the marker.
+const TAIL_CLASS: &str = "wr-note-back-tail";
 
 use std::fmt::Write as _;
 
-pub fn expand_word_notes(html: &str) -> String {
+/// `doc_base` is the rewritten absolute URL of the document this HTML slice
+/// belongs to (`resource_base + file`); generated note links point into that
+/// same document so the front end can route them as same-file anchors.
+pub fn expand_word_notes(html: &str, doc_base: &str) -> String {
     if !contains_ci(html, NOTE_ATTR) {
         return html.to_string();
     }
@@ -58,12 +83,12 @@ pub fn expand_word_notes(html: &str) -> String {
             return out;
         };
         let body = &html[open_end..close];
-        let (converted, notes) = convert_paragraph(body, &mut seq);
+        let (converted, notes) = convert_paragraph(body, &mut seq, doc_base);
         out.push_str(&converted);
         let close_end = tag_end(html, close).unwrap_or(close + tag.len() + 3);
         out.push_str(&html[close..close_end]);
         if !notes.is_empty() {
-            out.push_str(&note_block(&notes));
+            out.push_str(&note_block(&notes, doc_base));
         }
         pos = close_end;
     }
@@ -132,7 +157,7 @@ struct Note {
 }
 
 /// Turn a paragraph body into marker-bearing text plus its collected notes.
-fn convert_paragraph(body: &str, seq: &mut u64) -> (String, Vec<Note>) {
+fn convert_paragraph(body: &str, seq: &mut u64, doc_base: &str) -> (String, Vec<Note>) {
     let mut out = String::with_capacity(body.len() + 64);
     let mut notes: Vec<Note> = Vec::new();
     let mut pos = 0usize;
@@ -174,11 +199,14 @@ fn convert_paragraph(body: &str, seq: &mut u64) -> (String, Vec<Note>) {
             text,
         });
         let inner = &body[tag_end..inner_end];
+        let note_seq = notes.last().unwrap().seq;
+        let marker_id = format!("{MARKER_ID_PREFIX}{note_seq}");
+        let note_href = format!("{doc_base}#wr-note-{note_seq}");
         let _ = write!(
             out,
-            r##"<a class="{MARKER_CLASS}" data-label="{label}" title="{}" href="#wr-note-{}">"##,
+            r##"<a id="{marker_id}" class="{MARKER_CLASS}" data-label="{label}" data-note="{}" href="{}">"##,
             escape_attr(&notes.last().unwrap().text),
-            notes.last().unwrap().seq
+            escape_attr(&note_href)
         );
         // Keep whatever the original span contained (normally nothing).
         out.push_str(inner);
@@ -188,17 +216,27 @@ fn convert_paragraph(body: &str, seq: &mut u64) -> (String, Vec<Note>) {
     (out, notes)
 }
 
-/// Markup for the trailing note list of one paragraph.
-fn note_block(notes: &[Note]) -> String {
-    let mut out = String::with_capacity(64 + notes.len() * 40);
+/// Markup for the trailing note list of one paragraph. Each item carries two
+/// back links: the leading `[n]` label (always visible) and a textless
+/// trailing link that only shows when the item itself is split across a page
+/// break (see `TAIL_CLASS`). Both target the in-text marker.
+fn note_block(notes: &[Note], doc_base: &str) -> String {
+    let mut out = String::with_capacity(64 + notes.len() * 96);
     out.push_str(r#"<div class="wr-notes">"#);
     for note in notes {
+        let back_href = format!("{doc_base}#{MARKER_ID_PREFIX}{}", note.seq);
         let _ = write!(
             out,
-            r#"<p class="wr-note-item" id="wr-note-{}"><span class="wr-note-no">[{}]</span>{}</p>"#,
+            r#"<p class="wr-note-item" id="wr-note-{}"><a class="{BACK_CLASS}" href="{}" title="返回正文">[{}]</a>{}"#,
             note.seq,
+            escape_attr(&back_href),
             note.label,
             escape_text(&note.text)
+        );
+        let _ = write!(
+            out,
+            r#"<a class="{BACK_CLASS} {TAIL_CLASS}" href="{}"></a></p>"#,
+            escape_attr(&back_href)
         );
     }
     out.push_str("</div>");
@@ -450,20 +488,36 @@ fn find_ci(hay: &str, needle: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
+    const DOC_BASE: &str = "http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml";
+
     #[test]
     fn leaves_html_without_notes_untouched() {
         let html = r#"<html><body><p>你好，世界。</p></body></html>"#;
-        assert_eq!(expand_word_notes(html), html);
+        assert_eq!(expand_word_notes(html, DOC_BASE), html);
     }
 
     #[test]
     fn expands_empty_note_span_into_marker_and_block() {
         let html = r#"<p>知莫大于弃疑<span class="reader js_readerFooterNote" data-wr-footernote="弃疑：抛弃不明的谋划。"></span>，行莫大于无过</p>"#;
-        let out = expand_word_notes(html);
-        assert!(out.contains(r##"<a class="wr-note" data-label="1" title="弃疑：抛弃不明的谋划。" href="#wr-note-1"></a>"##), "{out}");
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(
+            out.contains(r##"<a id="wr-note-back-1" class="wr-note" data-label="1" data-note="弃疑：抛弃不明的谋划。" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-1"></a>"##),
+            "{out}"
+        );
         assert!(out.contains(r#"<div class="wr-notes">"#), "{out}");
         assert!(out.contains(r#"<p class="wr-note-item" id="wr-note-1">"#), "{out}");
         assert!(out.contains("弃疑：抛弃不明的谋划。"), "{out}");
+        // the block's note label [1] doubles as the back link to the marker
+        assert!(
+            out.contains(r##"<a class="wr-note-back" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-back-1" title="返回正文">[1]</a>弃疑：抛弃不明的谋划。"##),
+            "{out}"
+        );
+        // …and each item ends with a textless trailing back link (visible
+        // only when a column break actually splits the item).
+        assert!(
+            out.contains(r##"弃疑：抛弃不明的谋划。<a class="wr-note-back wr-note-back-tail" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-back-1"></a></p>"##),
+            "{out}"
+        );
         assert!(out.contains("</div>"), "{out}");
         // marker goes inside the paragraph; block right after it
         let p_end = out.find("</p>").unwrap();
@@ -477,29 +531,48 @@ mod tests {
     #[test]
     fn paragraph_numbering_resets_and_seq_grows() {
         let html = r#"<p>a<span data-wr-footernote="n1"></span>b<span data-wr-footernote="n2"></span></p><p>c<span data-wr-footernote="n3"></span></p>"#;
-        let out = expand_word_notes(html);
-        assert!(out.contains(r##"data-label="1" title="n1" href="#wr-note-1""##), "{out}");
-        assert!(out.contains(r##"data-label="2" title="n2" href="#wr-note-2""##), "{out}");
-        assert!(out.contains(r##"data-label="1" title="n3" href="#wr-note-3""##), "{out}");
-        assert!(out.contains(r##"id="wr-note-3"><span class="wr-note-no">[1]</span>n3"##), "{out}");
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(
+            out.contains(r##"id="wr-note-back-1" class="wr-note" data-label="1" data-note="n1" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-1""##),
+            "{out}"
+        );
+        assert!(
+            out.contains(r##"id="wr-note-back-2" class="wr-note" data-label="2" data-note="n2" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-2""##),
+            "{out}"
+        );
+        assert!(
+            out.contains(r##"id="wr-note-back-3" class="wr-note" data-label="1" data-note="n3" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-3""##),
+            "{out}"
+        );
+        assert!(
+            out.contains(r##"id="wr-note-3"><a class="wr-note-back" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-back-3" title="返回正文">[1]</a>n3"##),
+            "{out}"
+        );
         assert_eq!(out.matches("<div class=\"wr-notes\">").count(), 2, "{out}");
     }
 
     #[test]
     fn decodes_entities_in_note_text() {
         let html = r#"<p>句<span data-wr-footernote="曰“a&amp;b”，通&#39;c&#39;。"></span></p>"#;
-        let out = expand_word_notes(html);
+        let out = expand_word_notes(html, DOC_BASE);
         assert!(out.contains("曰“a&amp;b”，通'c'。"), "{out}");
-        assert!(out.contains(r##"title="曰“a&amp;b”，通'c'。"##), "{out}");
+        assert!(out.contains(r##"data-note="曰“a&amp;b”，通'c'。"##), "{out}");
+        assert!(out.contains("c.xhtml#wr-note-1"), "{out}");
     }
 
     #[test]
     fn notes_in_headings_expand() {
         // Volume-title annotations sit inside <h3>, not <p>.
         let html = r#"<h3 class="secondTitle">威烈王<span data-wr-footernote="威烈王：名午。"></span></h3><p>正文<span data-wr-footernote="正文注。"></span></p>"#;
-        let out = expand_word_notes(html);
-        assert!(out.contains(r##"<a class="wr-note" data-label="1" title="威烈王：名午。" href="#wr-note-1"></a>"##), "{out}");
-        assert!(out.contains(r##"<a class="wr-note" data-label="1" title="正文注。" href="#wr-note-2"></a>"##), "{out}");
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(
+            out.contains(r##"<a id="wr-note-back-1" class="wr-note" data-label="1" data-note="威烈王：名午。" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-1"></a>"##),
+            "{out}"
+        );
+        assert!(
+            out.contains(r##"<a id="wr-note-back-2" class="wr-note" data-label="1" data-note="正文注。" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-2"></a>"##),
+            "{out}"
+        );
         assert_eq!(out.matches("<div class=\"wr-notes\">").count(), 2, "{out}");
         assert!(!out.contains("data-wr-footernote"), "{out}");
     }
@@ -507,15 +580,15 @@ mod tests {
     #[test]
     fn notes_outside_paragraphs_stay_unexpanded() {
         let html = r#"<div><span data-wr-footernote="kept"></span></div>"#;
-        let out = expand_word_notes(html);
+        let out = expand_word_notes(html, DOC_BASE);
         assert!(out.contains("data-wr-footernote=\"kept\""), "{out}");
     }
 
     #[test]
     fn keeps_inner_content_of_non_empty_span() {
         let html = r#"<p>语<span data-wr-footernote="释义">原文</span>尾</p>"#;
-        let out = expand_word_notes(html);
-        assert!(out.contains(r#"<a class="wr-note" data-label="1""#), "{out}");
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains(r#"<a id="wr-note-back-1" class="wr-note" data-label="1""#), "{out}");
         assert!(out.contains(">原文</a>"), "{out}");
         assert!(out.contains("释义"), "{out}");
     }
@@ -523,13 +596,16 @@ mod tests {
     #[test]
     fn unclosed_paragraph_is_left_verbatim() {
         let html = r#"<p>开头<span data-wr-footernote="n"></span>没有闭合"#;
-        assert_eq!(expand_word_notes(html), html);
+        assert_eq!(expand_word_notes(html, DOC_BASE), html);
     }
 
     #[test]
     fn uppercase_markup_is_handled() {
         let html = r#"<P>大<span DATA-WR-FOOTERNOTE="注文"></SPAN>。</P>"#;
-        let out = expand_word_notes(html);
-        assert!(out.contains(r##"<a class="wr-note" data-label="1" title="注文" href="#wr-note-1"></a>"##), "{out}");
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(
+            out.contains(r##"<a id="wr-note-back-1" class="wr-note" data-label="1" data-note="注文" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-1"></a>"##),
+            "{out}"
+        );
     }
 }

@@ -28,6 +28,7 @@ import {
   type HighlightAnchor,
 } from "./highlights";
 import { collectUsedFonts, type UsedFontReport } from "./usedFonts";
+import { ensureCoverFit } from "./coverFit";
 import { ensureWordNoteStyle } from "./wordNotes";
 import type { HighlightRecord } from "./types";
 import { normHref } from "./types";
@@ -201,6 +202,10 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
    *  inside the chapter doc is then swallowed (no link navigation) so the
    *  delete toolbar stays the sole result. */
   const swallowDocClick = useRef(false);
+  /** Word-note hover tooltip: viewport-fixed bubble + the marker currently
+   *  hovered (mousemove keeps it anchored; leaving / page moves hide it). */
+  const noteTipRef = useRef<HTMLDivElement>(null);
+  const noteTipTargetRef = useRef<Element | null>(null);
   const [toolbar, setToolbar] = useState<ToolbarState>(null);
   const [toolbarBusy, setToolbarBusy] = useState(false);
 
@@ -217,10 +222,73 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     paintedRef.current = { doc, hl: highlightsRef.current };
   };
 
+  /** Hide the word-note hover tooltip (no-op when already hidden). */
+  const hideNoteTip = () => {
+    noteTipTargetRef.current = null;
+    noteTipRef.current?.classList.remove("visible");
+  };
+
+  /**
+   * Reveal the trailing back link of any word-note item that a column break
+   * really split (note items refuse breaks, but one taller than a column is
+   * still cut). Reads only cached geometry after the forced reflow inside
+   * `relayout`, and runs again on every relayout, so the class stays in sync
+   * with window size / font scale / font-loading reflows. Showing the tail
+   * can itself shift a borderline item by a line, so a second pass converges
+   * when the first pass changed anything.
+   */
+  const syncNoteCrossState = (doc: Document) => {
+    const apply = () => {
+      const items = doc.querySelectorAll("p.wr-note-item");
+      let changed = false;
+      for (const item of items) {
+        const crossed = item.getClientRects().length > 1;
+        if (item.classList.contains("wr-note-cross") !== crossed) {
+          item.classList.toggle("wr-note-cross", crossed);
+          changed = true;
+        }
+      }
+      return changed;
+    };
+    if (apply()) {
+      void doc.documentElement.offsetHeight;
+      apply();
+    }
+  };
+
+  /**
+   * Place the word-note tooltip at a parent-viewport point. When the text is
+   * given and differs, the bubble is re-filled first; a hover that only moves
+   * repositions without touching the text. The bubble flips to the other side
+   * of the cursor when it would run off the window edge.
+   */
+  const placeNoteTip = (parentX: number, parentY: number, text?: string) => {
+    const el = noteTipRef.current;
+    if (!el) return;
+    if (text !== undefined && el.textContent !== text) {
+      el.textContent = text;
+    }
+    const w = el.offsetWidth || 320;
+    const h = el.offsetHeight || 60;
+    let left = parentX + 14;
+    let top = parentY + 16;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (left + w + 8 > vw) left = parentX - w - 12;
+    if (left < 4) left = 4;
+    if (top + h + 8 > vh) top = parentY - h - 12;
+    if (top < 4) top = 4;
+    el.style.left = `${Math.round(left)}px`;
+    el.style.top = `${Math.round(top)}px`;
+    el.classList.add("visible");
+  };
+
   const applyPage = (page: number, announce: boolean) => {
     const st = layout.current;
     const box = containerRef.current;
     if (!st.metrics || !box) return;
+    // The content under the cursor moves, so a stale bubble must not linger.
+    hideNoteTip();
     const pages = Math.max(1, st.pages);
     const next = Math.min(pages - 1, Math.max(0, page));
     st.page = next;
@@ -253,16 +321,43 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   };
 
   /**
+   * Scroll the flow so an element's first fragment sits on the current page.
+   * In the multi-column flow a long target (e.g. a note block that crosses a
+   * page break) is split into several fragments; use the first one so the
+   * jump lands on the page where the target actually starts. `getClientRects`
+   * is empty for zero-size anchors (an empty `<a id=…>`), fall back to the
+   * bounding box, which still carries the inline position.
+   */
+  const jumpToFragment = (doc: Document, frag: string) => {
+    const st = layout.current;
+    if (!frag || !st.metrics) return;
+    const el = doc.getElementById(frag);
+    if (!el) return;
+    const rootRect = doc.documentElement.getBoundingClientRect();
+    const rects = el.getClientRects();
+    const r = rects.length > 0 ? rects[0] : el.getBoundingClientRect();
+    applyPage(Math.floor((r.left - rootRect.left) / st.metrics.stride), true);
+  };
+
+  /**
    * Links inside a chapter are rewritten to the app's own origin
    * (`http://icedreader.localhost/book/{id}/...`) so the book's images and CSS
    * load. A plain click would navigate the iframe away from its `srcDoc` to
    * that cross-origin resource, breaking pagination and leaving the reader
    * unable to page. Intercept: same-file anchors scroll to the element's page,
    * other files hand the navigation to the reader (chapter switch).
+   *
+   * Fragment-only hrefs (`#…`) never leave the `about:srcdoc` base and are
+   * handled as same-file anchors too — the Rust note expansion emits absolute
+   * URLs for word notes, but some in-book anchor links stay `#…`.
    */
   const followBookLink = (doc: Document, rawHref: string) => {
     const st = layout.current;
     if (!st.metrics) return;
+    if (rawHref.startsWith("#")) {
+      jumpToFragment(doc, rawHref.slice(1));
+      return;
+    }
     let url: URL;
     try {
       url = new URL(rawHref, doc.location.href);
@@ -279,14 +374,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     if (!path) return;
     const currentPath = normHref(chapterHref, false);
     if (path === currentPath) {
-      const frag = url.hash.slice(1);
-      if (!frag) return;
-      const el = doc.getElementById(frag);
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const rootRect = doc.documentElement.getBoundingClientRect();
-      const x = rect.left - rootRect.left;
-      applyPage(Math.floor(x / st.metrics.stride), true);
+      jumpToFragment(doc, url.hash.slice(1));
       return;
     }
     onFollowBookHrefRef.current?.(`${bookPath}${url.hash || ""}`);
@@ -356,6 +444,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     doc.documentElement.style.setProperty("width", `${metrics.stride}px`, "important");
     void doc.documentElement.offsetHeight;
     ensureWordNoteStyle(doc);
+    ensureCoverFit(doc);
+    syncNoteCrossState(doc);
 
     const pages = pageCountFromContent(contentWidth(doc), metrics.stride);
     iframe.style.width = `${pages * metrics.stride}px`;
@@ -615,6 +705,43 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             };
             doc.addEventListener("click", onDocClick);
 
+            // Word-note hover tooltip: a dark bubble (black bg, light text) in
+            // the parent-page DOM. The marker carries its full note text in
+            // `data-note` and has no `title`, so this is the only tooltip that
+            // ever appears.
+            const onDocMouseOver = (e: MouseEvent) => {
+              if (!live()) return;
+              const marker = (e.target as Element | null)?.closest?.(
+                "a.wr-note",
+              ) as Element | null;
+              if (!marker) {
+                if (noteTipTargetRef.current) hideNoteTip();
+                return;
+              }
+              const text = marker.getAttribute("data-note") ?? "";
+              if (!text) {
+                hideNoteTip();
+                return;
+              }
+              noteTipTargetRef.current = marker;
+              const iframeRect = iframe.getBoundingClientRect();
+              placeNoteTip(iframeRect.left + e.clientX, iframeRect.top + e.clientY, text);
+            };
+            const onDocMouseMove = (e: MouseEvent) => {
+              if (!noteTipTargetRef.current) return;
+              const marker = (e.target as Element | null)?.closest?.(
+                "a.wr-note",
+              ) as Element | null;
+              if (!marker) {
+                hideNoteTip();
+                return;
+              }
+              const iframeRect = iframe.getBoundingClientRect();
+              placeNoteTip(iframeRect.left + e.clientX, iframeRect.top + e.clientY);
+            };
+            doc.addEventListener("mouseover", onDocMouseOver);
+            doc.addEventListener("mousemove", onDocMouseMove);
+
             const ro = new ResizeObserver(() => {
               if (!live()) return;
               paint(true);
@@ -627,12 +754,18 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
               doc.removeEventListener("wheel", onDocWheel);
               doc.removeEventListener("mouseup", onDocMouseUp);
               doc.removeEventListener("click", onDocClick);
+              doc.removeEventListener("mouseover", onDocMouseOver);
+              doc.removeEventListener("mousemove", onDocMouseMove);
+              hideNoteTip();
               appliedRef.current = [];
             };
             iframe.addEventListener("load", cleanup, { once: true });
           }}
         />
       </div>
+
+      {/* Word-note hover bubble (parent-page DOM, viewport-fixed, dark). */}
+      <div className="note-tip" ref={noteTipRef} role="tooltip" />
 
       {toolbar && (
         <div

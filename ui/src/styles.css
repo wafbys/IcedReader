@@ -601,7 +601,10 @@ body {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  /* auto-fill keeps one cover per column; the min width grows with the
+     window (11vw, capped) so covers actually scale up as the window widens
+     instead of staying ~150px and only adding columns. */
+  grid-template-columns: repeat(auto-fill, minmax(clamp(120px, 11vw, 240px), 1fr));
   gap: 20px 16px;
 }
 
@@ -667,6 +670,16 @@ body {
   display: grid;
   place-content: center;
   cursor: pointer;
+  /* Only shown while hovering the cover (or when the button is focused / its
+     menu is open); a permanent button clutters the shelf. */
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.lib-cover-slot:hover .lib-more,
+.lib-more:focus-visible,
+.lib-more[aria-expanded="true"] {
+  opacity: 1;
 }
 
 .lib-more:hover:not(:disabled) {
@@ -680,7 +693,18 @@ body {
 
 .lib-more:disabled {
   cursor: default;
-  opacity: 0.6;
+}
+
+/* Busy state: never surface a button that cannot act. */
+.lib-cover-slot:hover .lib-more:disabled {
+  opacity: 0;
+}
+
+/* Touch screens have no hover; keep the button always visible there. */
+@media (hover: none) {
+  .lib-more {
+    opacity: 1;
+  }
 }
 
 .lib-menu {
@@ -753,15 +777,18 @@ body {
 
 .lib-cover {
   width: 100%;
-  aspect-ratio: 2 / 3;
-  object-fit: cover;
   border-radius: 4px;
   background: #e7ddd0;
   display: block;
   box-shadow: 0 1px 4px rgb(31 28 24 / 12%);
+  /* Real cover images keep their own aspect ratio: width fills the column
+     (which grows with the window), height follows the artwork — no cropping,
+     no letterboxing inside a fixed 2:3 slot. The fallback block below gets a
+     fixed ratio so cover-less cards still look like books. */
 }
 
 .lib-cover-fallback {
+  aspect-ratio: 2 / 3;
   display: grid;
   place-content: center;
   background: #3a3530;
@@ -917,5 +944,26 @@ body {
   font-size: 13px;
   padding: 2px 4px;
   white-space: nowrap;
+}
+
+/* Word-note hover tooltip (parent-page DOM, viewport-fixed, dark bubble). */
+.note-tip {
+  position: fixed;
+  z-index: 41;
+  max-width: min(340px, calc(100vw - 24px));
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #191919;
+  color: #f2f0ea;
+  font-size: 13px;
+  line-height: 1.55;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.38);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.08s ease;
+}
+
+.note-tip.visible {
+  opacity: 1;
 }
 

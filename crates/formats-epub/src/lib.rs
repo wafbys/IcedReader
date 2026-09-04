@@ -222,7 +222,8 @@ impl Book for EpubBook {
             return Err(CoreError::ChapterNotFound(href.into()));
         }
         let html = self.read_chapter_document(file, resource_base)?;
-        let html = expand_word_notes(&html);
+        let doc_base = chapter_doc_base(resource_base, file);
+        let html = expand_word_notes(&html, &doc_base);
         let until = self.next_fragment_after(href);
         Ok(slice_chapter(&html, fragment, until.as_deref()))
     }
@@ -237,6 +238,18 @@ impl Book for EpubBook {
             href: href.to_string(),
             data,
         })
+    }
+}
+
+/// Absolute URL of one chapter document (`resource_base` + `file`).
+/// Generated word-note links (marker → note block and back) point into this
+/// same document so the reader routes them as same-file anchors.
+fn chapter_doc_base(resource_base: &str, file: &str) -> String {
+    let file = file.trim_start_matches('/');
+    if resource_base.ends_with('/') {
+        format!("{resource_base}{file}")
+    } else {
+        format!("{resource_base}/{file}")
     }
 }
 
@@ -697,7 +710,7 @@ mod tests {
                 .inner
                 .read_resource_str(&key)
                 .unwrap_or_else(|e| panic!("read {key}: {e}"));
-            let out = expand_word_notes(&raw);
+            let out = expand_word_notes(&raw, &chapter_doc_base("http://icedreader.localhost/book/t/", &key));
             if out.contains("wr-note-item") {
                 noted += 1;
                 if out.contains("data-wr-footernote") {
@@ -741,6 +754,21 @@ mod tests {
         assert!(html.contains("wr-note-item"), "note blocks expected");
         // The original annotated sentence survives.
         assert!(html.contains("知莫大于弃疑"), "{html}");
+        // Markers carry a same-document id (back target) and an absolute
+        // note-block href; note items end with a back link to the marker.
+        let doc_base = "http://icedreader.localhost/book/t/OEBPS/Text/02-Section03.xhtml";
+        assert!(
+            html.contains("id=\"wr-note-back-"),
+            "marker back-target ids expected"
+        );
+        assert!(
+            html.contains(&format!("{doc_base}#wr-note-")),
+            "marker href must be an absolute same-document URL"
+        );
+        assert!(
+            html.contains(&format!(r##"<a class="wr-note-back" href="{doc_base}#wr-note-back-"##)),
+            "note blocks must link back to their markers"
+        );
     }
 
     #[test]
