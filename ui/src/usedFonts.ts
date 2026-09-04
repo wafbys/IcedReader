@@ -259,6 +259,57 @@ export function collectUsedFonts(
     { count: number; source: UsedFontSource; first: string; via?: string }
   >();
 
+  /**
+   * Which family paints one representative character of a node's script.
+   * Canvas fingerprinting dominates this report's cost, so a whole text node
+   * is judged through its first character *per script* (Han vs Latin/Kana/…)
+   * and the node's per-script character count is credited to that family.
+   * Same node + same script + same computed style paints the same face in
+   * practice; rare per-glyph fallback differences are rounded away. This
+   * turns per-character analysis of a 100k-char chapter into a
+   * per-(node, script) one — milliseconds instead of seconds.
+   */
+  const analyze = (
+    stack: string[],
+    ch: string,
+    script: string,
+  ): { family: string; source: UsedFontSource; via?: string } => {
+    const actualFont = fontShorthand(
+      "normal",
+      "400",
+      "48px",
+      stack.length ? stack : [MISSING],
+    );
+    const actual = fingerprint(ctx, fpCache, actualFont, ch);
+    for (const family of stack) {
+      if (isGeneric(family)) {
+        if (sameGlyph(actual, probe([family], ch))) {
+          return {
+            family: `（系统 ${family}）`,
+            source: "generic" as const,
+          };
+        }
+        continue;
+      }
+      if (!fontInstalled(family)) continue;
+      const hanLike = isHanLike(script);
+      const coverCh = hanLike ? "年" : "A";
+      const miss = hanLike ? missHan : missLatin;
+      const fallbackName = hanLike ? cjkFallback : latinFallback;
+      const paintsOwn = !sameGlyph(probe([family], coverCh), miss);
+      const isFallbackFace =
+        family.toLowerCase() === fallbackName.toLowerCase();
+      if (!paintsOwn && !isFallbackFace) continue;
+      if (sameGlyph(actual, probe([family], ch))) {
+        return { family: displayName(family), source: "specified" as const };
+      }
+    }
+    return {
+      family: isHanLike(script) ? cjkFallback : latinFallback,
+      source: "fallback" as const,
+    };
+  };
+
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let node: Node | null;
   while ((node = walker.nextNode())) {
@@ -266,48 +317,23 @@ export function collectUsedFonts(
     if (!text) continue;
     const el = node.parentElement;
     if (!el || skipTag(el.tagName) || !isShown(el, win)) continue;
-    const cs = win.getComputedStyle(el);
-    const stack = parseFontStack(cs.fontFamily);
-    const actualFont = fontShorthand("normal", "400", "48px", stack.length ? stack : [MISSING]);
+    const stack = parseFontStack(win.getComputedStyle(el).fontFamily);
+    // Bucket the node's visible characters by script, keeping the first
+    // character of each bucket as the fingerprint sample.
+    const byScript = new Map<string, { count: number; first: string }>();
     for (const ch of text) {
       if (isIgnorable(ch)) continue;
       const script = scriptOf(ch);
-      const actual = fingerprint(ctx, fpCache, actualFont, ch);
-      let used:
-        | { family: string; source: UsedFontSource; via?: string }
-        | undefined;
-      for (const family of stack) {
-        if (isGeneric(family)) {
-          if (sameGlyph(actual, probe([family], ch))) {
-            used = {
-              family: `（系统 ${family}）`,
-              source: "generic",
-            };
-            break;
-          }
-          continue;
-        }
-        if (!fontInstalled(family)) continue;
-        const hanLike = isHanLike(script);
-        const coverCh = hanLike ? "年" : "A";
-        const miss = hanLike ? missHan : missLatin;
-        const fallbackName = hanLike ? cjkFallback : latinFallback;
-        const paintsOwn = !sameGlyph(probe([family], coverCh), miss);
-        const isFallbackFace =
-          family.toLowerCase() === fallbackName.toLowerCase();
-        if (!paintsOwn && !isFallbackFace) continue;
-        if (sameGlyph(actual, probe([family], ch))) {
-          used = { family: displayName(family), source: "specified" };
-          break;
-        }
+      const row = byScript.get(script);
+      if (row) {
+        row.count += 1;
+      } else {
+        byScript.set(script, { count: 1, first: ch });
       }
-      if (!used) {
-        used = {
-          family: isHanLike(script) ? cjkFallback : latinFallback,
-          source: "fallback",
-        };
-      }
-      addTally(tallies, used.family, used.source, ch, used.via);
+    }
+    for (const [script, { count, first }] of byScript) {
+      const used = analyze(stack, first, script);
+      addTally(tallies, used.family, used.source, used.via, first, count);
     }
   }
 
@@ -334,15 +360,16 @@ function addTally(
   >,
   family: string,
   source: UsedFontSource,
+  via: string | undefined,
   ch: string,
-  via?: string,
+  amount: number,
 ) {
   let row = tallies.get(family);
   if (!row) {
     row = { count: 0, source, first: "", via };
     tallies.set(family, row);
   }
-  row.count += 1;
+  row.count += amount;
   if (sourceRank(source) < sourceRank(row.source)) {
     row.source = source;
     if (via) row.via = via;

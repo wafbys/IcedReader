@@ -37,6 +37,10 @@ pub struct AppState {
     pub progress: Mutex<ProgressStore>,
     pub settings: Mutex<SettingsStore>,
     pub annotations: Mutex<AnnotationStore>,
+    /// Per-file-revision shelf metadata (avoids re-opening big epubs on every shelf refresh).
+    pub library_meta: Mutex<library::LibraryMetaCache>,
+    /// Per-file-revision cover bytes (avoids re-opening the archive per cover request).
+    pub covers: Mutex<library::CoverCache>,
 }
 
 #[derive(Debug, Serialize)]
@@ -276,10 +280,15 @@ async fn get_platform_fonts(app: tauri::AppHandle) -> Result<Vec<platform_fonts:
     platform_fonts::collect(app).await
 }
 
+/// List the shelf. File-bound metadata is served from the per-revision cache
+/// (the expensive open + flattened TOC happens once per changed file); only
+/// the progress fields come from the live store.
 #[tauri::command]
 fn list_library(state: tauri::State<AppState>) -> Result<Vec<library::LibraryEntry>, String> {
+    let dir = portable::library_dir().map_err(|e| e.to_string())?;
     let progress = state.progress.lock().map_err(|e| e.to_string())?;
-    library::list_library(&progress)
+    let mut cache = state.library_meta.lock().map_err(|e| e.to_string())?;
+    Ok(library::list_library_cached(&dir, &progress, &mut cache))
 }
 
 /// Remove a library book: its epub file first, then the progress and
@@ -304,6 +313,14 @@ fn delete_book(
         .map_err(|e| e.to_string())?
         .remove_book(&progress_key)
         .map_err(|e| e.to_string())?;
+    // Drop any cached metadata / cover bytes for the removed file.
+    let deleted = dir.join(&file_name);
+    if let Ok(mut cache) = state.library_meta.lock() {
+        cache.remove(&deleted);
+    }
+    if let Ok(mut cache) = state.covers.lock() {
+        cache.remove(&file_name);
+    }
     Ok(())
 }
 
@@ -346,6 +363,8 @@ pub fn run() {
             progress: Mutex::new(ProgressStore::in_memory()),
             settings: Mutex::new(SettingsStore::in_memory(std::path::PathBuf::from("fonts"))),
             annotations: Mutex::new(AnnotationStore::in_memory()),
+            library_meta: Mutex::new(library::LibraryMetaCache::default()),
+            covers: Mutex::new(library::CoverCache::default()),
         })
         .setup(|app| {
             portable::ensure_layout().map_err(|e| e.to_string())?;

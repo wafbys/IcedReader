@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use iced_reader_core::{progress_key, Book, BookOpener, Locator, ProgressStore};
+use iced_reader_core::{progress_key, BookOpener, Locator, ProgressStore};
 use iced_reader_epub::EpubOpener;
 use serde::Serialize;
 
@@ -26,15 +27,71 @@ pub struct LibraryEntry {
     pub open_error: Option<String>,
 }
 
-pub fn list_library(progress: &ProgressStore) -> Result<Vec<LibraryEntry>, String> {
-    let dir = portable::library_dir().map_err(|e| e.to_string())?;
-    Ok(list_library_in(&dir, progress))
+/// Un-cached shelf listing used by the in-crate tests below.
+#[cfg(test)]
+pub fn list_library_in(dir: &Path, progress: &ProgressStore) -> Vec<LibraryEntry> {
+    let mut cache = LibraryMetaCache::default();
+    list_library_cached(dir, progress, &mut cache)
 }
 
-pub fn list_library_in(dir: &Path, progress: &ProgressStore) -> Vec<LibraryEntry> {
+/// Book-shelf listing without re-opening every epub: file-bound metadata
+/// (title/authors/spine…) is cached per file revision, so only the progress
+/// fields are re-read from the (in-memory) store on each call. Opening and
+/// flattening the TOC of a big book (资治通鉴: ~1.4 s) then only happens once
+/// per changed file instead of on every shelf refresh.
+#[derive(Default)]
+pub struct LibraryMetaCache {
+    books: HashMap<PathBuf, (String, BookProfile)>,
+}
+
+impl LibraryMetaCache {
+    pub fn profile(&mut self, path: &Path, library_dir: &Path) -> BookProfile {
+        let rev = file_rev(path);
+        if let Some((cached_rev, profile)) = self.books.get(path) {
+            if cached_rev == &rev {
+                return profile.clone();
+            }
+        }
+        let profile = profile_book(path, library_dir);
+        self.books.insert(path.to_path_buf(), (rev, profile.clone()));
+        profile
+    }
+
+    /// Drop one book after deletion (keeps the map from accumulating dead entries).
+    pub fn remove(&mut self, path: &Path) {
+        self.books.remove(path);
+    }
+}
+
+/// File-bound shelf metadata; reusable across listing calls while the file is
+/// unchanged (see [`LibraryMetaCache`]).
+#[derive(Debug, Clone)]
+pub struct BookProfile {
+    pub file_name: String,
+    pub title: String,
+    pub authors: Vec<String>,
+    pub progress_key: String,
+    /// Reading-order hrefs (flattened TOC/spine). Empty when the book fails to open.
+    pub chapter_hrefs: Vec<String>,
+    pub chapter_titles: Vec<Option<String>>,
+    pub has_cover: bool,
+    pub open_error: Option<String>,
+}
+
+impl BookProfile {
+    pub fn chapter_count(&self) -> Option<u32> {
+        (!self.chapter_hrefs.is_empty()).then(|| self.chapter_hrefs.len() as u32)
+    }
+}
+
+pub fn list_library_cached(
+    dir: &Path,
+    progress: &ProgressStore,
+    cache: &mut LibraryMetaCache,
+) -> Vec<LibraryEntry> {
     let mut entries: Vec<LibraryEntry> = read_epub_paths(dir)
         .into_iter()
-        .map(|path| describe_book(&path, dir, progress))
+        .map(|path| entry_from(&path, &cache.profile(&path, dir), progress))
         .collect();
     entries.sort_by(|a, b| match (b.updated_at, a.updated_at) {
         (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.title.cmp(&b.title)),
@@ -43,6 +100,41 @@ pub fn list_library_in(dir: &Path, progress: &ProgressStore) -> Vec<LibraryEntry
         (None, None) => a.title.cmp(&b.title),
     });
     entries
+}
+
+/// Cover bytes cache keyed by file name; every hit is validated against the
+/// file revision, so a replaced epub re-reads its cover exactly once and an
+/// unchanged one is served from memory instead of re-opening the whole
+/// archive on every shelf visit.
+#[derive(Default)]
+pub struct CoverCache {
+    /// file_name → (rev, media type, bytes)
+    covers: HashMap<String, (String, String, Vec<u8>)>,
+}
+
+/// Keep memory bounded: the biggest sample covers are several MB each, so a
+/// modest cap stays cheap while covering realistic shelf sizes.
+const COVER_CACHE_MAX: usize = 32;
+
+impl CoverCache {
+    pub fn get(&self, file_name: &str, rev: &str) -> Option<(&str, &[u8])> {
+        self.covers
+            .get(file_name)
+            .filter(|(cached_rev, _, _)| cached_rev == rev)
+            .map(|(_, media, data)| (media.as_str(), data.as_slice()))
+    }
+
+    pub fn insert(&mut self, file_name: &str, rev: String, media: String, data: Vec<u8>) {
+        if self.covers.len() >= COVER_CACHE_MAX {
+            self.covers.clear();
+        }
+        self.covers.insert(file_name.to_string(), (rev, media, data));
+    }
+
+    /// Drop one book's cover after deletion.
+    pub fn remove(&mut self, file_name: &str) {
+        self.covers.remove(file_name);
+    }
 }
 
 pub fn cover_bytes(path: &Path) -> Result<(String, Vec<u8>), String> {
@@ -58,6 +150,22 @@ pub fn cover_bytes(path: &Path) -> Result<(String, Vec<u8>), String> {
         return Err("empty cover".into());
     }
     Ok((res.media_type, res.data))
+}
+
+/// Cover bytes for one request, served from the in-process cache whenever the
+/// file revision is unchanged.
+pub fn cover_bytes_cached(
+    path: &Path,
+    file_name: &str,
+    cache: &mut CoverCache,
+) -> Result<(String, Vec<u8>), String> {
+    let rev = file_rev(path);
+    if let Some((media, data)) = cache.get(file_name, &rev) {
+        return Ok((media.to_string(), data.to_vec()));
+    }
+    let (media, data) = cover_bytes(path)?;
+    cache.insert(file_name, rev, media.clone(), data.clone());
+    Ok((media, data))
 }
 
 pub fn library_cover_path(file_name: &str) -> Result<PathBuf, String> {
@@ -125,12 +233,14 @@ fn file_rev(path: &Path) -> String {
     format!("{}-{}", meta.len(), mtime)
 }
 
-fn describe_book(path: &Path, library: &Path, progress: &ProgressStore) -> LibraryEntry {
+/// Slow path: open the epub once and extract everything bound to the file
+/// content (no progress). Route calls through [`LibraryMetaCache`] so that
+/// unchanged books are not re-opened on every shelf refresh.
+fn profile_book(path: &Path, library: &Path) -> BookProfile {
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "book.epub".into());
-    let cover_rev = file_rev(path);
     let fallback_title = file_name
         .strip_suffix(".epub")
         .or_else(|| file_name.strip_suffix(".EPUB"))
@@ -139,19 +249,14 @@ fn describe_book(path: &Path, library: &Path, progress: &ProgressStore) -> Libra
 
     let opener = EpubOpener;
     if !opener.can_open(path) {
-        return LibraryEntry {
-            path: path.to_string_lossy().into_owned(),
-            file_name,
+        return BookProfile {
+            file_name: file_name.clone(),
             title: fallback_title,
             authors: Vec::new(),
             progress_key: String::new(),
-            chapter_index: None,
-            chapter_count: None,
-            chapter_title: None,
-            fraction: None,
-            updated_at: None,
+            chapter_hrefs: Vec::new(),
+            chapter_titles: Vec::new(),
             has_cover: false,
-            cover_rev,
             open_error: Some("不是 EPUB".into()),
         };
     }
@@ -165,67 +270,76 @@ fn describe_book(path: &Path, library: &Path, progress: &ProgressStore) -> Libra
                 meta.title
             };
             let key = progress_key(path, &meta.identifiers, Some(library));
-            let rec = progress.get(&key);
-            let (chapter_index, chapter_count, chapter_title, fraction) = match rec {
-                Some(r) => chapter_progress(book.as_ref(), &r.locator),
-                None => (None, Some(book.spine().len() as u32), None, None),
-            };
-            LibraryEntry {
-                path: path.to_string_lossy().into_owned(),
-                file_name,
+            let spine = book.spine();
+            BookProfile {
+                file_name: file_name.clone(),
                 title,
                 authors: meta.authors,
                 progress_key: key,
-                chapter_index,
-                chapter_count,
-                chapter_title,
-                fraction,
-                updated_at: rec.map(|r| r.updated_at),
+                chapter_hrefs: spine.iter().map(|s| s.href.clone()).collect(),
+                chapter_titles: spine.iter().map(|s| s.title.clone()).collect(),
                 has_cover: meta.cover_href.is_some(),
-                cover_rev,
                 open_error: None,
             }
         }
-        Err(err) => LibraryEntry {
-            path: path.to_string_lossy().into_owned(),
-            file_name,
+        Err(err) => BookProfile {
+            file_name: file_name.clone(),
             title: fallback_title,
             authors: Vec::new(),
             progress_key: String::new(),
-            chapter_index: None,
-            chapter_count: None,
-            chapter_title: None,
-            fraction: None,
-            updated_at: None,
+            chapter_hrefs: Vec::new(),
+            chapter_titles: Vec::new(),
             has_cover: false,
-            cover_rev,
             open_error: Some(err.to_string()),
         },
     }
 }
 
-fn chapter_progress(
-    book: &dyn Book,
-    locator: &Locator,
-) -> (Option<u32>, Option<u32>, Option<String>, Option<f64>) {
-    let spine = book.spine();
-    let count = spine.len() as u32;
-    let idx = spine
+/// Combine a file-bound profile with the current progress record.
+fn entry_from(path: &Path, profile: &BookProfile, progress: &ProgressStore) -> LibraryEntry {
+    let rec = if profile.progress_key.is_empty() {
+        None
+    } else {
+        progress.get(&profile.progress_key)
+    };
+    let (chapter_index, chapter_title) = match rec {
+        Some(r) => locate_chapter(profile, &r.locator),
+        None => (None, None),
+    };
+    LibraryEntry {
+        path: path.to_string_lossy().into_owned(),
+        file_name: profile.file_name.clone(),
+        title: profile.title.clone(),
+        authors: profile.authors.clone(),
+        progress_key: profile.progress_key.clone(),
+        chapter_index,
+        chapter_count: profile.chapter_count(),
+        chapter_title,
+        fraction: rec.map(|r| r.locator.fraction.clamp(0.0, 1.0)),
+        updated_at: rec.map(|r| r.updated_at),
+        has_cover: profile.has_cover,
+        cover_rev: file_rev(path),
+        open_error: profile.open_error.clone(),
+    }
+}
+
+fn locate_chapter(profile: &BookProfile, locator: &Locator) -> (Option<u32>, Option<String>) {
+    let idx = profile
+        .chapter_hrefs
         .iter()
-        .position(|item| hrefs_match(&item.href, &locator.href, true))
+        .position(|href| hrefs_match(href, &locator.href, true))
         .or_else(|| {
-            spine
+            profile
+                .chapter_hrefs
                 .iter()
-                .position(|item| hrefs_match(&item.href, &locator.href, false))
+                .position(|href| hrefs_match(href, &locator.href, false))
         });
     match idx {
         Some(i) => (
             Some(i as u32),
-            Some(count),
-            spine[i].title.clone(),
-            Some(locator.fraction.clamp(0.0, 1.0)),
+            profile.chapter_titles.get(i).cloned().flatten(),
         ),
-        None => (None, Some(count), None, Some(locator.fraction.clamp(0.0, 1.0))),
+        None => (None, None),
     }
 }
 
@@ -324,5 +438,57 @@ mod tests {
         assert_eq!(entries[0].chapter_index, Some(0));
         assert!((entries[0].fraction.unwrap() - 0.5).abs() < 1e-9);
         assert!(entries[0].updated_at.is_some());
+    }
+
+    #[test]
+    fn meta_cache_skips_reopening_unchanged_book_and_tracks_progress() {
+        let root = std::env::temp_dir().join("icedreader-library-meta-cache");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
+        let dest = root.join("sample.epub");
+        fs::copy(&sample, &dest).unwrap();
+
+        let mut store = ProgressStore::in_memory();
+        let mut cache = LibraryMetaCache::default();
+        let first = list_library_cached(&root, &store, &mut cache);
+        assert_eq!(first.len(), 1);
+        assert!(first[0].updated_at.is_none());
+
+        // Same file, second listing: cached profile, no re-open.
+        let again = list_library_cached(&root, &store, &mut cache);
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].title, first[0].title);
+
+        // Progress still shows through the cached profile.
+        let book = EpubOpener.open(&dest).unwrap();
+        let href = book.spine()[0].href.clone();
+        let key = progress_key(&dest, &book.metadata().identifiers, Some(&root));
+        store
+            .set(
+                key,
+                Locator {
+                    href,
+                    fraction: 0.25,
+                    cfi: None,
+                },
+            )
+            .unwrap();
+        let listed = list_library_cached(&root, &store, &mut cache);
+        assert!((listed[0].fraction.unwrap() - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cover_cache_keyed_by_file_revision() {
+        let mut cache = CoverCache::default();
+        cache.insert("a.epub", "rev1".into(), "image/jpeg".into(), b"one".to_vec());
+        assert_eq!(
+            cache.get("a.epub", "rev1"),
+            Some(("image/jpeg", b"one".as_slice()))
+        );
+        // A replaced file (new revision) must miss and be re-read.
+        assert_eq!(cache.get("a.epub", "rev2"), None);
+        cache.remove("a.epub");
+        assert_eq!(cache.get("a.epub", "rev1"), None);
     }
 }

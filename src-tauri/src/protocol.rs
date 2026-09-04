@@ -34,7 +34,8 @@ pub fn handle<R: tauri::Runtime>(
         return serve_font(ctx, slot);
     }
     if let Some(name) = path.strip_prefix("/library-cover/") {
-        return serve_library_cover(name);
+        let state = ctx.app_handle().state::<AppState>();
+        return serve_library_cover(name, &state);
     }
 
     let Some((book_id, href)) = parse_book_path(&path) else {
@@ -153,7 +154,10 @@ fn serve_font<R: tauri::Runtime>(
     }
 }
 
-fn serve_library_cover(file_name: &str) -> tauri::http::Response<Vec<u8>> {
+fn serve_library_cover(
+    file_name: &str,
+    state: &AppState,
+) -> tauri::http::Response<Vec<u8>> {
     let name = file_name.split(['#', '?']).next().unwrap_or(file_name);
     let path = match crate::library::library_cover_path(name) {
         Ok(p) => p,
@@ -165,11 +169,24 @@ fn serve_library_cover(file_name: &str) -> tauri::http::Response<Vec<u8>> {
             );
         }
     };
-    match crate::library::cover_bytes(&path) {
+    let fetched = match state.covers.lock() {
+        Ok(mut cache) => crate::library::cover_bytes_cached(&path, name, &mut cache),
+        Err(_) => {
+            return cors(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "text/plain; charset=utf-8",
+                b"lock poisoned".to_vec(),
+            );
+        }
+    };
+    match fetched {
         Ok((media, data)) => cors_cache(
             StatusCode::OK,
             &media,
             data,
+            // The URL carries coverRev, but the protocol keeps revalidation
+            // semantics (AGENTS: never long-cache covers) — the in-process
+            // CoverCache is what makes repeat shelf visits cheap.
             "private, max-age=0, must-revalidate",
         ),
         Err(err) => cors(
