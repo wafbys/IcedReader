@@ -1,4 +1,5 @@
 mod fonts;
+mod book_meta;
 mod book_signals;
 mod library;
 mod portable;
@@ -9,9 +10,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use iced_reader_core::{
-    collect_publisher_fonts, progress_key, AnnotationStore, Book, BookOpener, ChapterView,
-    FontSettingsView, FontSlot, Highlight, Locator, Metadata, ProgressStore, SettingsStore,
-    SpineItem, TocNode,
+    clean_title, collect_publisher_fonts, progress_key, read_meta_file, resolved_title,
+    write_meta_file, AnnotationStore, Book, BookMeta, BookOpener, ChapterView, FontSettingsView,
+    FontSlot, Highlight, Locator, Metadata, ProgressStore, SettingsStore, SpineItem, TocNode,
 };
 use iced_reader_epub::EpubOpener;
 use serde::Serialize;
@@ -65,7 +66,7 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
     }
     let imported = portable::import_book(source).map_err(|e| e.to_string())?;
     let book = opener.open(&imported).map_err(|e| e.to_string())?;
-    let metadata = book.metadata();
+    let mut metadata = book.metadata();
     let library = portable::library_dir().ok();
     let key = progress_key(
         &imported,
@@ -102,6 +103,17 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
                 images,
             ) {
                 book_signals::write_one(&file_name, &signals);
+            }
+        }
+    }
+
+    // Companion md overlays the title everywhere (shelf, reader chrome):
+    // displayTitle → joined fields → dc:title/file name. Same resolution the
+    // shelf applies in library.rs, so both surfaces always agree.
+    if let Ok(dir) = portable::library_dir() {
+        if let Ok(meta_path) = library::meta_path_for(&dir, &file_name) {
+            if let Some(meta) = read_meta_file(&meta_path) {
+                metadata.title = resolved_title(Some(&meta), &metadata.title);
             }
         }
     }
@@ -315,6 +327,69 @@ fn list_library(state: tauri::State<AppState>) -> Result<Vec<library::LibraryEnt
     Ok(library::list_library_cached(&dir, &progress, &mut cache))
 }
 
+/// Open one book's editable metadata (the companion md) for the 编辑元数据
+/// panel. Reads the md per call — never part of the list hot path.
+#[tauri::command]
+fn get_book_meta(
+    file_name: String,
+    state: tauri::State<AppState>,
+) -> Result<book_meta::BookMetaView, String> {
+    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let md_path = library::meta_path_for(&dir, &file_name)?;
+    let path = dir.join(&file_name);
+    if !path.is_file() {
+        return Err("book not in library".into());
+    }
+    let overlay = read_meta_file(&md_path);
+    let profile = {
+        let mut cache = state.library_meta.lock().map_err(|e| e.to_string())?;
+        cache.profile(&path, &dir)
+    };
+    Ok(book_meta::view_for(&profile, overlay.as_ref()))
+}
+
+/// Save one book's metadata to its companion md. Creates the md on first save
+/// (freezing bookFile / originalTitle), overwrites it afterwards. The md is
+/// program-maintained — the UI panel is the only editing surface.
+#[tauri::command]
+fn set_book_meta(
+    file_name: String,
+    fields: book_meta::BookMetaFields,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let md_path = library::meta_path_for(&dir, &file_name)?;
+    let path = dir.join(&file_name);
+    if !path.is_file() {
+        return Err("book not in library".into());
+    }
+
+    let existing = read_meta_file(&md_path);
+    let original_title = existing
+        .as_ref()
+        .and_then(|m| m.original_title.clone())
+        .unwrap_or_else(|| {
+            state
+                .library_meta
+                .lock()
+                .ok()
+                .map(|mut cache| cache.profile(&path, &dir).title)
+                .unwrap_or_else(|| file_name.trim_end_matches(".epub").to_string())
+        });
+    let meta = BookMeta {
+        book_file: existing
+            .as_ref()
+            .and_then(|m| m.book_file.clone())
+            .or_else(|| Some(file_name.clone())),
+        original_title: Some(original_title),
+        title: clean_title(&fields.title),
+        subtitle: clean_title(&fields.subtitle),
+        volume: clean_title(&fields.volume),
+        display_title: clean_title(&fields.display_title),
+    };
+    write_meta_file(&md_path, &meta).map_err(|e| e.to_string())
+}
+
 /// Remove a library book: its epub file first, then the progress and
 /// annotation records keyed to it. Callers must confirm with the user first.
 #[tauri::command]
@@ -434,6 +509,8 @@ pub fn run() {
             open_book,
             close_book,
             list_library,
+            get_book_meta,
+            set_book_meta,
             delete_book,
             resource_origin,
             pending_book,

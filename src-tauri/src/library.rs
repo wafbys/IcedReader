@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use iced_reader_core::{progress_key, BookOpener, Locator, ProgressStore};
+use iced_reader_core::{progress_key, read_meta_file, resolved_title, BookOpener, Locator, ProgressStore};
 use iced_reader_epub::EpubOpener;
 use serde::Serialize;
 
@@ -100,7 +100,18 @@ pub fn list_library_cached(
 ) -> Vec<LibraryEntry> {
     let entries: Vec<LibraryEntry> = read_epub_paths(dir)
         .into_iter()
-        .map(|path| entry_from(&path, &cache.profile(&path, dir), progress))
+        .map(|path| {
+            let mut entry = entry_from(&path, &cache.profile(&path, dir), progress);
+            // Companion md overlays the file-bound title (displayTitle → joined
+            // fields → dc:title/file name). Read per listing so a metadata edit
+            // shows up immediately without touching the epub-rev profile cache.
+            if let Ok(meta_path) = meta_path_for(dir, &entry.file_name) {
+                if let Some(meta) = read_meta_file(&meta_path) {
+                    entry.title = resolved_title(Some(&meta), &entry.title);
+                }
+            }
+            entry
+        })
         .collect();
     enrich_and_sort(entries)
 }
@@ -301,6 +312,19 @@ pub fn library_cover_path(file_name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Companion metadata path for a library epub (`三体.epub` → `三体.md`). Only
+/// a plain file name inside `dir` is accepted (no separators / `..`), mirroring
+/// [`delete_book_from`] and [`library_cover_path`].
+pub fn meta_path_for(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    let as_path = Path::new(file_name);
+    if file_name.is_empty()
+        || as_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err("invalid book file name".into());
+    }
+    Ok(dir.join(as_path).with_extension("md"))
+}
+
 /// Delete one library book file. Only a plain file name inside `dir` is
 /// accepted (no separators / `..`), mirroring `library_cover_path`. The caller
 /// is responsible for clearing the book's progress/annotation records.
@@ -316,6 +340,8 @@ pub fn delete_book_from(dir: &Path, file_name: &str) -> Result<PathBuf, String> 
         return Err("book not in library".into());
     }
     fs::remove_file(&path).map_err(|e| e.to_string())?;
+    // The companion md (user metadata) dies with the book; missing is fine.
+    let _ = fs::remove_file(meta_path_for(dir, file_name)?);
     Ok(path)
 }
 
@@ -540,6 +566,27 @@ mod tests {
         assert!(entries[0].chapter_count.unwrap_or(0) >= 1);
         assert!(entries[0].updated_at.is_none());
         assert!(!entries[0].cover_rev.is_empty());
+    }
+
+    #[test]
+    fn delete_book_removes_companion_md() {
+        let root = std::env::temp_dir().join("icedreader-library-delete-md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
+        fs::copy(&sample, root.join("sample.epub")).unwrap();
+        fs::write(root.join("sample.md"), b"<!-- icedreader-meta\n-->").unwrap();
+        fs::write(root.join("other.md"), b"keep me").unwrap();
+
+        delete_book_from(&root, "sample.epub").unwrap();
+        assert!(!root.join("sample.epub").exists());
+        assert!(!root.join("sample.md").exists(), "companion md must be deleted with the book");
+        assert!(root.join("other.md").exists(), "unrelated md files stay");
+        assert!(meta_path_for(&root, "../x.epub").is_err());
+        assert_eq!(
+            meta_path_for(&root, "三体.epub").unwrap(),
+            root.join("三体.md")
+        );
     }
 
     #[test]
