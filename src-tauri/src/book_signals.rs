@@ -101,6 +101,11 @@ pub struct BookSignals {
     pub headings: Vec<String>,
     pub id_quality: IdQuality,
     pub has_creator: bool,
+    /// Whole-archive image files / decoded bytes (bounded scan; truncated flag
+    /// means the scan stopped early because the book is image-heavy).
+    pub img_files: u64,
+    pub img_bytes: u64,
+    pub img_truncated: bool,
 }
 
 /// Collection-time raw stats of one spine document.
@@ -426,6 +431,7 @@ pub fn analyze_book(
     identifiers: &[String],
     has_creator: bool,
     rev: &str,
+    images: (usize, u64, bool),
 ) -> Result<BookSignals, String> {
     let spine = book.spine();
     let id_quality = identifiers
@@ -484,6 +490,9 @@ pub fn analyze_book(
         headings,
         id_quality,
         has_creator,
+        img_files: images.0 as u64,
+        img_bytes: images.1,
+        img_truncated: images.2,
     })
 }
 
@@ -514,9 +523,21 @@ pub fn grade(s: &BookSignals) -> (&'static str, Vec<String>) {
     } else if s.br_count > 0 {
         reasons.push(format!("换行符约 {:.1}/千字", br_per_k));
     }
-    if s.img_count > 0 && s.chars > 5000 {
-        good += 1;
-        reasons.push(format!("含插图约 {} 处", s.img_count));
+    if s.img_files > 0 {
+        if s.img_truncated {
+            reasons.push(format!("插图 {} 张（统计截断）", s.img_files));
+        } else {
+            reasons.push(format!("插图 {} 张", s.img_files));
+        }
+        let per_kb = s.img_bytes as f64 / s.img_files as f64 / 1024.0;
+        if s.img_truncated {
+            // image-heavy book; no clarity claim
+        } else if per_kb >= 20.0 {
+            good += 1;
+            reasons.push(format!("图像码率高（约 {per_kb:.0}KB/张，较清晰）"));
+        } else if per_kb > 0.0 {
+            reasons.push(format!("图像约 {per_kb:.0}KB/张"));
+        }
     }
     match s.id_quality {
         IdQuality::Isbn => {
@@ -547,9 +568,11 @@ pub fn grade(s: &BookSignals) -> (&'static str, Vec<String>) {
         reasons.push("未识别到章节标题结构".into());
     }
 
-    let grade = if bad == 0 && (good >= 3 || s.id_quality == IdQuality::Isbn) {
+    // 优 needs a clean, well-sourced, clearly produced book; 良 tolerates
+    // missing provenance; anything with defects (or a bare text) lands on 中.
+    let grade = if bad == 0 && good >= 4 {
         "优"
-    } else if bad == 0 && good >= 1 {
+    } else if bad == 0 && good >= 2 {
         "良"
     } else {
         "中"
@@ -649,7 +672,7 @@ mod tests {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
         let book = EpubOpener.open(&path).expect("open sample");
         let meta = book.metadata();
-        let signals = analyze_book(book.as_ref(), &meta.identifiers, !meta.authors.is_empty(), "r1")
+        let signals = analyze_book(book.as_ref(), &meta.identifiers, !meta.authors.is_empty(), "r1", (0, 0, false))
             .expect("analyze");
         assert!(signals.chars > 0, "sample has readable text");
         assert!(!signals.chapter_shas.is_empty());
@@ -675,6 +698,9 @@ mod tests {
             headings: vec!["第一回".into()],
             id_quality: IdQuality::Isbn,
             has_creator: true,
+            img_files: 3,
+            img_bytes: 12_000,
+            img_truncated: false,
         };
         let mut all = std::collections::HashMap::new();
         all.insert("a.epub".to_string(), sig.clone());

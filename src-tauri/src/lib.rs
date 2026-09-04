@@ -93,11 +93,13 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
             .map(|s| s.rev != rev)
             .unwrap_or(true);
         if need {
+            let images = iced_reader_epub::image_stats(&imported).unwrap_or((0, 0, false));
             if let Ok(signals) = book_signals::analyze_book(
                 book.as_ref(),
                 &metadata.identifiers,
                 !metadata.authors.is_empty(),
                 &rev,
+                images,
             ) {
                 book_signals::write_one(&file_name, &signals);
             }

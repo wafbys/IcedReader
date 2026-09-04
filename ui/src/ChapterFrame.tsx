@@ -96,15 +96,19 @@ function usableLang(value: string | null | undefined): string | null {
 export function ensureHtmlLang(html: string, bookLang?: string | null): string {
   // Anchor both the presence check and the xml:lang lookup on the root tag:
   // a `lang=` on a descendant (or the text `lang=`) must not stop the root
-  // <html> from getting its own lang.
+  // <html> from getting its own lang. `\slang=` (not `\blang=`) so that
+  // `xml:lang` on the same tag does not count as a real `lang`.
   const rootOpen = html.match(/<html\b[^>]*>/i);
   if (!rootOpen) return html;
-  if (/\blang\s*=/i.test(rootOpen[0])) return html;
+  if (/\slang\s*=/i.test(rootOpen[0])) return html;
   const xml = rootOpen[0].match(/\bxml:lang\s*=\s*["']([^"']+)["']/i);
   const lang = usableLang(xml?.[1]) ?? usableLang(bookLang);
   if (!lang) return html;
-  const at = rootOpen.index! + rootOpen[0].length;
-  return `${html.slice(0, at)} lang="${lang}"${html.slice(at)}`;
+  // Insert the attribute inside the root tag, right before its closing `>`;
+  // appending after the tag would leave ` lang="…"` as stray visible text.
+  const tag = rootOpen[0];
+  const beforeGt = tag.endsWith(">") ? rootOpen.index! + tag.length - 1 : rootOpen.index! + tag.length;
+  return `${html.slice(0, beforeGt)} lang="${lang}"${html.slice(beforeGt)}`;
 }
 
 function paperBackground(doc: Document): string {

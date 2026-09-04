@@ -38,6 +38,33 @@ pub struct EpubBook {
     inner: Epub,
 }
 
+/// Image inventory of one epub (entry count + decoded byte total), used by the
+/// shelf quality grade. Reading stops early once the archive is clearly a big
+/// image book, so first-import stays bounded.
+pub fn image_stats(path: &std::path::Path) -> Result<(usize, u64, bool), CoreError> {
+    let epub = Epub::open(path).map_err(|e| CoreError::msg(e.to_string()))?;
+    let mut count = 0usize;
+    let mut bytes = 0u64;
+    let mut truncated = false;
+    const MAX_IMAGES: usize = 300;
+    const MAX_BYTES: u64 = 48 * 1024 * 1024;
+    for entry in epub.manifest().iter() {
+        if !entry.kind().as_str().starts_with("image/") {
+            continue;
+        }
+        if count >= MAX_IMAGES || bytes >= MAX_BYTES {
+            truncated = true;
+            break;
+        }
+        let key = entry.resource().key().value().unwrap_or_default().to_string();
+        if let Ok(data) = epub.read_resource_bytes(&key) {
+            count += 1;
+            bytes += data.len() as u64;
+        }
+    }
+    Ok((count, bytes, truncated))
+}
+
 impl EpubBook {
     fn href_of_resource(resource: &rbook::ebook::resource::Resource<'_>) -> String {
         resource.key().value().unwrap_or_default().to_string()
