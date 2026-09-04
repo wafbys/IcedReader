@@ -90,6 +90,43 @@ impl ProgressStore {
         Ok(true)
     }
 
+    /// Re-key a book after its file was renamed in the library. Only `lib:`
+    /// keys need this (they embed the file name); `id:`/`path:` keys survive a
+    /// rename untouched, so callers skip them. All records aliasing `old`
+    /// (numbered copies share a stem) are merged into `new` keeping the newest
+    /// position, mirroring what [`Self::set`] does for alias writes.
+    pub fn rename_key(&mut self, old: &str, new: &str) -> Result<(), CoreError> {
+        if old == new {
+            return Ok(());
+        }
+        let Some(old_stem) = lib_book_stem(old) else {
+            return Ok(());
+        };
+        let Some(_new_stem) = lib_book_stem(new) else {
+            return Ok(());
+        };
+        let mut best: Option<(String, ProgressRecord)> = None;
+        for (k, rec) in &self.entries {
+            let Some(stem) = lib_book_stem(k) else {
+                continue;
+            };
+            if stem == old_stem {
+                match &best {
+                    Some((_, cur)) if cur.updated_at >= rec.updated_at => {}
+                    _ => best = Some((k.clone(), rec.clone())),
+                }
+            }
+        }
+        let Some((_, best_rec)) = best else {
+            return Ok(());
+        };
+        self.entries.retain(|k, _| {
+            !(k.starts_with("lib:") && lib_book_stem(k).as_deref() == Some(old_stem.as_str()))
+        });
+        self.entries.insert(new.to_string(), best_rec);
+        self.persist()
+    }
+
     fn persist(&self) -> Result<(), CoreError> {
         let Some(path) = &self.path else {
             return Ok(());
@@ -232,6 +269,43 @@ mod tests {
         fs::write(&book, b"x").unwrap();
         let key = progress_key(&book, &[], Some(&lib));
         assert_eq!(key, "lib:foo.epub");
+    }
+
+    #[test]
+    fn rename_lib_key_merges_alias_records_and_keeps_other_books() {
+        let loc = |f: f64, at: i64| ProgressRecord {
+            locator: Locator {
+                href: "/OPS/chapter1.html".into(),
+                fraction: f,
+                cfi: None,
+            },
+            updated_at: at,
+        };
+        let mut store = ProgressStore::in_memory();
+        store.entries.insert("lib:foo.epub".into(), loc(0.1, 100));
+        store.entries.insert("lib:foo-2.epub".into(), loc(0.9, 300));
+        store.entries.insert("lib:bar.epub".into(), loc(0.3, 200));
+        store.entries.insert("id:fixed".into(), loc(0.5, 400));
+
+        // Renaming the file foo.epub → 新书名.epub carries the newest alias
+        // record over and drops the stale twin (like an alias write does).
+        store
+            .rename_key("lib:foo.epub", "lib:新书名.epub")
+            .unwrap();
+        assert_eq!(
+            store.get("lib:新书名.epub").unwrap().locator.fraction,
+            0.9
+        );
+        assert!(store.get("lib:foo.epub").is_none());
+        assert_eq!(store.get("lib:bar.epub").unwrap().locator.fraction, 0.3);
+        assert_eq!(store.get("id:fixed").unwrap().locator.fraction, 0.5);
+
+        // No record for a lib key → no-op, no error.
+        store.rename_key("lib:missing.epub", "lib:new.epub").unwrap();
+
+        // Non-lib keys are ignored entirely.
+        store.rename_key("id:fixed", "id:other").unwrap();
+        assert!(store.get("id:fixed").is_some());
     }
 
     #[test]

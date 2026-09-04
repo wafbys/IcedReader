@@ -78,6 +78,8 @@ export type BookMetaView = {
   volume: string;
   /** 作者 — 预填伴生 md 值或原书 dc:creator（多名用、连接）。 */
   author: string;
+  /** 译者 — 拼入标题时自动补「译者 」标签。 */
+  translator: string;
   /** 出版年份。 */
   year: string;
   publisher: string;
@@ -96,6 +98,7 @@ export type BookMetaFields = {
   subtitle: string;
   volume: string;
   author: string;
+  translator: string;
   year: string;
   publisher: string;
   isbn: string;

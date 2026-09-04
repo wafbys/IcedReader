@@ -635,6 +635,24 @@ pub fn remove(file_name: &str) {
     }
 }
 
+/// Carry one book's cached signals over to a new file name after a shelf
+/// rename (the content did not change, so the analysis stays valid). No-op
+/// when there is nothing under `old_file_name`.
+pub fn rename_key(old_file_name: &str, new_file_name: &str) {
+    if old_file_name == new_file_name {
+        return;
+    }
+    let Ok(path) = portable::signals_file() else {
+        return;
+    };
+    let mut all = read_from(&path);
+    let Some(signals) = all.remove(old_file_name) else {
+        return;
+    };
+    all.insert(new_file_name.to_string(), signals);
+    persist(&path, &all);
+}
+
 fn persist(path: &std::path::Path, all: &HashMap<String, BookSignals>) {
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);

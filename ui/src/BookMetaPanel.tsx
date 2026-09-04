@@ -4,15 +4,17 @@ import type { BookMetaFields, BookMetaView, LibraryEntry } from "./types";
 
 /**
  * 拼接预览 —— 镜像 core::book_meta::join_title（裁决永远在 Rust 侧发生）：
- * `书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 出版年份] [ - 出版社] [ - ISBN…]`。
- * ` _ ` 只出现在书名与副标题之间，其后一律 ` - `；空段整体跳过；
- * 书名必填（为空则不拼接）；ISBN 未自带前缀时补 ASCII「ISBN 」。
+ * `书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 译者] [ - 出版年份]
+ * [ - 出版社] [ - ISBN…]`。` _ ` 只出现在书名与副标题之间，其后一律
+ * ` - `；空段整体跳过；书名必填（为空则不拼接）；ISBN 未自带前缀时补
+ * ASCII「ISBN 」、译者未自带「译者」时补「译者 」标签。
  */
 export function joinPreview(f: {
   title: string;
   subtitle: string;
   volume: string;
   author: string;
+  translator: string;
   year: string;
   publisher: string;
   isbn: string;
@@ -23,12 +25,12 @@ export function joinPreview(f: {
   const subtitle = f.subtitle.trim();
   if (subtitle) head += " _ " + subtitle;
   const parts = [head];
-  for (const v of [
-    f.volume.trim(),
-    f.author.trim(),
-    f.year.trim(),
-    f.publisher.trim(),
-  ]) {
+  for (const v of [f.volume.trim(), f.author.trim()]) {
+    if (v) parts.push(v);
+  }
+  const translator = f.translator.trim();
+  if (translator) parts.push(/^译者/.test(translator) ? translator : `译者 ${translator}`);
+  for (const v of [f.year.trim(), f.publisher.trim()]) {
     if (v) parts.push(v);
   }
   const isbn = f.isbn.trim();
@@ -50,6 +52,7 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
   const [subtitle, setSubtitle] = useState("");
   const [volume, setVolume] = useState("");
   const [author, setAuthor] = useState("");
+  const [translator, setTranslator] = useState("");
   const [year, setYear] = useState("");
   const [publisher, setPublisher] = useState("");
   const [isbn, setIsbn] = useState("");
@@ -70,6 +73,7 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
         setSubtitle(v.subtitle);
         setVolume(v.volume);
         setAuthor(v.author);
+        setTranslator(v.translator);
         setYear(v.year);
         setPublisher(v.publisher);
         setIsbn(v.isbn);
@@ -95,7 +99,16 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, saving]);
 
-  const fields = { title, subtitle, volume, author, year, publisher, isbn };
+  const fields = {
+    title,
+    subtitle,
+    volume,
+    author,
+    translator,
+    year,
+    publisher,
+    isbn,
+  };
   const joined = view ? joinPreview(fields) : "";
   // 保存后实际生效的名字：手改名 → 字段拼接 → 打开时的裁决结果（dc:title/文件名）。
   const effective =
@@ -224,6 +237,20 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
             </div>
 
             <div className="meta-field">
+              <label htmlFor="bookmeta-translator">译者</label>
+              <input
+                id="bookmeta-translator"
+                className="meta-input"
+                value={translator}
+                onChange={(e) => setTranslator(e.target.value)}
+                placeholder="如 阳曦"
+              />
+              <p className="meta-note">
+                填姓名即可；拼入标题时自动补「译者 」标签（已写「译者」开头则保留原样），留空不拼入。
+              </p>
+            </div>
+
+            <div className="meta-field">
               <label htmlFor="bookmeta-year">出版年份</label>
               <input
                 id="bookmeta-year"
@@ -265,7 +292,7 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
               </code>
             </div>
             <p className="meta-note">
-              书名 _ 副标题 - 卷册 - 作者 - 出版年份 - 出版社 - ISBN。
+              书名 _ 副标题 - 卷册 - 作者 - 译者 - 出版年份 - 出版社 - ISBN。
               书名与副标题之间用 空格 _ 空格，其后各项用 空格 - 空格；
               空字段自动跳过，不会出现连续分隔符。符号由程序生成（只出半角）。
             </p>
@@ -305,6 +332,10 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
             <p className="meta-effect">
               保存后书架将显示：
               <strong title={effective}>{effective}</strong>
+              <span className="meta-note">
+                （数据目录里的 epub 与同名 md 会按此名改名；若已有同名文件自动加
+                -2、-3…，进度与划线一并保留。）
+              </span>
             </p>
           </form>
         )}

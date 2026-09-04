@@ -365,33 +365,92 @@ fn set_book_meta(
     }
 
     let existing = read_meta_file(&md_path);
+    // File-bound profile (dc:title base + progress key). Opening an epub only
+    // happens on a cache miss; saving metadata is low-frequency, so fine.
+    let profile = state
+        .library_meta
+        .lock()
+        .map_err(|e| e.to_string())?
+        .profile(&path, &dir);
     let original_title = existing
         .as_ref()
         .and_then(|m| m.original_title.clone())
-        .unwrap_or_else(|| {
+        .unwrap_or_else(|| profile.title.clone());
+
+    // The display title the user will see after this save (hand-confirmed
+    // displayTitle wins, else the field join). The library file is renamed to
+    // its cleaned form so the on-disk name matches what the shelf shows.
+    let staged = BookMeta {
+        title: clean_title(&fields.title),
+        subtitle: clean_title(&fields.subtitle),
+        volume: clean_title(&fields.volume),
+        author: clean_title(&fields.author),
+        translator: clean_title(&fields.translator),
+        year: clean_title(&fields.year),
+        publisher: clean_title(&fields.publisher),
+        isbn: clean_title(&fields.isbn),
+        display_title: clean_title(&fields.display_title),
+        book_file: None,
+        original_title: None,
+    };
+    let display_title = resolved_title(Some(&staged), &profile.title);
+    let old_stem = file_name.strip_suffix(".epub").unwrap_or(&file_name);
+    let desired_stem = library::clean_file_stem(&display_title);
+    let needs_rename = !old_stem.eq_ignore_ascii_case(&desired_stem);
+
+    let (final_file_name, final_md_path) = if needs_rename {
+        let target_stem = library::unique_stem(&dir, &desired_stem);
+        let new_name = library::rename_book_files(&dir, &file_name, &target_stem)?;
+        // `id:` / `path:` progress keys survive a rename untouched; only the
+        // `lib:` key (which embeds the file name) must be carried over, along
+        // with the highlights and cached quality signals under the old name.
+        if profile.progress_key.starts_with("lib:") {
+            let new_lib_key = format!("lib:{}.epub", target_stem.to_lowercase());
             state
-                .library_meta
+                .progress
                 .lock()
-                .ok()
-                .map(|mut cache| cache.profile(&path, &dir).title)
-                .unwrap_or_else(|| file_name.trim_end_matches(".epub").to_string())
-        });
+                .map_err(|e| e.to_string())?
+                .rename_key(&profile.progress_key, &new_lib_key)
+                .map_err(|e| e.to_string())?;
+            state
+                .annotations
+                .lock()
+                .map_err(|e| e.to_string())?
+                .rename_book(&profile.progress_key, &new_lib_key)
+                .map_err(|e| e.to_string())?;
+        }
+        book_signals::rename_key(&file_name, &new_name);
+        // Drop cached shelf metadata/cover bytes for the old path/name so the
+        // next listing/profile call rebuilds them under the new identity.
+        if let Ok(mut cache) = state.library_meta.lock() {
+            cache.remove(&path);
+        }
+        if let Ok(mut cache) = state.covers.lock() {
+            cache.remove(&file_name);
+        }
+        let final_md = library::meta_path_for(&dir, &new_name)?;
+        (new_name, final_md)
+    } else {
+        (file_name.clone(), md_path)
+    };
+
     let meta = BookMeta {
         book_file: existing
             .as_ref()
             .and_then(|m| m.book_file.clone())
-            .or_else(|| Some(file_name.clone())),
+            .or_else(|| Some(final_file_name.clone())),
         original_title: Some(original_title),
         title: clean_title(&fields.title),
         subtitle: clean_title(&fields.subtitle),
         volume: clean_title(&fields.volume),
         author: clean_title(&fields.author),
+        translator: clean_title(&fields.translator),
         year: clean_title(&fields.year),
         publisher: clean_title(&fields.publisher),
         isbn: clean_title(&fields.isbn),
         display_title: clean_title(&fields.display_title),
     };
-    write_meta_file(&md_path, &meta).map_err(|e| e.to_string())
+    write_meta_file(&final_md_path, &meta).map_err(|e| e.to_string())
 }
 
 /// Remove a library book: its epub file first, then the progress and

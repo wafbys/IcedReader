@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use iced_reader_core::{progress_key, read_meta_file, resolved_title, BookOpener, Locator, ProgressStore};
+use iced_reader_core::{
+    clean_title, progress_key, read_meta_file, resolved_title, BookOpener, Locator, ProgressStore,
+};
 use iced_reader_epub::EpubOpener;
 use serde::Serialize;
 
@@ -325,6 +327,104 @@ pub fn meta_path_for(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
     Ok(dir.join(as_path).with_extension("md"))
 }
 
+/// Turn a display title into a usable file stem for the library directory:
+/// fold whitespace (via [`iced_reader_core::clean_title`]), replace Windows-
+/// forbidden characters (`<>:"/\|?*`) and control chars with spaces, trim
+/// trailing dots/spaces, cap the length, and never return empty.
+/// Full-width characters are kept intact (they are legal in file names).
+pub fn clean_file_stem(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        let c = ch as u32;
+        if matches!(
+            ch,
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+        ) || c < 0x20
+        {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+    let collapsed = clean_title(&out);
+    let trimmed = collapsed.trim_end_matches([' ', '.']);
+    const MAX_STEM_CHARS: usize = 180;
+    let mut stem: String = trimmed.chars().take(MAX_STEM_CHARS).collect();
+    stem = stem.trim_end_matches([' ', '.']).to_string();
+    if stem.is_empty() {
+        stem = "未命名".into();
+    }
+    stem
+}
+
+/// Pick a stem that does not collide with any existing library file, using
+/// the same `-2`, `-3`… numbering the importer's aliases use (a `-N` copy and
+/// the plain name are one book, AGENTS 进度键). Case-insensitive, like NTFS.
+/// `preferred` is already clean (see [`clean_file_stem`]).
+pub fn unique_stem(dir: &Path, preferred: &str) -> String {
+    let Ok(read) = fs::read_dir(dir) else {
+        return preferred.to_string();
+    };
+    let taken: std::collections::HashSet<String> = read
+        .filter_map(|item| item.ok())
+        .filter(|item| item.path().is_file())
+        .filter_map(|item| item.file_name().to_str().map(|n| n.to_lowercase()))
+        .filter(|name| name.ends_with(".epub") || name.ends_with(".md"))
+        .collect();
+    let preferred_lower = format!("{preferred}.epub").to_lowercase();
+    if !taken.contains(&preferred_lower)
+        && !taken.contains(&format!("{preferred}.md").to_lowercase())
+    {
+        return preferred.to_string();
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{preferred}-{n}");
+        let candidate_lower = format!("{candidate}.epub").to_lowercase();
+        if !taken.contains(&candidate_lower)
+            && !taken.contains(&format!("{candidate}.md").to_lowercase())
+        {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Rename a library book's epub to `new_stem` (already clean + unique) and
+/// drop its old companion md — the caller writes the md under the new name
+/// right after, so moving the old md first would only add a second failing
+/// rename point. Returns the new file name. Missing old md is fine; unrelated
+/// files are untouched. A rename that fails after the epub moved leaves a
+/// half-renamed state (epub new name, no md) — extremely unlikely, reported
+/// as an error so the shelf reload reflects reality.
+pub fn rename_book_files(
+    dir: &Path,
+    old_file_name: &str,
+    new_stem: &str,
+) -> Result<String, String> {
+    let as_path = Path::new(old_file_name);
+    if old_file_name.is_empty()
+        || as_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err("invalid book file name".into());
+    }
+    let epub_old = dir.join(old_file_name);
+    if !epub_old.is_file() {
+        return Err("book not in library".into());
+    }
+    let epub_new = dir.join(format!("{new_stem}.epub"));
+    if epub_new.is_file() {
+        return Err(format!("target already exists: {new_stem}.epub"));
+    }
+    fs::rename(&epub_old, &epub_new).map_err(|e| e.to_string())?;
+    let md_old = meta_path_for(dir, old_file_name)?;
+    if md_old.is_file() {
+        // Best-effort: the new md is written right after this returns.
+        let _ = fs::remove_file(&md_old);
+    }
+    Ok(format!("{new_stem}.epub"))
+}
+
 /// Delete one library book file. Only a plain file name inside `dir` is
 /// accepted (no separators / `..`), mirroring `library_cover_path`. The caller
 /// is responsible for clearing the book's progress/annotation records.
@@ -529,6 +629,69 @@ fn split_href(href: &str) -> (&str, Option<&str>) {
 mod tests {
     use super::*;
     use iced_reader_core::ProgressStore;
+
+    #[test]
+    fn clean_file_stem_sanitizes_and_caps() {
+        // Windows-forbidden and control chars → spaces, whitespace folded.
+        assert_eq!(clean_file_stem("三体：黑暗森林"), "三体：黑暗森林");
+        assert_eq!(clean_file_stem("A:B"), "A B");
+        assert_eq!(clean_file_stem("a/b\\c|d?e*f<g>h\"i"), "a b c d e f g h i");
+        assert_eq!(clean_file_stem("  三体\u{3000}  二 "), "三体 二");
+        // Trailing dots/spaces are illegal at the end of a Windows name.
+        assert_eq!(clean_file_stem("书名..."), "书名");
+        assert_eq!(clean_file_stem("书名. "), "书名");
+        // Full-width characters survive untouched.
+        assert_eq!(clean_file_stem("（未读·探索家）"), "（未读·探索家）");
+        // Empty input never yields an empty stem.
+        assert_eq!(clean_file_stem("   "), "未命名");
+        assert_eq!(clean_file_stem("///"), "未命名");
+        // Overlong stems are capped at 180 chars without panicking mid-char.
+        let long = "书".repeat(400);
+        assert_eq!(clean_file_stem(&long).chars().count(), 180);
+    }
+
+    #[test]
+    fn unique_stem_avoids_existing_epub_and_md() {
+        let root = std::env::temp_dir().join("icedreader-unique-stem");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        // Nothing taken → the preferred stem wins.
+        assert_eq!(unique_stem(&root, "三体 - 刘慈欣"), "三体 - 刘慈欣");
+
+        fs::write(root.join("三体 - 刘慈欣.epub"), b"a").unwrap();
+        fs::write(root.join("三体 - 刘慈欣-2.md"), b"b").unwrap();
+        fs::write(root.join("OTHER.EPUB"), b"c").unwrap();
+        // .epub collision → -2; -2.md collision → -3 (case-insensitive).
+        assert_eq!(unique_stem(&root, "三体 - 刘慈欣"), "三体 - 刘慈欣-3");
+        assert_eq!(unique_stem(&root, "other"), "other-2");
+        assert_eq!(unique_stem(&root, "三体 - 刘慈欣-2"), "三体 - 刘慈欣-2-2");
+    }
+
+    #[test]
+    fn rename_book_files_moves_epub_and_drops_old_md() {
+        let root = std::env::temp_dir().join("icedreader-library-rename");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
+        fs::copy(&sample, root.join("旧名.epub")).unwrap();
+        fs::write(root.join("旧名.md"), b"<!-- icedreader-meta\n-->").unwrap();
+        fs::write(root.join("无关.txt"), b"x").unwrap();
+
+        let new_name = rename_book_files(&root, "旧名.epub", "新名 - 作者").unwrap();
+        assert_eq!(new_name, "新名 - 作者.epub");
+        assert!(root.join("新名 - 作者.epub").is_file());
+        assert!(!root.join("旧名.epub").exists());
+        assert!(!root.join("旧名.md").exists(), "old companion md removed");
+        assert!(root.join("无关.txt").is_file());
+
+        // Refuses non-plain names and missing files.
+        assert!(rename_book_files(&root, "../x.epub", "y").is_err());
+        assert!(rename_book_files(&root, "没有.epub", "y").is_err());
+        // Refuses an occupied target.
+        fs::write(root.join("占位.epub"), b"z").unwrap();
+        assert!(rename_book_files(&root, "新名 - 作者.epub", "占位").is_err());
+    }
 
     #[test]
     fn delete_book_removes_file_and_refuses_escapes() {

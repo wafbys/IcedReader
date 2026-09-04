@@ -85,6 +85,38 @@ impl AnnotationStore {
         Ok(removed)
     }
 
+    /// Re-key one book's highlights after its file was renamed in the
+    /// library. Only meaningful for `lib:` keys (they embed the file name);
+    /// callers skip `id:`/`path:` keys. All keys aliasing `old` (numbered
+    /// copies share a stem) merge into `new`, insertion order preserved.
+    pub fn rename_book(&mut self, old: &str, new: &str) -> Result<(), CoreError> {
+        if old == new {
+            return Ok(());
+        }
+        // Only `lib:` keys embed the file name; `id:`/`path:` keys survive a
+        // rename untouched and must never be rewritten here.
+        if !(old.starts_with("lib:") && new.starts_with("lib:")) {
+            return Ok(());
+        }
+        let affected: Vec<String> = self
+            .by_book
+            .keys()
+            .filter(|k| same_book(k, old))
+            .cloned()
+            .collect();
+        if affected.is_empty() {
+            return Ok(());
+        }
+        let mut merged: Vec<Highlight> = Vec::new();
+        for key in affected {
+            if let Some(list) = self.by_book.remove(&key) {
+                merged.extend(list);
+            }
+        }
+        self.by_book.insert(new.to_string(), merged);
+        self.persist()
+    }
+
     /// Remove every record belonging to one book: the exact key plus any
     /// `lib:` stem aliases that the progress key treats as the same book.
     /// Returns whether anything was removed.
@@ -173,6 +205,30 @@ mod tests {
         assert_eq!(store.list("lib:bar.epub").len(), 1);
         assert_eq!(store.list("id:x").len(), 1);
         assert!(!store.remove_book("lib:foo.epub").unwrap());
+    }
+
+    #[test]
+    fn rename_book_moves_aliases_under_new_key() {
+        let mut store = AnnotationStore::in_memory();
+        store.add("lib:foo.epub".into(), hl("a", 0, 0)).unwrap();
+        store.add("lib:foo-2.epub".into(), hl("b", 1, 0)).unwrap();
+        store.add("lib:bar.epub".into(), hl("c", 2, 0)).unwrap();
+        store.add("id:x".into(), hl("d", 3, 0)).unwrap();
+
+        store.rename_book("lib:foo.epub", "lib:新书名.epub").unwrap();
+        let list = store.list("lib:新书名.epub");
+        let ids: Vec<&str> = list.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"], "alias records merged in order");
+        assert!(store.list("lib:foo.epub").is_empty());
+        assert!(store.list("lib:foo-2.epub").is_empty());
+        assert_eq!(store.list("lib:bar.epub").len(), 1);
+        assert_eq!(store.list("id:x").len(), 1);
+
+        // Missing key → no-op.
+        store.rename_book("lib:missing.epub", "lib:new.epub").unwrap();
+        // Non-lib keys untouched (callers should skip them anyway).
+        store.rename_book("id:x", "id:y").unwrap();
+        assert!(store.list("id:x").len() == 1);
     }
 
     #[test]

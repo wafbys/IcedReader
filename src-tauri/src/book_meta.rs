@@ -18,6 +18,7 @@ pub struct BookMetaFields {
     pub subtitle: String,
     pub volume: String,
     pub author: String,
+    pub translator: String,
     pub year: String,
     pub publisher: String,
     pub isbn: String,
@@ -38,6 +39,8 @@ pub struct BookMetaView {
     /// 作者 — prefilled with the companion value or the book's dc:creator
     /// (multiple names joined with 、), so the join has an author to show.
     pub author: String,
+    /// 译者 — no dc source in the epub metadata yet; starts from the md value.
+    pub translator: String,
     pub year: String,
     pub publisher: String,
     pub isbn: String,
@@ -71,12 +74,16 @@ pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaVi
     let year = overlay.map(|m| m.year.clone()).unwrap_or_default();
     let publisher = overlay.map(|m| m.publisher.clone()).unwrap_or_default();
     let isbn = overlay.map(|m| m.isbn.clone()).unwrap_or_default();
+    let translator = overlay
+        .map(|m| m.translator.clone())
+        .unwrap_or_default();
     let confirmed_title = overlay
         .map(|m| m.display_title.clone())
         .unwrap_or_default();
     let display_title = resolved_title(overlay, base);
-    let suggested_title =
-        join_title(&title, &subtitle, &volume, &author, &year, &publisher, &isbn);
+    let suggested_title = join_title(
+        &title, &subtitle, &volume, &author, &translator, &year, &publisher, &isbn,
+    );
     BookMetaView {
         file_name: profile.file_name.clone(),
         original_title,
@@ -84,6 +91,7 @@ pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaVi
         subtitle,
         volume,
         author,
+        translator,
         year,
         publisher,
         isbn,
@@ -130,6 +138,7 @@ mod tests {
         assert_eq!(view.file_name, "三体.epub");
         // Bibliographic fields start empty (no dc source in this profile).
         assert_eq!(view.author, "");
+        assert_eq!(view.translator, "");
         assert_eq!(view.year, "");
         assert_eq!(view.publisher, "");
         assert_eq!(view.isbn, "");
@@ -158,6 +167,7 @@ mod tests {
             subtitle: "黑暗森林".into(),
             volume: "第二部".into(),
             author: "刘慈欣".into(),
+            translator: "阳曦".into(),
             year: "2008".into(),
             publisher: "重庆出版社".into(),
             isbn: "978-7-5366-9293-0".into(),
@@ -170,7 +180,7 @@ mod tests {
         assert_eq!(view.title, "三体");
         assert_eq!(
             view.suggested_title,
-            "三体 _ 黑暗森林 - 第二部 - 刘慈欣 - 2008 - 重庆出版社 - ISBN 978-7-5366-9293-0"
+            "三体 _ 黑暗森林 - 第二部 - 刘慈欣 - 译者 阳曦 - 2008 - 重庆出版社 - ISBN 978-7-5366-9293-0"
         );
         assert_eq!(view.display_title, view.suggested_title);
         // md.displayTitle empty → still derived, hand-edit box stays empty.
