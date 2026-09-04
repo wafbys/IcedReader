@@ -41,6 +41,28 @@ function progressLabel(entry: LibraryEntry): string {
   return entry.chapterCount ? `共 ${entry.chapterCount} 章 · 未读` : "未读";
 }
 
+/** 书架顶部统计：总数、未读（从未打开）、已打开（有进度记录）、坏书。 */
+function ShelfStats({ entries }: { entries: LibraryEntry[] }) {
+  if (entries.length === 0) return null;
+  let unread = 0;
+  let opened = 0;
+  let broken = 0;
+  for (const e of entries) {
+    if (e.openError) {
+      broken += 1;
+    } else if (e.updatedAt != null || e.fraction != null) {
+      opened += 1;
+    } else {
+      unread += 1;
+    }
+  }
+  const parts = [`共 ${entries.length} 本`];
+  if (unread > 0) parts.push(`未读 ${unread}`);
+  if (opened > 0) parts.push(`已打开 ${opened}`);
+  if (broken > 0) parts.push(`无法打开 ${broken}`);
+  return <p className="lib-stats">{parts.join(" · ")}</p>;
+}
+
 function coverUrl(origin: string, fileName: string, coverRev: string): string {
   const base = `${origin.replace(/\/$/, "")}/library-cover/${encodeURIComponent(fileName)}`;
   return coverRev ? `${base}?r=${encodeURIComponent(coverRev)}` : base;
@@ -174,6 +196,7 @@ export default function Library({
           正在导入并分析排版与质量…
         </div>
       )}
+      <ShelfStats entries={entries} />
       <ul className="lib-grid">
         {entries.map((entry) => (
           <li key={entry.path} className="lib-item">

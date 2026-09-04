@@ -907,6 +907,13 @@ body {
   text-align: center;
 }
 
+/* 书架统计行：网格上方一条轻量信息，不参与排序也不遮挡卡片。 */
+.lib-stats {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 
 .page {
   height: 100%;
