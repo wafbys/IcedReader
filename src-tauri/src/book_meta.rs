@@ -28,6 +28,9 @@ pub struct BookMetaView {
     pub title: String,
     pub subtitle: String,
     pub volume: String,
+    /// 手改框初值：md 里用户确认过的 displayTitle；空 = 未确认，保存后由
+    /// 字段拼接接管（区别 `display_title` 的“当前裁决结果”——那个永远非空）。
+    pub confirmed_title: String,
     /// The currently displayed title (resolution result) — the user may edit it.
     pub display_title: String,
     /// What a “regenerate” would produce from the current fields right now.
@@ -46,6 +49,9 @@ pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaVi
         .map(|m| m.subtitle.clone())
         .unwrap_or_default();
     let volume = overlay.map(|m| m.volume.clone()).unwrap_or_default();
+    let confirmed_title = overlay
+        .map(|m| m.display_title.clone())
+        .unwrap_or_default();
     let display_title = resolved_title(overlay, base);
     let suggested_title = join_title(&title, &subtitle, &volume);
     BookMetaView {
@@ -54,6 +60,7 @@ pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaVi
         title,
         subtitle,
         volume,
+        confirmed_title,
         display_title,
         suggested_title,
     }
@@ -85,6 +92,8 @@ mod tests {
         assert_eq!(view.title, "三体");
         assert_eq!(view.display_title, "三体");
         assert_eq!(view.suggested_title, "三体");
+        // No companion md yet → nothing is user-confirmed → empty hand-edit box.
+        assert_eq!(view.confirmed_title, "");
         assert_eq!(view.file_name, "三体.epub");
     }
 
@@ -104,6 +113,8 @@ mod tests {
         assert_eq!(view.title, "三体");
         assert_eq!(view.suggested_title, "三体 _ 黑暗森林");
         assert_eq!(view.display_title, "三体 _ 黑暗森林");
+        // md.displayTitle empty → still derived, hand-edit box stays empty.
+        assert_eq!(view.confirmed_title, "");
     }
 
     #[test]
@@ -118,6 +129,8 @@ mod tests {
         };
         let view = view_for(&profile("旧名"), Some(&meta));
         assert_eq!(view.display_title, "三体：黑暗森林（用户手写）");
+        // The confirmed (hand-edited) value feeds the hand-edit box on reopen…
+        assert_eq!(view.confirmed_title, "三体：黑暗森林（用户手写）");
         // …and the regenerate suggestion still follows the ASCII-join rule.
         assert_eq!(view.suggested_title, "三体 _ 黑暗森林");
     }

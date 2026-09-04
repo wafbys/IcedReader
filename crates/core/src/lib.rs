@@ -15,7 +15,10 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 pub use annotations::{AnnotationStore, Highlight};
-pub use book_meta::{clean_title, join_title, read_meta_file, resolved_title, write_meta_file, BookMeta, TITLE_JOIN_SEP};
+pub use book_meta::{
+    clean_title, join_title, read_meta_file, resolved_title, write_meta_file, BookMeta,
+    FIELD_SEP, TITLE_JOIN_SEP,
+};
 pub use fonts::{
     apply_custom_fonts, font_override_css, rewrite_css_font_families, sniff_font, FontKind,
     FontUrls, CJK_UNICODE_RANGE, LATIN_UNICODE_RANGE,

@@ -36,6 +36,13 @@ pub const META_OPEN: &str = "<!-- icedreader-meta";
 /// Joins title / subtitle / volume into the derived display title.
 pub const TITLE_JOIN_SEP: &str = " _ ";
 
+/// Separator reserved for joining fields of *different* kinds (e.g. a future
+/// `作者 - 书名`) — user-confirmed 2026-09-04. The current four fields are all
+/// same-kind (`title`/`subtitle`/`volume`), so this stays unused until such a
+/// cross-kind join exists; declared here so the convention lives next to the
+/// code instead of only in docs.
+pub const FIELD_SEP: &str = " - ";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BookMeta {
     /// File name of the epub this md belongs to (captured when the md is first written).

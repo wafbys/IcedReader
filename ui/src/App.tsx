@@ -5,6 +5,7 @@ import ChapterFrame, {
   type ChapterFrameHandle,
   type PageInfo,
 } from "./ChapterFrame";
+import BookMetaPanel from "./BookMetaPanel";
 import FontPanel from "./FontPanel";
 import HighlightsPanel from "./HighlightsPanel";
 import Library from "./Library";
@@ -32,6 +33,8 @@ import {
 export default function App() {
   const [book, setBook] = useState<OpenedBook | null>(null);
   const [library, setLibrary] = useState<LibraryEntry[]>([]);
+  /** 书架三点菜单「编辑元数据…」选中的条目（非 null 时显示模态面板）。 */
+  const [metaEntry, setMetaEntry] = useState<LibraryEntry | null>(null);
   const [resourceOrigin, setResourceOrigin] = useState("");
   const [index, setIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -872,6 +875,16 @@ export default function App() {
       {book && fonts && !fonts.useOriginalFonts && !fonts.customFontsActive && (
         <div className="banner">自定义字体未齐，当前仍按原书 CSS。</div>
       )}
+      {metaEntry && (
+        <BookMetaPanel
+          entry={metaEntry}
+          onClose={() => setMetaEntry(null)}
+          onSaved={() => {
+            setMetaEntry(null);
+            void loadLibrary();
+          }}
+        />
+      )}
 
       <div className="workspace">
         {tocOpen && book && (
@@ -918,6 +931,7 @@ export default function App() {
               onOpen={(path) => void openPath(path)}
               onImport={() => void openEpub()}
               onDelete={(entry) => void deleteBook(entry)}
+              onEditMeta={(entry) => setMetaEntry(entry)}
             />
           )}
           {book && chapterHtml && (

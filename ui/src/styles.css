@@ -1047,3 +1047,179 @@ body {
   opacity: 1;
 }
 
+/* 编辑元数据模态（书名规范）——从书架三点菜单进入。fixed 遮罩 + 居中浅色卡片，
+   属于壳层 UI，不注入任何正文样式（AGENTS：程序生成的符号只出半角）。 */
+.meta-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgba(24, 21, 17, 0.42);
+}
+
+.meta-modal {
+  width: min(500px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px 18px;
+  background: #fffdf7;
+  color: var(--ink);
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(24, 21, 17, 0.3);
+  font-size: 13px;
+}
+
+.meta-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.meta-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.meta-head strong {
+  font-size: 15px;
+}
+
+.meta-file {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.meta-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.meta-field label,
+.meta-cap {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.meta-input {
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #ddd2c0;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  padding: 6px 9px;
+}
+
+.meta-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+
+.meta-ro {
+  border: 1px dashed #ddd2c0;
+  border-radius: 6px;
+  background: #f4eee3;
+  color: var(--ink);
+  padding: 6px 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.meta-row .meta-input {
+  flex: 1;
+}
+
+.meta-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f4eee3;
+}
+
+.meta-joined {
+  font-family: Consolas, "Cascadia Mono", "Sarasa Mono SC", monospace;
+  font-size: 13px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.meta-error {
+  margin: 0;
+  color: #9c3b1e;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.meta-effect {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.meta-effect strong {
+  display: block;
+  color: var(--ink);
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+/* 浅色卡片里的 .ghost 按钮不能沿用暗色 chrome 的近白字（对比度不够）。 */
+.meta-modal .btn.ghost {
+  color: var(--ink);
+  border-color: #cfc3ab;
+}
+
+.meta-modal .btn.ghost:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+

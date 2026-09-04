@@ -21,6 +21,7 @@ type Props = {
   onOpen: (path: string) => void;
   onImport: () => void;
   onDelete: (entry: LibraryEntry) => void;
+  onEditMeta: (entry: LibraryEntry) => void;
 };
 
 function progressLabel(entry: LibraryEntry): string {
@@ -83,6 +84,7 @@ export default function Library({
   onOpen,
   onImport,
   onDelete,
+  onEditMeta,
 }: Props) {
   /** Path of the entry whose menu is open (one at a time). */
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -217,7 +219,16 @@ export default function Library({
                 </button>
                 {menuFor === entry.path && (
                   <div className="lib-menu" role="menu">
-                    {/* Future per-book commands get added here. */}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        closeMenu();
+                        onEditMeta(entry);
+                      }}
+                    >
+                      编辑元数据…
+                    </button>
                     <button
                       type="button"
                       role="menuitem"

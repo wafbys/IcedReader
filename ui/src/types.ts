@@ -67,6 +67,31 @@ export type LibraryEntry = {
   duplicates: string[];
 };
 
+/** 编辑元数据面板（get_book_meta）的载荷。 */
+export type BookMetaView = {
+  fileName: string;
+  /** 只读：首次导入时程序见到的书名（before any user edit）。 */
+  originalTitle: string;
+  /** 主书名 — 预填伴生 md 值或清洗后的当前书名。 */
+  title: string;
+  subtitle: string;
+  volume: string;
+  /** 手改框初值：md 里用户确认过的 displayTitle；空 = 未确认，由字段拼接接管。 */
+  confirmedTitle: string;
+  /** 当前裁决结果（书架/阅读正在显示的名字，永远非空）。 */
+  displayTitle: string;
+  /** 由当前字段拼出的候选（“自动填充”把此值写入手改框）。 */
+  suggestedTitle: string;
+};
+
+/** 保存到 set_book_meta 的字段（displayTitle 空 = 派生模式）。 */
+export type BookMetaFields = {
+  title: string;
+  subtitle: string;
+  volume: string;
+  displayTitle: string;
+};
+
 export type OpenedBook = {
   id: string;
   format: string;

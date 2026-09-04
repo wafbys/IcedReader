@@ -48,11 +48,19 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 
 ## Tauri 命令
 
-- `open_book` / `close_book` / `pending_book` / `list_library` / `delete_book`（`fileName` + `progressKey`：删书库内 epub，并清该书进度与划线；前端必须先弹确认框再调）
+- `open_book` / `close_book` / `pending_book` / `list_library` / `delete_book`（`fileName` + `progressKey`：删书库内 epub，并清该书进度、划线与伴生 md；前端必须先弹确认框再调）
+- `get_book_meta`（`fileName` → 编辑面板载荷：可编辑字段 + 拼接预览 + 原书名）/ `set_book_meta`（`fileName` + `fields`：写伴生 md；md 由程序维护，UI 面板是唯一编辑面）
 - `get_chapter`（返回 `{ html, publisherFonts }`。`publisherFonts`：本章原书 CSS 的 font-family 原文、`@font-face` 名、以及 `src` 不在书内的 `unloadableFaces`）/ `resource_origin`
 - `save_progress`
 - `list_annotations` / `add_annotation` / `delete_annotation`（划线，键同进度键，存 `data/annotations.json`）
 - `get_font_settings` / `set_use_original_fonts` / `set_font_scale` / `install_font` / `clear_font`
+
+## 书元数据（书名规范）
+
+- 书架条目可编辑元数据存 `data/library/<stem>.md`（与 epub 同名伴生 md）。**md 由程序维护**：用户只走书架三点菜单的「编辑元数据…」面板，不手编 md；md 人类可读只是可拷贝/备份/进 git 的福利。元数据 v1 不含划线（划线仍存 `data/annotations.json`）。
+- 显示名裁决链：md `displayTitle`（用户确认过）→ 字段拼接（`title`/`subtitle`/`volume`）→ `dc:title`（非空且非 "Untitled"）→ 文件名。`list_library` 与 `open_book` 统一应用，书架与阅读标题一致；手改显示名永不被字段拼接覆盖（面板里清空显示名才回到自动拼接）。面板的「自动填充」不覆盖手改。
+- 符号禁则：程序生成的符号一律 ASCII，**绝不产出全角**；同性质字段（主书名/副标题/卷册）拼接用 `" _ "`；不同性质字段（将来如 `作者 - 书名`）用 `" - "`（已定）。原书 `dc:title` 自带的字符（含全角冒号、`Ⅲ` 等）原样保留，不转半角。
+- `delete_book` 连带删除伴生 md（无 md 时静默忽略）；同名重新导入后从空 md 开始。
 
 「本章实际渲染字体」不再走 CDP 命令：`usedFonts.ts` 的 `collectUsedFonts` 在章节 iframe 文档内做 canvas 指纹统计，数据源见「改 UI 时 · 字体面板」的约束。
 
@@ -75,7 +83,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
   - 栈里的 **CSS 泛型**（`serif` / `sans-serif` / `monospace` 等）实际生效时，显示 `（系统 serif）` 这类标签，来源为「泛型」。不要再猜宋体或雅黑。
   - 栈里既没有可用命名字体、也没有泛型时，才标缺字回退（`（系统 CJK 默认）` 或对上的已装 CJK 名）。
 - 目录用 `book.toc`（没有则退回 spine 标题）。侧栏树、点条目跳到对应章首页。当前章高亮。不要在前端再 parse NCX。
-- **书架：** `ui/src/Library.tsx` + `list_library`。封面用协议 `/library-cover/{文件名}`，URL 带 `coverRev`（文件大小+mtime），响应不要 `immutable` 长缓存，同名替换后应换图。不要在 JS 里 unzip，也不要把封面字节塞进 `list_library` 的 JSON。回书架前要 `await` 进度写入，再 `list_library`。删书已实现：封面右下三点按钮（**悬停封面才显示**，键盘聚焦 / 菜单展开时保持可见，触屏无 hover 则常显）弹小菜单（目前仅「从书库删除」，走命令 `delete_book`），点菜单项后必须先弹确认框；菜单状态在 `Library.tsx` 内维护，不要另加删除入口。书架列数 auto-fill、列宽下限随窗口伸缩（clamp），封面随窗口变宽而变大；封面图按自身比例随列宽缩放（fit 卡片、不裁切不拉伸，无固定槽高），无封面卡片用 2:3 占位。书库只扫 `data/library/` 一层 `*.epub`，不要做分类、子目录、内容哈希去重，除非产品明确要求——同书识别与质量分属明确要求：首次导入（`open_book`，界面显示分析反馈）算正文指纹与质量信号并缓存 `data/book-signals.json`；`list_library` 只读缓存不在列表热路径计算；正文指纹一致或同书异版只作「同书」提示（`LibraryEntry.duplicates`），不自动合并/删除；质量 优/良/中 参与未读排序并显示在封面左上角标（`quality`，依据 `qualityPlus`/`qualityMinus`：正面事实与减分项两组；悬停角标由前端自绘浮层显示，不要退回原生 `title`）；删除书时清除该书缓存。开发 `target/debug/data` 与 release `target/release/data` 是两套。
+- **书架：** `ui/src/Library.tsx` + `list_library`。封面用协议 `/library-cover/{文件名}`，URL 带 `coverRev`（文件大小+mtime），响应不要 `immutable` 长缓存，同名替换后应换图。不要在 JS 里 unzip，也不要把封面字节塞进 `list_library` 的 JSON。回书架前要 `await` 进度写入，再 `list_library`。删书已实现：封面右下三点按钮（**悬停封面才显示**，键盘聚焦 / 菜单展开时保持可见，触屏无 hover 则常显）弹小菜单："编辑元数据…"（打开 `BookMetaPanel` 模态，见「书元数据」小节）在上、「从书库删除」在下（点后必须先弹确认框，走命令 `delete_book`）；菜单状态在 `Library.tsx` 内维护，不要另加删除入口。书架列数 auto-fill、列宽下限随窗口伸缩（clamp），封面随窗口变宽而变大；封面图按自身比例随列宽缩放（fit 卡片、不裁切不拉伸，无固定槽高），无封面卡片用 2:3 占位。书库只扫 `data/library/` 一层 `*.epub`，不要做分类、子目录、内容哈希去重，除非产品明确要求——同书识别与质量分属明确要求：首次导入（`open_book`，界面显示分析反馈）算正文指纹与质量信号并缓存 `data/book-signals.json`；`list_library` 只读缓存不在列表热路径计算；正文指纹一致或同书异版只作「同书」提示（`LibraryEntry.duplicates`），不自动合并/删除；质量 优/良/中 参与未读排序并显示在封面左上角标（`quality`，依据 `qualityPlus`/`qualityMinus`：正面事实与减分项两组；悬停角标由前端自绘浮层显示，不要退回原生 `title`）；删除书时清除该书缓存。开发 `target/debug/data` 与 release `target/release/data` 是两套。
 - **顶栏：** `.chrome` 固定 52px，`flex-wrap: nowrap`；按钮 `white-space: nowrap`；书名/作者/进度省略号。不要让长标题把工具栏撑高。窗口窄时（`≤1180px`）阅读视图把低频按钮（打开 EPUB / 目录 / 划线 / 字体 / 全屏，`.chrome-more`）收进右上「⋯」菜单（`.top-more` / `.top-menu`，菜单 `fixed` 定位避开 `.chrome` 的 `overflow: hidden`），书架、上一章/下一章、字号、书名保持常显。顶栏不放品牌字（窗口标题已含 `IcedReader 版本号`）。不要用换行或横向滚动，不要整体藏掉章导航。
 - **窗口几何：** 位置/大小/最大化存 `data/window.json`。全屏当阅读态，不要作为下次启动状态。不要在 `CloseRequested` 里 `prevent_close`。
 - 全屏用 Tauri `setFullscreen`（F11 / 顶栏按钮），不要用浏览器 `requestFullscreen`；Windows 上关掉 WebView2 浏览器加速键，避免 F11 和引擎抢。Esc：先关目录，再退出全屏。全屏时顶栏默认收起，窗口顶部整条热区（含正文中间）可唤出，不要只靠左右页边的 mousemove。
@@ -96,7 +104,9 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 
 改划线时：选中一段文字松手应浮出「划线」，点后即时变黄；再点这段（无选区单击）浮出「删除划线」；双击已有划线中的词也应是删除而非报重叠；删除后即刻消失。A±/拉宽窗口后划线仍贴在原句上。翻走再回来、重启程序后划线仍在，且 `data/annotations.json` 已更新。选中文字点划线后不应翻页（翻页靠左右键 / 滚轮 / 顶栏按钮，没有点左右侧点按翻页）。顶栏「划线」应列出全书画线（按阅读顺序），点一条跳到所在章的那一页（跨章会切章，同章直接定位），列表里删除后即时消失。
 
-改书架删书时：封面右下三点弹出小菜单，点菜单外 / Esc 应关闭；「从书库删除」先弹确认框，取消不动书；确认后卡片消失，`data/library/` 里文件没了，`progress.json` / `annotations.json` 里该书（同 stem 的 `lib:` 键）记录也清掉；同名重新导入进度从零开始。坏书（无法打开）也能删。
+改书架删书时：封面右下三点弹出小菜单，点菜单外 / Esc 应关闭；「从书库删除」先弹确认框，取消不动书；确认后卡片消失，`data/library/` 里文件没了，同名 `<stem>.md` 也没了，`progress.json` / `annotations.json` 里该书（同 stem 的 `lib:` 键）记录也清掉；同名重新导入进度从零开始。坏书（无法打开）也能删。
+
+改书元数据时：三点菜单含「编辑元数据…」（位于「从书库删除」上方），点开居中模态；原书名只读展示，主书名预填当前书名的空白/全角空格折叠版；只改主书名保存 → 书架卡片标题即时更新，`data/library/<stem>.md` 出现；面板手改框留空保存 = 自动拼接（再改字段、保存，标题跟随）；手改框填名字保存 = 锁定，之后改字段标题不变；清空手改框保存回到拼接；打开该书顶栏标题与书架一致；从没保存过则无 md；删除书后 md 一并消失。
 
 改正文链接时：点书内注文/目录链接应在阅读器内跳转（同文件锚点定位到那一页，跨文件切章），iframe 的 `contentDocument` 必须仍是 `about:srcdoc`——若 iframe 被链接导航走会跨源、布局变坏且无法翻页。用注文多的书（如东周列国志）点 `[n]` 链接核对。
 
