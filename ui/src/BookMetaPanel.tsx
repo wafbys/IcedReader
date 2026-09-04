@@ -263,12 +263,12 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
               <code className="meta-joined" title={joined || undefined}>
                 {joined || "（书名必填；留空则不拼接）"}
               </code>
-              <p className="meta-note">
-                书名 _ 副标题 - 卷册 - 作者 - 出版年份 - 出版社 - ISBN。
-                书名与副标题之间用 空格 _ 空格，其后各项用 空格 - 空格；
-                空字段自动跳过，不会出现连续分隔符。符号由程序生成（只出半角）。
-              </p>
             </div>
+            <p className="meta-note">
+              书名 _ 副标题 - 卷册 - 作者 - 出版年份 - 出版社 - ISBN。
+              书名与副标题之间用 空格 _ 空格，其后各项用 空格 - 空格；
+              空字段自动跳过，不会出现连续分隔符。符号由程序生成（只出半角）。
+            </p>
 
             <div className="meta-field">
               <label htmlFor="bookmeta-display">显示名（可留空）</label>
