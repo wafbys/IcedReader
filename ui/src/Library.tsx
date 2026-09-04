@@ -1,5 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { LibraryEntry } from "./types";
+
+/** Hover tooltip content for one quality badge (优/良/中) with its reasons. */
+type GradeTip = {
+  grade: string;
+  /** Measured facts and merits behind the grade. */
+  plus: string[];
+  /** What held the book back; shown under a 减分项 heading when non-empty. */
+  minus: string[];
+  /** Anchor (badge) viewport rect, for placing the viewport-fixed bubble. */
+  anchorLeft: number;
+  anchorTop: number;
+  anchorBottom: number;
+};
 
 type Props = {
   entries: LibraryEntry[];
@@ -74,6 +87,51 @@ export default function Library({
   /** Path of the entry whose menu is open (one at a time). */
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const closeMenu = () => setMenuFor(null);
+
+  /** Quality-badge tooltip (one at a time, viewport-fixed like .note-tip). */
+  const [gradeTip, setGradeTip] = useState<GradeTip | null>(null);
+  const gradeTipRef = useRef<HTMLDivElement | null>(null);
+  const closeGradeTip = () => setGradeTip(null);
+
+  const showGradeTip = (el: HTMLElement, entry: LibraryEntry) => {
+    const r = el.getBoundingClientRect();
+    setGradeTip({
+      grade: entry.quality ?? "",
+      plus: entry.qualityPlus,
+      minus: entry.qualityMinus,
+      anchorLeft: r.left,
+      anchorTop: r.top,
+      anchorBottom: r.bottom,
+    });
+  };
+
+  // Place the bubble under the badge before paint; flip above / clamp when it
+  // would run off the viewport edge.
+  useLayoutEffect(() => {
+    const el = gradeTipRef.current;
+    if (!el || !gradeTip) return;
+    const w = el.offsetWidth || 280;
+    const h = el.offsetHeight || 90;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = gradeTip.anchorLeft;
+    let top = gradeTip.anchorBottom + 6;
+    if (left + w + 8 > vw) left = Math.max(8, vw - w - 8);
+    if (top + h + 8 > vh) {
+      top = gradeTip.anchorTop - h - 6;
+      if (top < 8) top = 8;
+    }
+    el.style.left = `${Math.round(left)}px`;
+    el.style.top = `${Math.round(top)}px`;
+  }, [gradeTip]);
+
+  // Fixed positioning goes stale on window resize while the bubble is open.
+  useEffect(() => {
+    if (!gradeTip) return;
+    const onResize = () => setGradeTip(null);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [gradeTip]);
   const toggleMenu = (path: string) =>
     setMenuFor((current) => (current === path ? null : path));
 
@@ -101,6 +159,7 @@ export default function Library({
   return (
     <div
       className="lib"
+      onScroll={closeGradeTip}
       onPointerDown={(e) => {
         // A press anywhere outside the open menu closes it; card presses then
         // still fire their own click (opening a book only needs a second press).
@@ -120,7 +179,13 @@ export default function Library({
               {entry.quality && !entry.openError && (
                 <span
                   className={`lib-grade g-${entry.quality}`}
-                  title={entry.qualityReasons.join("；") || `质量：${entry.quality}`}
+                  onMouseEnter={(e) => showGradeTip(e.currentTarget, entry)}
+                  onMouseLeave={closeGradeTip}
+                  onClick={() => {
+                    // The badge sits on the cover: keep a click there opening
+                    // the book, like the pointer-events pass-through did before.
+                    if (!busy) onOpen(entry.path);
+                  }}
                 >
                   {entry.quality}
                 </span>
@@ -191,6 +256,30 @@ export default function Library({
           </li>
         ))}
       </ul>
+      {gradeTip && (
+        <div ref={gradeTipRef} className="lib-grade-tip" role="tooltip">
+          <span className={`tip-grade g-${gradeTip.grade}`}>
+            质量：{gradeTip.grade}
+          </span>
+          {gradeTip.plus.length > 0 && (
+            <ul>
+              {gradeTip.plus.map((reason, i) => (
+                <li key={`p${i}`}>{reason}</li>
+              ))}
+            </ul>
+          )}
+          {gradeTip.minus.length > 0 && (
+            <>
+              <span className="tip-minus-label">减分项</span>
+              <ul className="tip-minus">
+                {gradeTip.minus.map((reason, i) => (
+                  <li key={`m${i}`}>{reason}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

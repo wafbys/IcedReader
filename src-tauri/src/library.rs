@@ -28,8 +28,10 @@ pub struct LibraryEntry {
     pub open_error: Option<String>,
     /// 优/良/中 from the cached first-import book signals (rev valid only).
     pub quality: Option<String>,
-    /// Plain-language reasons behind the grade.
-    pub quality_reasons: Vec<String>,
+    /// Measured facts and merits behind the grade (shown in the shelf tooltip).
+    pub quality_plus: Vec<String>,
+    /// What held the book back — defects / missing provenance (empty on 优).
+    pub quality_minus: Vec<String>,
     /// File names of other library books judged the same book (hint only).
     pub duplicates: Vec<String>,
 }
@@ -127,9 +129,10 @@ fn enrich_and_sort(mut entries: Vec<LibraryEntry>) -> Vec<LibraryEntry> {
         if sig.rev != e.cover_rev {
             continue; // file changed since the cached analysis; keep unknown
         }
-        let (grade, reasons) = book_signals::grade(sig);
-        e.quality = Some(grade.to_string());
-        e.quality_reasons = reasons;
+        let g = book_signals::grade(sig);
+        e.quality = Some(g.label.to_string());
+        e.quality_plus = g.plus;
+        e.quality_minus = g.minus;
     }
 
     // Same-typesetting groups (equal chapter-text fingerprint).
@@ -447,7 +450,8 @@ fn entry_from(path: &Path, profile: &BookProfile, progress: &ProgressStore) -> L
         cover_rev: file_rev(path),
         open_error: profile.open_error.clone(),
         quality: None,
-        quality_reasons: Vec::new(),
+        quality_plus: Vec::new(),
+        quality_minus: Vec::new(),
         duplicates: Vec::new(),
     }
 }

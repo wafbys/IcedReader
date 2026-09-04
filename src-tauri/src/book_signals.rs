@@ -496,88 +496,108 @@ pub fn analyze_book(
     })
 }
 
+/// Result of [`grade`]: the grade label plus what speaks for the book
+/// (`plus`: measured facts and merits) and what held it back (`minus`:
+/// defects and missing provenance), so a 良/中 shelf shows at a glance why
+/// the book did not reach the next grade.
+#[derive(Debug, Clone)]
+pub struct Grade {
+    pub label: &'static str,
+    pub plus: Vec<String>,
+    pub minus: Vec<String>,
+}
+
 /// Grade 优/良/中 with plain-language reasons. Rules are conservative: only
 /// facts we measured, no invented criteria.
-pub fn grade(s: &BookSignals) -> (&'static str, Vec<String>) {
-    let mut reasons: Vec<String> = Vec::new();
+pub fn grade(s: &BookSignals) -> Grade {
+    let mut plus: Vec<String> = Vec::new();
+    let mut minus: Vec<String> = Vec::new();
     let mut bad = 0u8;
     let mut good = 0u8;
 
     if s.chars == 0 {
-        reasons.push("未读到正文（空书或纯图片书）".into());
-        return ("中", reasons);
+        minus.push("未读到正文（空书或纯图片书）".into());
+        return Grade {
+            label: "中",
+            plus,
+            minus,
+        };
     }
-    reasons.push(format!("正文约 {} 字", s.chars));
+    plus.push(format!("正文约 {} 字", s.chars));
 
     if s.mojibake > 0 {
         bad += 1;
-        reasons.push(format!("正文含 {} 处乱码替换符", s.mojibake));
+        minus.push(format!("正文含 {} 处乱码替换符", s.mojibake));
     } else {
         good += 1;
-        reasons.push("未发现乱码".into());
+        plus.push("未发现乱码".into());
     }
     let br_per_k = s.br_count as f64 * 1000.0 / s.chars as f64;
     if br_per_k > 12.0 {
         bad += 1;
-        reasons.push(format!("换行符偏多（约 {:.0}/千字），排版较粗糙", br_per_k));
+        minus.push(format!("换行符偏多（约 {:.0}/千字），排版较粗糙", br_per_k));
     } else if s.br_count > 0 {
-        reasons.push(format!("换行符约 {:.1}/千字", br_per_k));
+        plus.push(format!("换行符约 {:.1}/千字", br_per_k));
     }
     if s.img_files > 0 {
         if s.img_truncated {
-            reasons.push(format!("插图 {} 张（统计截断）", s.img_files));
+            plus.push(format!("插图 {} 张（统计截断）", s.img_files));
         } else {
-            reasons.push(format!("插图 {} 张", s.img_files));
+            plus.push(format!("插图 {} 张", s.img_files));
         }
         let per_kb = s.img_bytes as f64 / s.img_files as f64 / 1024.0;
         if s.img_truncated {
             // image-heavy book; no clarity claim
         } else if per_kb >= 20.0 {
             good += 1;
-            reasons.push(format!("图像码率高（约 {per_kb:.0}KB/张，较清晰）"));
+            plus.push(format!("图像码率高（约 {per_kb:.0}KB/张，较清晰）"));
         } else if per_kb > 0.0 {
-            reasons.push(format!("图像约 {per_kb:.0}KB/张"));
+            plus.push(format!("图像约 {per_kb:.0}KB/张"));
         }
     }
     match s.id_quality {
         IdQuality::Isbn => {
             good += 2;
-            reasons.push("标识符为 ISBN，可溯源纸书版本".into());
+            plus.push("标识符为 ISBN，可溯源纸书版本".into());
         }
         IdQuality::Asin => {
             good += 1;
-            reasons.push("标识符为商店编号，可溯源到商店条目".into());
+            plus.push("标识符为商店编号，可溯源到商店条目".into());
         }
         IdQuality::Other => {
-            reasons.push("标识符为自定义编号".into());
+            plus.push("标识符为自定义编号".into());
         }
         IdQuality::RandomUuid => {
-            reasons.push("标识符是随机 UUID，难以据此溯源".into());
+            minus.push("标识符是随机 UUID，难以据此溯源".into());
         }
         IdQuality::None => {
-            reasons.push("无标识符".into());
+            minus.push("无标识符".into());
         }
     }
     if s.has_creator {
         good += 1;
-        reasons.push("含作者/整理者信息".into());
+        plus.push("含作者/整理者信息".into());
     } else {
-        reasons.push("缺少作者/整理者信息".into());
+        minus.push("缺少作者/整理者信息".into());
     }
     if s.headings.iter().filter(|h| !h.is_empty()).count() == 0 {
-        reasons.push("未识别到章节标题结构".into());
+        minus.push("未识别到章节标题结构".into());
     }
 
     // 优 needs a clean, well-sourced, clearly produced book; 良 tolerates
     // missing provenance; anything with defects (or a bare text) lands on 中.
-    let grade = if bad == 0 && good >= 4 {
+    let label = if bad == 0 && good >= 4 {
         "优"
     } else if bad == 0 && good >= 2 {
         "良"
     } else {
         "中"
     };
-    (grade, reasons)
+    Grade {
+        label,
+        plus,
+        minus,
+    }
 }
 
 // ---- persistence: data/book-signals.json (fileName → signals) ----
@@ -676,9 +696,38 @@ mod tests {
             .expect("analyze");
         assert!(signals.chars > 0, "sample has readable text");
         assert!(!signals.chapter_shas.is_empty());
-        let (grade, reasons) = grade(&signals);
-        assert!(["优", "良", "中"].contains(&grade), "{grade}");
-        assert!(!reasons.is_empty());
+        let g = grade(&signals);
+        assert!(["优", "良", "中"].contains(&g.label), "{}", g.label);
+        assert!(!g.plus.is_empty() || !g.minus.is_empty());
+    }
+
+    #[test]
+    fn grade_splits_plus_and_minus() {
+        let sig = BookSignals {
+            rev: "r1".into(),
+            chars: 500,
+            chapter_shas: vec!["ab".into()],
+            fingerprint: "f".into(),
+            mojibake: 0,
+            br_count: 0,
+            empty_p: 0,
+            img_count: 0,
+            headings: vec!["第一章".into()],
+            id_quality: IdQuality::None,
+            has_creator: false,
+            img_files: 0,
+            img_bytes: 0,
+            img_truncated: false,
+        };
+        let g = grade(&sig);
+        // Clean but anonymous text lands on 中, and the reasons spell out
+        // exactly what kept it down (missing provenance goes to `minus`).
+        assert_eq!(g.label, "中");
+        assert!(g.plus.iter().any(|r| r.contains("正文约 500 字")));
+        assert!(g.plus.iter().any(|r| r.contains("未发现乱码")));
+        assert!(g.minus.iter().any(|r| r.contains("无标识符")));
+        assert!(g.minus.iter().any(|r| r.contains("缺少作者")));
+        assert!(!g.minus.iter().any(|r| r.contains("乱码")));
     }
 
     #[test]

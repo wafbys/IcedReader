@@ -59,8 +59,10 @@ export type LibraryEntry = {
   openError: string | null;
   /** 优/良/中 from the cached first-import signals (null when unknown). */
   quality: string | null;
-  /** Plain-language reasons behind the grade. */
-  qualityReasons: string[];
+  /** 支持该评级的正面事实（正文字数、无乱码、作者、标识符…）。 */
+  qualityPlus: string[];
+  /** 把它从更高评级拉下来的扣分项（乱码、缺作者、无标识符…），无则为空。 */
+  qualityMinus: string[];
   /** Other library books judged the same book (hint only). */
   duplicates: string[];
 };

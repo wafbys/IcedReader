@@ -663,7 +663,6 @@ export default function App() {
         onMouseEnter={showChrome}
         onMouseLeave={scheduleHideChrome}
       >
-        <div className="brand">IcedReader</div>
         {book && (
           <button
             type="button"

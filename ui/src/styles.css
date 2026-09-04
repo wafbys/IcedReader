@@ -95,14 +95,6 @@ body {
   overflow: hidden;
 }
 
-.brand {
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  margin-right: 4px;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
 .meta {
   display: flex;
   flex-direction: column;
@@ -149,14 +141,8 @@ body {
   white-space: nowrap;
 }
 
-/* 窗口窄时收紧：品牌名让位给功能按钮。阅读视图进一步把低频按钮（打开 EPUB /
-   目录 / 划线 / 字体 / 全屏）收进「⋯」菜单——上一章/下一章、字号、书名保持常显。 */
-@media (max-width: 1180px) {
-  .chrome .brand {
-    display: none;
-  }
-}
-
+/* 窗口窄时，阅读视图把低频按钮（打开 EPUB / 目录 / 划线 / 字体 / 全屏）收进
+   「⋯」菜单——上一章/下一章、字号、书名保持常显。 */
 @media (max-width: 1180px) {
   .reading .chrome .chrome-more {
     display: none;
@@ -638,7 +624,9 @@ body {
 }
 
 /* Quality badge (优/良/中), top-left of the cover; bottom-right stays for
-   the overflow menu. Reasons are shown on hover via title. */
+   the overflow menu. Hovering the badge shows the reasons in the viewport-
+   fixed .lib-grade-tip bubble below (the badge keeps click-through semantics
+   by opening the book itself, so a click on the badge is not lost). */
 .lib-grade {
   position: absolute;
   left: 6px;
@@ -651,7 +639,7 @@ body {
   font-weight: 650;
   line-height: 1.5;
   text-align: center;
-  pointer-events: none;
+  cursor: pointer;
   box-shadow: 0 1px 3px rgb(31 28 24 / 25%);
 }
 .lib-grade.g-优 {
@@ -665,6 +653,60 @@ body {
 .lib-grade.g-中 {
   background: #e8e6e2;
   color: #6f6b66;
+}
+
+/* Reasons tooltip for the grade badge: viewport-fixed light card, one reason
+   per line. Non-interactive, so it never intercepts shelf clicks; it closes
+   when the pointer leaves the badge or the shelf scrolls/resizes. */
+.lib-grade-tip {
+  position: fixed;
+  z-index: 41;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 8px 12px;
+  background: #fff;
+  border: 1px solid rgb(31 28 24 / 14%);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(31 28 24 / 18%);
+  color: #37322c;
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+.lib-grade-tip .tip-grade {
+  display: block;
+  margin-bottom: 2px;
+  font-weight: 700;
+}
+.lib-grade-tip .tip-grade.g-优 {
+  color: #2e7d46;
+}
+.lib-grade-tip .tip-grade.g-良 {
+  color: #8a6d1a;
+}
+.lib-grade-tip .tip-grade.g-中 {
+  color: #6f6b66;
+}
+.lib-grade-tip ul {
+  margin: 0;
+  padding: 0 0 0 16px;
+}
+.lib-grade-tip li {
+  margin: 2px 0;
+}
+/* Deduction section (why the book did not reach 优/良): the label and the
+   items share a subdued warm red so a glance tells the grade's downside. */
+.lib-grade-tip .tip-minus-label {
+  display: block;
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #9c3b1e;
+}
+.lib-grade-tip ul.tip-minus {
+  padding-top: 2px;
+}
+.lib-grade-tip ul.tip-minus li {
+  color: #8a4424;
 }
 
 .lib-cover-btn {
