@@ -249,11 +249,14 @@ fn profile_book(path: &Path, library: &Path) -> BookProfile {
 
     let opener = EpubOpener;
     if !opener.can_open(path) {
+        // Defensive: readers only list *.epub, but keep the same fallback-key
+        // rule so any unreadable entry still maps to its `lib:` records.
+        let key = progress_key(path, &[], Some(library));
         return BookProfile {
             file_name: file_name.clone(),
             title: fallback_title,
             authors: Vec::new(),
-            progress_key: String::new(),
+            progress_key: key,
             chapter_hrefs: Vec::new(),
             chapter_titles: Vec::new(),
             has_cover: false,
@@ -282,16 +285,24 @@ fn profile_book(path: &Path, library: &Path) -> BookProfile {
                 open_error: None,
             }
         }
-        Err(err) => BookProfile {
-            file_name: file_name.clone(),
-            title: fallback_title,
-            authors: Vec::new(),
-            progress_key: String::new(),
-            chapter_hrefs: Vec::new(),
-            chapter_titles: Vec::new(),
-            has_cover: false,
-            open_error: Some(err.to_string()),
-        },
+        Err(err) => {
+            // A book that used to open fine can later become unreadable (a
+            // same-named replacement with a broken file). Keep deriving the
+            // `lib:` progress key from the file name so the shelf still shows
+            // its progress and 删除 clears the old records — AGENTS: 坏书也
+            // 能删，同名重新导入进度从零。
+            let key = progress_key(path, &[], Some(library));
+            BookProfile {
+                file_name: file_name.clone(),
+                title: fallback_title,
+                authors: Vec::new(),
+                progress_key: key,
+                chapter_hrefs: Vec::new(),
+                chapter_titles: Vec::new(),
+                has_cover: false,
+                open_error: Some(err.to_string()),
+            }
+        }
     }
 }
 
@@ -476,6 +487,40 @@ mod tests {
             .unwrap();
         let listed = list_library_cached(&root, &store, &mut cache);
         assert!((listed[0].fraction.unwrap() - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unreadable_book_keeps_lib_key_for_cleanup() {
+        let root = std::env::temp_dir().join("icedreader-library-broken");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("broken.epub");
+        fs::write(&path, b"definitely not a zip").unwrap();
+
+        // A book that previously opened fine became unreadable after a
+        // same-named replacement: profile must still derive the lib: key so
+        // the shelf shows old progress and 删除 clears it.
+        let profile = profile_book(&path, &root);
+        assert!(profile.open_error.is_some(), "broken file must be listed as unreadable");
+        assert_eq!(profile.progress_key, "lib:broken.epub");
+        assert_eq!(profile.chapter_count(), None);
+
+        let mut store = ProgressStore::in_memory();
+        store
+            .set(
+                profile.progress_key.clone(),
+                Locator {
+                    href: "/OPS/chapter2.html".into(),
+                    fraction: 0.4,
+                    cfi: None,
+                },
+            )
+            .unwrap();
+        let entry = entry_from(&path, &profile, &store);
+        assert!(entry.open_error.is_some());
+        assert!((entry.fraction.unwrap() - 0.4).abs() < 1e-9);
+        // delete_book clears records by this key; empty keys used to no-op.
+        assert!(store.remove(&profile.progress_key).unwrap());
     }
 
     #[test]

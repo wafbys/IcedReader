@@ -873,16 +873,6 @@ body {
   font-size: 13px;
 }
 
-.chapter {
-  position: absolute;
-  inset: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: #fff;
-}
-
 /* Floating highlight toolbar (parent-page DOM, viewport-fixed). */
 .hl-pop {
   position: fixed;

@@ -140,12 +140,6 @@ export function specifiedFamiliesFromReport(
   return unique(names);
 }
 
-export type PlatformFontUsage = {
-  familyName: string;
-  glyphCount: number;
-  isCustomFont: boolean;
-};
-
 export function missingAuthorFonts(doc: Document, authorFamilies: string[]): string[] {
   const canvas = doc.createElement("canvas");
   const ctx = canvas.getContext("2d");
@@ -176,28 +170,6 @@ export function firstVisibleChars(doc: Document, n = 12): string {
     }
   }
   return out;
-}
-
-export function reportFromPlatform(
-  platform: PlatformFontUsage[],
-  authorFamilies: string[],
-  firstChars: string,
-  missingSpecified: string[],
-): UsedFontReport {
-  const author = new Set(authorFamilies.map((f) => f.toLowerCase()));
-  const fonts = platform
-    .filter((p) => p.glyphCount > 0)
-    .map((p) => ({
-      family: p.familyName,
-      glyphCount: p.glyphCount,
-      source: (p.isCustomFont || author.has(p.familyName.toLowerCase())
-        ? "specified"
-        : "fallback") as UsedFontSource,
-      sample: "",
-    }))
-    .sort((a, b) => b.glyphCount - a.glyphCount);
-  if (fonts[0] && firstChars) fonts[0].sample = firstChars;
-  return { fonts, missingSpecified };
 }
 
 export function collectUsedFonts(
@@ -245,6 +217,10 @@ export function collectUsedFonts(
   const missingSpecified = author.filter((family) => !fontInstalled(family));
   const missHan = probe([MISSING], "年");
   const missLatin = probe([MISSING], "A");
+  // `displayName` normalises family aliases (SimSun → 宋体, Microsoft YaHei →
+  // 微软雅黑) into the plane the panel shows; fallback-face comparisons and
+  // reported fallback labels both live on that plane so a CSS alias and the
+  // resolved face can actually match.
   const cjkFallback = displayName(
     closestInstalled(CJK_FONTS, missHan, "年", fontInstalled, probe) ??
       "（系统 CJK 默认）",
@@ -297,8 +273,11 @@ export function collectUsedFonts(
       const miss = hanLike ? missHan : missLatin;
       const fallbackName = hanLike ? cjkFallback : latinFallback;
       const paintsOwn = !sameGlyph(probe([family], coverCh), miss);
+      // Compare on the display-name plane: 宋体 (written in CSS) and SimSun
+      // (the face the engine resolves) must both be recognised as the system
+      // fallback face, not skipped as “paints nothing”.
       const isFallbackFace =
-        family.toLowerCase() === fallbackName.toLowerCase();
+        displayName(family).toLowerCase() === fallbackName.toLowerCase();
       if (!paintsOwn && !isFallbackFace) continue;
       if (sameGlyph(actual, probe([family], ch))) {
         return { family: displayName(family), source: "specified" as const };

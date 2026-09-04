@@ -38,11 +38,14 @@ impl ProgressStore {
     }
 
     pub fn get(&self, key: &str) -> Option<&ProgressRecord> {
-        if let Some(rec) = self.entries.get(key) {
-            return Some(rec);
+        if !key.starts_with("lib:") {
+            return self.entries.get(key);
         }
+        // One book may be reached through several `lib:` keys (numbered copy
+        // and plain name are the same book). Return the newest record among
+        // the aliases instead of a possibly stale exact-key twin.
         let Some(stem) = lib_book_stem(key) else {
-            return None;
+            return self.entries.get(key);
         };
         self.entries
             .iter()
@@ -53,6 +56,18 @@ impl ProgressStore {
 
     pub fn set(&mut self, key: String, locator: Locator) -> Result<(), CoreError> {
         let fraction = locator.fraction.clamp(0.0, 1.0);
+        // Writing through one alias writes the book: drop any other alias
+        // records so `get` never returns a stale twin and the JSON does not
+        // accumulate drifting copies of the same book.
+        if key.starts_with("lib:") {
+            if let Some(stem) = lib_book_stem(&key) {
+                self.entries.retain(|k, _| {
+                    !(k.starts_with("lib:")
+                        && *k != key
+                        && lib_book_stem(k).as_deref() == Some(stem.as_str()))
+                });
+            }
+        }
         self.entries.insert(
             key,
             ProgressRecord {
@@ -144,17 +159,26 @@ pub(crate) fn same_book(a: &str, b: &str) -> bool {
     }
 }
 
-/// `lib:新西游记++共两册-17.epub` and `lib:新西游记++共两册.epub` share a stem.
+/// `lib:书名-17.epub` and `lib:书名.epub` share a stem; the copy suffix is a
+/// trailing `-` followed by digits. A plain trailing digit is part of the
+/// title (`lib:三体3.epub` ≠ `lib:三体.epub`) and a fully numeric title
+/// (`lib:1984.epub`) must survive so its `1984-2` copy still matches.
 fn lib_book_stem(key: &str) -> Option<String> {
     let rest = key.strip_prefix("lib:")?;
-    let rest = rest.strip_suffix(".epub").unwrap_or(rest);
-    let trimmed = rest.trim_end_matches(|c: char| c.is_ascii_digit());
-    let trimmed = trimmed.trim_end_matches('-');
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.replace('\\', "/").to_lowercase())
+    let mut stem = rest.strip_suffix(".epub").unwrap_or(rest);
+    loop {
+        let Some(hyph) = stem.rfind('-') else {
+            break;
+        };
+        let (head, tail) = stem.split_at(hyph);
+        if tail.len() > 1 && tail[1..].chars().all(|c| c.is_ascii_digit()) {
+            stem = head;
+        } else {
+            break;
+        }
     }
+    let normalized = stem.replace('\\', "/").to_lowercase();
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 fn unix_now() -> i64 {
@@ -273,5 +297,59 @@ mod tests {
             .expect("alias to numbered copy");
         assert_eq!(rec.locator.href, "/OPS/chapter3.html");
         assert!((rec.locator.fraction - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trailing_digit_is_part_of_title_not_a_copy_suffix() {
+        let loc = |f: f64| Locator {
+            href: "/OPS/chapter1.html".into(),
+            fraction: f,
+            cfi: None,
+        };
+        let mut store = ProgressStore::in_memory();
+        store.set("lib:三体.epub".into(), loc(0.1)).unwrap();
+        store.set("lib:三体3.epub".into(), loc(0.2)).unwrap();
+        // Plain trailing digits belong to the title: two different books.
+        assert_eq!(store.get("lib:三体.epub").unwrap().locator.fraction, 0.1);
+        assert_eq!(store.get("lib:三体3.epub").unwrap().locator.fraction, 0.2);
+        store.remove("lib:三体.epub").unwrap();
+        assert!(store.get("lib:三体3.epub").is_some(), "other title kept");
+    }
+
+    #[test]
+    fn numeric_title_copy_still_aliases() {
+        let loc = Locator {
+            href: "/OPS/chapter1.html".into(),
+            fraction: 0.6,
+            cfi: None,
+        };
+        let mut store = ProgressStore::in_memory();
+        store.set("lib:1984.epub".into(), loc).unwrap();
+        let rec = store
+            .get("lib:1984-2.epub")
+            .expect("numeric title copy aliases the book");
+        assert!((rec.locator.fraction - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn writing_an_alias_drops_stale_twin_records() {
+        let loc = |f: f64| Locator {
+            href: "/OPS/chapter1.html".into(),
+            fraction: f,
+            cfi: None,
+        };
+        let mut store = ProgressStore::in_memory();
+        store.set("lib:书名.epub".into(), loc(0.1)).unwrap();
+        store.set("lib:书名-2.epub".into(), loc(0.9)).unwrap();
+        // Only one alias record survives; both reads see the newest value.
+        assert_eq!(
+            store.get("lib:书名.epub").unwrap().locator.fraction,
+            0.9
+        );
+        assert_eq!(
+            store.get("lib:书名-2.epub").unwrap().locator.fraction,
+            0.9
+        );
+        assert_eq!(store.entries.len(), 1, "alias records merged");
     }
 }

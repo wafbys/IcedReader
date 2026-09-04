@@ -108,7 +108,7 @@ function UsedSpec({
   return (
     <div className="font-spec">
       <div className="font-spec-title">本章实际渲染</div>
-      <p className="font-spec-note">当前页绘制字形用的字体，不是 CSS 写法。悬停字体名可看该字体首次出现的文字。</p>
+      <p className="font-spec-note">按整章统计；同一文字块内字体标注为近似量级，不是逐字精确。悬停字体名可看该字体首次出现的文字。</p>
       {!report ? (
         <p className="font-spec-empty">打开一章并排版完成后显示。</p>
       ) : report.fonts.length === 0 ? (

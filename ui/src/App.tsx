@@ -50,11 +50,13 @@ export default function App() {
   const tocOpenRef = useRef(false);
   const fontOpenRef = useRef(false);
   const highlightsOpenRef = useRef(false);
+  const topMenuOpenRef = useRef(false);
   const hideChromeTimer = useRef<number | null>(null);
   fullscreenRef.current = fullscreen;
   tocOpenRef.current = tocOpen;
   fontOpenRef.current = fontOpen;
   highlightsOpenRef.current = highlightsOpen;
+  topMenuOpenRef.current = topMenuOpen;
   const [settingsRev, setSettingsRev] = useState(0);
   const [publisherFonts, setPublisherFonts] = useState<PublisherFontReport | null>(
     null,
@@ -603,6 +605,12 @@ export default function App() {
         return;
       }
       if (e.key === "Escape") {
+        // Layered close: the overflow menu first, then 划线 / 目录, then
+        // fullscreen (AGENTS: Esc 先关浮层/目录再退出全屏).
+        if (topMenuOpenRef.current) {
+          setTopMenuOpen(false);
+          return;
+        }
         if (highlightsOpenRef.current) {
           setHighlightsOpen(false);
           return;

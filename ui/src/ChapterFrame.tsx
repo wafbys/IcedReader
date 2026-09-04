@@ -94,14 +94,17 @@ function usableLang(value: string | null | undefined): string | null {
 
 /** HTML parsers ignore xml:lang; Blink uses `lang` for generic serif/sans CJK. */
 export function ensureHtmlLang(html: string, bookLang?: string | null): string {
-  if (/\slang\s*=/i.test(html)) return html;
-  const xml = html.match(/\sxml:lang\s*=\s*["']([^"']+)["']/i);
+  // Anchor both the presence check and the xml:lang lookup on the root tag:
+  // a `lang=` on a descendant (or the text `lang=`) must not stop the root
+  // <html> from getting its own lang.
+  const rootOpen = html.match(/<html\b[^>]*>/i);
+  if (!rootOpen) return html;
+  if (/\blang\s*=/i.test(rootOpen[0])) return html;
+  const xml = rootOpen[0].match(/\bxml:lang\s*=\s*["']([^"']+)["']/i);
   const lang = usableLang(xml?.[1]) ?? usableLang(bookLang);
   if (!lang) return html;
-  if (/<html\b/i.test(html)) {
-    return html.replace(/<html\b/i, `<html lang="${lang}"`);
-  }
-  return html;
+  const at = rootOpen.index! + rootOpen[0].length;
+  return `${html.slice(0, at)} lang="${lang}"${html.slice(at)}`;
 }
 
 function paperBackground(doc: Document): string {
@@ -594,41 +597,11 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
 
   return (
     <div className="flow-host" ref={hostRef}>
-      <div
-        className="flow-container"
-        ref={containerRef}
-        onClick={(e) => {
-          const iframe = iframeRef.current;
-          const doc = iframe?.contentDocument;
-          if (doc?.getSelection()?.toString()) return;
-          // A click on an existing highlight must not page-turn; the mouseup
-          // handler already opened the delete toolbar for it.
-          if (iframe && doc) {
-            const iframeRect = iframe.getBoundingClientRect();
-            const docX = e.clientX - iframeRect.left;
-            const docY = e.clientY - iframeRect.top;
-            const char = charAtPoint(doc, docX, docY);
-            if (char !== null && spanAtChar(appliedRef.current, char)) {
-              return;
-            }
-          }
-          const box = containerRef.current;
-          if (!box) return;
-          const ratio = (e.clientX - box.getBoundingClientRect().left) / (box.clientWidth || 1);
-          if (ratio > 0.28 && ratio < 0.72) return;
-          turn(ratio < 0.28 ? -1 : 1);
-        }}
-        onWheel={(e) => {
-          if (Math.abs(e.deltaY) < 4 && Math.abs(e.deltaX) < 4) return;
-          e.preventDefault();
-          if (wheelLock.current) return;
-          wheelLock.current = true;
-          window.setTimeout(() => {
-            wheelLock.current = false;
-          }, 280);
-          turn(e.deltaY > 0 || e.deltaX > 0 ? 1 : -1);
-        }}
-      >
+      {/* The iframe fills the whole container and swallows pointer/wheel
+          events (its document handles them: wheel paging, link routing,
+          highlight toolbars). Click-to-turn does not exist by design; 翻页走
+          左右键 / 滚轮 / 顶栏按钮（见 README 与 AGENTS）。 */}
+      <div className="flow-container" ref={containerRef}>
         <iframe
           ref={iframeRef}
           id="iced-chapter"

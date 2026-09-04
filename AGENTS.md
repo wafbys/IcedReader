@@ -19,13 +19,13 @@ IcedReader 是 Windows 桌面电子书阅读器。名字不是 Iced GUI。当前
 
 ## 硬约束
 
-1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`，这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰**（颜色、字号、`max-width` 居中等）。允许如下例外：① 用户关掉「使用原书字体」且 serif / sans / mono / 中文·CJK 四个上传文件都在并能识别时，注入 `@font-face`（CJK 用 `unicode-range`）并改写 `font-family`；缺任一槽位则整段不注入。每槽一个文件，磁盘名为 `serif` / `sans` / `mono` / `cjk` 加识别出的扩展名，是否启用看 `settings.json` 的登记，不要扫 `data/fonts/` 当导入。用户从字体面板上传；不要做成「往 fonts 文件夹丢文件即用」。`@font-face` 不写 `font-weight` / `font-style` 变体；覆盖开启后粗斜体走引擎合成。不要扩成 Regular/Italic/Bold 四文件族，也不要按文件名约定去配对。② 分页 flow：父页可写入带 `id="iced-reader-flow"` 的样式，只含高度、`column-*`、`overflow`、页边 `padding`、图 `max-width` / `max-height`、以及用户字号（`html { font-size: N% }`，N 为 80–160）。不要按书语言选日/韩字体，不要用系统字体。禁止黑色主题、禁止主题切换、禁止用 `prefers-color-scheme` 把壳或正文改成暗色。
+1. **正文是 HTML。** 章节资源 URL 在 Rust 里改写成 `http://icedreader.localhost/book/{id}/...`，这是为了让书自己的图和 CSS 能加载，不是改版式。前端用 `srcDoc` 显示章节。**不要往章节里注入阅读皮肤 CSS 或其它装饰**（颜色、字号、`max-width` 居中等）。允许如下例外：① 用户关掉「使用原书字体」且 serif / sans / mono / 中文·CJK 四个上传文件都在并能识别时，注入 `@font-face`（CJK 用 `unicode-range`）并改写 `font-family`；缺任一槽位则整段不注入。每槽一个文件，磁盘名为 `serif` / `sans` / `mono` / `cjk` 加识别出的扩展名，是否启用看 `settings.json` 的登记，不要扫 `data/fonts/` 当导入。用户从字体面板上传；不要做成「往 fonts 文件夹丢文件即用」。`@font-face` 不写 `font-weight` / `font-style` 变体；覆盖开启后粗斜体走引擎合成。不要扩成 Regular/Italic/Bold 四文件族，也不要按文件名约定去配对。② 分页 flow：父页可写入带 `id="iced-reader-flow"` 的样式，内容限于栏式分页所必需：`height`、`column-width/gap/fill`、`overflow: hidden`、`overflow-wrap: break-word`、页边 `padding`、让栏高/换行稳定的 reset（根与正文 `box-sizing`、`margin`/`border` 归零、`position: static`、`min/max-width/height` 清空）、媒体图 `max-width`/`max-height`/`object-fit: contain`/`break-inside: avoid`、以及用户字号（`html { font-size: N% }`，N 为 80–160）。不得加颜色、字体族、行距或 `max-width` 居中类排版。不要按书语言选日/韩字体，不要用系统字体。禁止黑色主题、禁止主题切换、禁止用 `prefers-color-scheme` 把壳或正文改成暗色。
 ③ **用户划线高亮（用户主动标注，非皮肤）：** 允许父页在章节 doc 里注入带 `id="iced-reader-highlight-style"` 的样式，只含 `::highlight(iced-reader-highlight)` 的背景色与 `color: inherit`，并用 CSS Custom Highlight API 上色；**不改 DOM 结构、不插 `mark`、不影响版式与内容**。选区捕获、点中判定、注入、删除全部由父页脚本完成（章节 iframe 仍不开 `allow-scripts`）。划线锚定按章内全局文本节点序号 + 节点内偏移（加原文摘录兜底），存 `data/annotations.json`；划线不属于「正文排版”，高亮随文字流动，翻页、字号变化不丢。
-④ **书内词注（内容呈现，非皮肤）：** 有些 EPUB（如微信读书导出的古籍）把词注塞在空 `<span data-wr-footernote="…">` 属性里，正文没有任何可见入口。`crates/formats-epub` 在 `chapter_html` 输出时把它们原位展开成带 `data-note`（注文原文，供父页悬停浮层读全文）的空 `<a id="wr-note-back-N" class="wr-note" href="{doc_base}#wr-note-N">` 注标（`doc_base` 是本章的绝对书内 URL；序号由 CSS `::after` 画，**不新增文本节点**，保划线锚定稳定；**注标不带 `title`**，避免原生 tooltip 与自绘浮层双弹），并在所属段落后生成 `id="wr-note-N"` 的 `div.wr-notes` 注文块；每条注文开头的 `[N]` 即返回链接 `<a class="wr-note-back" href="{doc_base}#wr-note-back-N" title="返回正文">[N]</a>`，点击回正文注标——注标与注文可双向跳转，形态同普通注文书（如东周列国志）的 `[n]`↔注文（悬停时由父页 DOM 显示黑底白字浮层（样式在父页 `styles.css` 的 `.note-tip`，不属于注入章节的样式），即读全文；注标/注文链接都用绝对同文档 URL，分栏跨页时前端按目标首个 fragment 定页，注文块跨页也能跳对）。**注文条目保持完整（`p.wr-note-item` 注入 `break-inside: avoid`），栏底放不下时整条移到下页开头，不从中切断**；个别比一栏还高的特长条目仍会被切开，此时父页给该条目加 `wr-note-cross` 类，使条目尾部由 Rust 预先生成的无文本返回链接 `<a class="wr-note-back wr-note-back-tail" href="{doc_base}#wr-note-back-N"></a>`（字符由 CSS `::after` 画，不新增文本节点）变为可见，续页上也能点回正文注标。其余注文形态不动。父页可注入带 `id="iced-reader-note-style"` 的样式，只含 `a.wr-note`（注标小上标色）、`.wr-notes`（段后注块的小字灰色布局）、`a.wr-note-back`（注文开头序号返回链接，同色小字）、`p.wr-note-item` 的 `break-inside` 与 `a.wr-note-back-tail` 的显隐（平时隐藏，条目带 `wr-note-cross` 时显示）；父页不得增删正文内容、不得给注标补文本，给被切断的条目加 `wr-note-cross` 类除外。转换只针对 `data-wr-footernote` 属性，别的书零影响。
+④ **书内词注（内容呈现，非皮肤）：** 有些 EPUB（如微信读书导出的古籍）把词注塞在空 `<span data-wr-footernote="…">` 属性里，正文没有任何可见入口。`crates/formats-epub` 在 `chapter_html` 输出时把它们原位展开成带 `data-note`（注文原文，供父页悬停浮层读全文）的空 `<a id="wr-note-back-N" class="wr-note" href="{doc_base}#wr-note-N">` 注标（`doc_base` 是本章的绝对书内 URL；序号数字放进注标 `data-label` 属性、由 CSS `::after` 读取绘制，**不新增文本节点**，保划线锚定稳定；**注标不带 `title`**，避免原生 tooltip 与自绘浮层双弹），并在所属段落后生成 `id="wr-note-N"` 的 `div.wr-notes` 注文块；每条注文开头的 `[N]` 即返回链接 `<a class="wr-note-back" href="{doc_base}#wr-note-back-N" title="返回正文">[N]</a>`，点击回正文注标——注标与注文可双向跳转，形态同普通注文书（如东周列国志）的 `[n]`↔注文（悬停时由父页 DOM 显示黑底白字浮层（样式在父页 `styles.css` 的 `.note-tip`，不属于注入章节的样式），即读全文；注标/注文链接都用绝对同文档 URL，分栏跨页时前端按目标首个 fragment 定页，注文块跨页也能跳对）。**注文条目保持完整（`p.wr-note-item` 注入 `break-inside: avoid`），栏底放不下时整条移到下页开头，不从中切断**；个别比一栏还高的特长条目仍会被切开，此时父页给该条目加 `wr-note-cross` 类，使条目尾部由 Rust 预先生成的无文本返回链接 `<a class="wr-note-back wr-note-back-tail" href="{doc_base}#wr-note-back-N"></a>`（字符由 CSS `::after` 画，不新增文本节点）变为可见，续页上也能点回正文注标。其余注文形态不动。注标展开目前只处理正文段落与标题（`p`、`h1`–`h6`）内的注标，其它容器里的 `data-wr-footernote` 原样保留（不展开也不清除）。父页可注入带 `id="iced-reader-note-style"` 的样式，内容限于注标/注文块/条目的呈现：`a.wr-note`（注标小上标色、`text-decoration`/`cursor` 与 `::after` 序号）、`.wr-notes`（段后注块小字灰色布局）、`a.wr-note-back`（注文开头返回链接同色小字、边距、hover 变色下划线）、`p.wr-note-item` 的行距/缩进归零（`text-indent: 0`）与 `break-inside: avoid`、以及 `a.wr-note-back-tail` 的显隐（平时隐藏，条目带 `wr-note-cross` 时显示，`::after` 画「↩返回」）；父页不得增删正文内容、不得给注标补文本，给被切断的条目加 `wr-note-cross` 类除外。转换只针对 `data-wr-footernote` 属性，别的书零影响。
 ⑤ **整页背景封面（内容呈现，非皮肤）：** 有些 EPUB（如资治通鉴阅微注释版）把封面做成 `<body>` 的背景图（`.cover-page { background: url(…); background-size: cover }`），横屏 / 矮窗口下竖封面被按宽铺满、上下裁掉。当一章正文近空（去空白 ≤80 字）且 `body` 计算样式带背景图时，父页注入 `id="iced-reader-cover-fit"` 样式，只含 `body` 的 `background-size: contain !important` / `background-repeat: no-repeat` / `background-position: center`，整幅封面完整显示在窗口内（四周露纸色）；判定窄（正文多、无背景图的章一律不动），背景图本身与其余书 CSS 不改，不要借它做任何背景美化。
 2. **进度只存 `Locator`：`href` + `fraction`（0～1）+ 可选 `cfi`。** 禁止存像素 `scrollTop`。CSS 分栏分页已有；`cfi` 仍留空，不要提前填假值。
 3. **进度键：** 有 EPUB identifier 用 `id:...`；否则相对便携书库用 `lib:...`。禁止用会随目录搬家失效的绝对 `path:` 当主键（仅作没有书库目录时的回退）。实现见 `progress_key`。外部 EPUB 按文件名进书库，同名已存在则复用，不要每次打开复制成 `书名-2.epub`（没有 identifier 的书会因此丢进度）。`lib:书名-N.epub` 与 `lib:书名.epub` 视为同一本。
-4. **章节 iframe 不要开 `allow-scripts`。** 现在是 `allow-same-origin`，父页做分栏翻页并读页序。不要为了省事给 EPUB 开脚本。
+4. **章节 iframe 不要开 `allow-scripts`。** 现在是 `allow-same-origin`，父页做分栏翻页并读页序。EPUB 内容一律不开脚本。
 5. **IPC 用 camelCase**（Rust 结构体 `#[serde(rename_all = "camelCase")]`）。
 6. **绿色软件：** 设置、进度、窗口位置、导入的书、用户字体、WebView 缓存一律在 `{exe 目录}/data/`，禁止写入 `%APPDATA%` / 注册表当主存储。打开外部 EPUB 时复制进 `data/library/`（已在书库内则不再复制）。字体文件在 `data/fonts/`，设置在 `data/settings.json`，窗口在 `data/window.json`，划线在 `data/annotations.json`（键同进度键）。整个程序目录搬走即带走全部状态。目录必须可写，不要往 Program Files 里装。不要用 tauri-plugin-window-state 之类会写用户目录的插件。
 
@@ -53,16 +53,17 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 - `save_progress`
 - `list_annotations` / `add_annotation` / `delete_annotation`（划线，键同进度键，存 `data/annotations.json`）
 - `get_font_settings` / `set_use_original_fonts` / `set_font_scale` / `install_font` / `clear_font`
-- `get_platform_fonts`（Chromium `CSS.getPlatformFontsForNode`，章节 iframe 里真正绘制用的字体）
+
+「本章实际渲染字体」不再走 CDP 命令：`usedFonts.ts` 的 `collectUsedFonts` 在章节 iframe 文档内做 canvas 指纹统计，数据源见「改 UI 时 · 字体面板」的约束。
 
 协议：`src-tauri/src/protocol.rs`，scheme `icedreader`，实际请求是 `http://icedreader.localhost/...`。书架封面走 `/library-cover/{文件名}`，不要为此给章节 iframe 开脚本。启动无 `ICED_READER_OPEN` 时进入书架，不要再停在空白「打开一本 EPUB」。
 
 ## EPUB 章节
 
-- **目录锚点当章。** 不少中文 EPUB 把多章放进同一 XHTML，NCX/`nav` 用 `#id`。TOC 带 fragment、或 TOC 条目明显多于 OPF spine 时，阅读列表用摊平后的 TOC（href 保留 `#`），`chapter_html` 按锚点切到下一 TOC 锚点。正规「一章一个文件」仍走 OPF spine。
-- **路径改写要能过破烂 HTML。** rbook 按 XML 改写；未闭合 `<img>` 等会失败。失败后用宽松改写相对 `src`/`href`，不要为此给章节开脚本。
+- **目录锚点当章。** 不少中文 EPUB 把多章放进同一 XHTML，NCX/`nav` 用 `#id`。TOC 至少两条且（任一 href 带 `#` 或 TOC 树条目数大于 OPF spine 条目数）时，阅读列表用摊平后的 TOC（href 保留 `#`），`chapter_html` 按锚点切到下一 TOC 锚点。少于两条的目录不摊平；「明显多于」按树条目数（含嵌套）近似判定。正规「一章一个文件」仍走 OPF spine。
+- **路径改写要能过格式不规范的 HTML。** rbook 按 XML 改写；未闭合 `<img>` 等会失败。失败后用宽松改写相对 `src`/`href`，不要为此给章节开脚本。
 - **`lang`。** HTML 解析不认 `xml:lang`。章节 `srcDoc` 在没有 `lang` 时从 `xml:lang` 或书的 `dc:language` 补上（跳过 `und`），好让引擎按中文映射泛型 serif。不要为此注入阅读皮肤 CSS。
-- **分页 flow。** 与 Foliate / Epub.js 相同：CSS 多栏 + `max-inline-size` 720px + `max-column-count` 2。栏数 `min(2, ceil(容器宽/720))`，竖屏强制一栏；多出的窗口宽度是页边，不拉宽正文。iframe 按页数拉宽，由外层容器 `scrollLeft` 翻页（不要在 `documentElement` 上滚）。左右键 / 点左右侧 / 滚轮翻页；章首再左翻上一章末页，章末再右翻下一章。进度仍是 `href` + 章内 `fraction`。
+- **分页 flow。** 与 Foliate / Epub.js 相同：CSS 多栏 + `max-inline-size` 720px + `max-column-count` 2。栏数 `min(2, ceil(容器宽/720))`，竖屏强制一栏；多出的窗口宽度是页边，不拉宽正文。iframe 按页数拉宽，由外层容器 `scrollLeft` 翻页（不要在 `documentElement` 上滚）。左右键 / 滚轮翻页（无点左右侧点按翻页）；章首再左翻上一章末页，章末再右翻下一章。进度仍是 `href` + 章内 `fraction`。
 
 ## 改 UI 时
 
@@ -84,7 +85,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 ## 不要做
 
 - 不要把解析逻辑搬进 JS（包括让 foliate-js 直接 unzip）。分页若接 foliate-js，也只让它排版，书仍由 Rust 打开。
-- 不要为了第一口去接 PDF/MOBI；接口预留即可。
+- 暂不接 PDF/MOBI；接口预留即可。
 - 不要做黑色主题、暗色模式、主题切换。本软件就是浅色纸。
 - 不要提交 `target/`、`node_modules/`、`ui/dist/`、`src-tauri/gen/`、`data/`、`fixtures/verify-*.png`、仓库根目录的本地 EPUB（`fixtures/sample.epub` 除外）。
 - 不要在文档或代码里写用户的密钥、本机绝对路径（样例用仓库相对路径）。
@@ -93,7 +94,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 
 改阅读功能时：无 `ICED_READER_OPEN` 时启动应进书架（看 **当前 exe 旁边** 的 `data/library/`，开发是 `target/debug/data`）。点封面打开，顶栏「书架」能回去且进度还在。打开 `fixtures/sample.epub`，确认第一章中文、左右翻页、拉宽窗口变双栏、关开后页大致还在。打开资治通鉴第一页整页封面（body 背景图）时，无论横屏还是最小窗口，封面都应整幅完整居中显示、不裁切（四周露纸色）；普通正文页不受影响。点「目录」能跳章，当前条目高亮。F11 全屏后正文铺满，鼠标移到顶部能再点「退出全屏」，Esc 退出全屏。改布局时确认顶栏以下没有空白条、没有灰底托一条窄白纸；窄窗口顶栏高度仍约 52px、文字不竖排。改字体时：默认仍是原书 CSS；只传部分字体并关掉「使用原书字体」时正文不变；四槽都齐才覆盖，CJK 字走中文/CJK 槽。字号 A−/A+ 应变大变小并写入 settings.json，不要出现暗色主题。可用仓库旁未提交的样书核对（不要 git add）：`五千年掌故.epub` 指定 PingFang SC / FZFangSong-Z02，Windows 上通常未安装；`新西游记++共两册.epub` 指定 `cnepub, serif` 但 `@font-face` 是设备 `res://`，实际渲染应为 `（系统 serif）`，并标 cnepub 书内无字体文件。没有桌面窗口时至少跑 `cargo test -p iced-reader-core`、`cargo test -p iced-reader-epub`、`cargo test -p iced-reader`。
 
-改划线时：选中一段文字松手应浮出「划线」，点后即时变黄；再点这段（无选区单击）浮出「删除划线」；双击已有划线中的词也应是删除而非报重叠；删除后即刻消失。A±/拉宽窗口后划线仍贴在原句上。翻走再回来、重启程序后划线仍在，且 `data/annotations.json` 已更新。选中文字点划线后不应翻页（点正文中段空白处翻页仍正常）。顶栏「划线」应列出全书画线（按阅读顺序），点一条跳到所在章的那一页（跨章会切章，同章直接定位），列表里删除后即时消失。
+改划线时：选中一段文字松手应浮出「划线」，点后即时变黄；再点这段（无选区单击）浮出「删除划线」；双击已有划线中的词也应是删除而非报重叠；删除后即刻消失。A±/拉宽窗口后划线仍贴在原句上。翻走再回来、重启程序后划线仍在，且 `data/annotations.json` 已更新。选中文字点划线后不应翻页（翻页靠左右键 / 滚轮 / 顶栏按钮，没有点左右侧点按翻页）。顶栏「划线」应列出全书画线（按阅读顺序），点一条跳到所在章的那一页（跨章会切章，同章直接定位），列表里删除后即时消失。
 
 改书架删书时：封面右下三点弹出小菜单，点菜单外 / Esc 应关闭；「从书库删除」先弹确认框，取消不动书；确认后卡片消失，`data/library/` 里文件没了，`progress.json` / `annotations.json` 里该书（同 stem 的 `lib:` 键）记录也清掉；同名重新导入进度从零开始。坏书（无法打开）也能删。
 

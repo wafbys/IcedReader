@@ -1,6 +1,5 @@
 mod fonts;
 mod library;
-mod platform_fonts;
 mod portable;
 mod protocol;
 mod window_state;
@@ -275,11 +274,6 @@ fn clear_font(slot: String, state: tauri::State<AppState>) -> Result<FontSetting
     Ok(view)
 }
 
-#[tauri::command]
-async fn get_platform_fonts(app: tauri::AppHandle) -> Result<Vec<platform_fonts::PlatformFontUsage>, String> {
-    platform_fonts::collect(app).await
-}
-
 /// List the shelf. File-bound metadata is served from the per-revision cache
 /// (the expensive open + flattened TOC happens once per changed file); only
 /// the progress fields come from the live store.
@@ -421,8 +415,7 @@ pub fn run() {
             set_use_original_fonts,
             set_font_scale,
             install_font,
-            clear_font,
-            get_platform_fonts
+            clear_font
         ])
         .register_uri_scheme_protocol("icedreader", protocol::handle)
         .run(tauri::generate_context!())
