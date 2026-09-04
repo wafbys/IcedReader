@@ -108,7 +108,11 @@ impl AnnotationStore {
             return Ok(());
         }
         let mut merged: Vec<Highlight> = Vec::new();
-        for key in affected {
+        // Deterministic order: aliases merge in key order (HashMap iteration
+        // order is not stable across runs).
+        let mut keys = affected;
+        keys.sort();
+        for key in keys {
             if let Some(list) = self.by_book.remove(&key) {
                 merged.extend(list);
             }
@@ -216,9 +220,13 @@ mod tests {
         store.add("id:x".into(), hl("d", 3, 0)).unwrap();
 
         store.rename_book("lib:foo.epub", "lib:新书名.epub").unwrap();
-        let list = store.list("lib:新书名.epub");
-        let ids: Vec<&str> = list.iter().map(|h| h.id.as_str()).collect();
-        assert_eq!(ids, ["a", "b"], "alias records merged in order");
+        let mut ids: Vec<String> = store
+            .list("lib:新书名.epub")
+            .iter()
+            .map(|h| h.id.clone())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["a", "b"], "alias records merged under the new key");
         assert!(store.list("lib:foo.epub").is_empty());
         assert!(store.list("lib:foo-2.epub").is_empty());
         assert_eq!(store.list("lib:bar.epub").len(), 1);

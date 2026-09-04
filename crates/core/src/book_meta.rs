@@ -25,6 +25,9 @@
 //!   the title the program first saw, before any user edit).
 //! - `title` / `subtitle` / `volume` / `author` / `translator` / `year` /
 //!   `publisher` / `isbn`: structured fields edited in the panel (md v2).
+//!   Author/translator lists use ASCII separators — a full-width 、 typed in
+//!   those fields is folded to `, ` on save and inside the join, so the
+//!   rendered title never carries a Chinese punctuation mark it generated.
 //! - `displayTitle`: the title the user confirmed for display. Empty means
 //!   "derive it"; when non-empty it wins over everything else (never silently
 //!   overwritten by auto-generation).
@@ -101,6 +104,13 @@ impl BookMeta {
     }
 }
 
+/// Normalize a person-list field (author/translator): fold 、 (U+3001) to
+/// ASCII `, ` then [`clean_title`]. The rendered book title must not carry
+/// Chinese punctuation the program produced, and these fields feed the title.
+pub fn clean_person_list(s: &str) -> String {
+    clean_title(&s.replace('\u{3001}', ", "))
+}
+
 /// Collapse runs of whitespace (incl. U+3000 full-width space and NBSP) into
 /// single ASCII spaces and trim the ends. Only touch generated/edited fields —
 /// never rewrite the original `dc:title` with this.
@@ -156,15 +166,17 @@ pub fn join_title(
     // Everything after 副标题 joins with ` - `.
     let mut parts = Vec::with_capacity(7);
     parts.push(head);
-    for p in [volume, author] {
-        let p = p.trim();
-        if !p.is_empty() {
-            parts.push(p.to_string());
-        }
+    let volume = clean_title(volume);
+    if !volume.is_empty() {
+        parts.push(volume);
     }
-    let translator = translator.trim();
+    let author = clean_person_list(author);
+    if !author.is_empty() {
+        parts.push(author);
+    }
+    let translator = clean_person_list(translator);
     if !translator.is_empty() {
-        parts.push(with_label(translator, TRANSLATOR_LABEL));
+        parts.push(with_label(&translator, TRANSLATOR_LABEL));
     }
     for p in [year, publisher] {
         let p = p.trim();
@@ -314,6 +326,16 @@ mod tests {
     }
 
     #[test]
+    fn clean_person_list_folds_dunhao_to_ascii() {
+        assert_eq!(clean_person_list("刘慈欣、王晋康"), "刘慈欣, 王晋康");
+        assert_eq!(clean_person_list("A、B"), "A, B");
+        assert_eq!(clean_person_list("单人"), "单人");
+        assert_eq!(clean_person_list(""), "");
+        // Full-width comma is left alone; only 、 is a list separator here.
+        assert_eq!(clean_person_list("a，b、c"), "a，b, c");
+    }
+
+    #[test]
     fn join_uses_underscore_only_between_title_and_subtitle() {
         // 书名 required: with no title nothing is derived.
         assert_eq!(join_title("", "黑暗森林", "", "", "", "", "", ""), "");
@@ -362,11 +384,16 @@ mod tests {
             "三体 - ISBN-13 978-7-1"
         );
 
-        // Multi-author and full-width author input pass through untouched
-        // (the label/symbols the program emits stay ASCII).
+        // Multi-author input: 、 folds to ASCII `, ` so the rendered title
+        // carries no Chinese punctuation the program produced; full-width
+        // author content otherwise passes through.
         assert_eq!(
             join_title("三体", "", "", "刘慈欣、王晋康", "", "二〇〇八", "", ""),
-            "三体 - 刘慈欣、王晋康 - 二〇〇八"
+            "三体 - 刘慈欣, 王晋康 - 二〇〇八"
+        );
+        assert_eq!(
+            join_title("三体", "", "", "译者", "阳曦", "", "", ""),
+            "三体 - 译者 - 译者 阳曦"
         );
         assert_eq!(
             join_title(" The Lord of the Rings ", " The Two Towers ", "", "", "", "", "", ""),

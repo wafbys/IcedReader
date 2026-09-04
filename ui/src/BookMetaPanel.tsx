@@ -59,6 +59,8 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
   /** 手改框：初值 = md 里用户确认过的 displayTitle；空 = 派生模式。 */
   const [display, setDisplay] = useState("");
   const [saving, setSaving] = useState(false);
+  /** 正在从原书重新读取元数据（大书要开一遍 epub，需要反馈）。 */
+  const [reading, setReading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,7 +121,7 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
   const titleMissing = view !== null && title.trim() === "";
 
   const save = async () => {
-    if (!view || saving || titleMissing) return;
+    if (!view || saving || reading || titleMissing) return;
     setSaving(true);
     setError("");
     try {
@@ -129,6 +131,31 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
     } catch (err) {
       setError(String(err));
       setSaving(false);
+    }
+  };
+
+  /** 清空手填、从 epub 重新读原书元数据填充表单；不自动保存。 */
+  const reread = async () => {
+    if (saving || reading || !view) return;
+    setReading(true);
+    setError("");
+    try {
+      const v = await invoke<BookMetaView>("reread_book_meta", {
+        fileName: entry.fileName,
+      });
+      setTitle(v.title);
+      setSubtitle(v.subtitle);
+      setVolume(v.volume);
+      setAuthor(v.author);
+      setTranslator(v.translator);
+      setYear(v.year);
+      setPublisher(v.publisher);
+      setIsbn(v.isbn);
+      setDisplay(v.confirmedTitle);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setReading(false);
     }
   };
 
@@ -181,9 +208,20 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
               <div className="meta-ro" title={view.originalTitle}>
                 {view.originalTitle || "（无书名，回退到文件名）"}
               </div>
-              <p className="meta-note">
-                首次导入这本书时程序见到的书名。只读保留原始信息，不随本次编辑改变。
-              </p>
+              <div className="meta-row meta-reread-row">
+                <p className="meta-note">
+                  首次导入这本书时程序见到的书名。只读保留原始信息，不随本次编辑改变。
+                </p>
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  onClick={() => void reread()}
+                  disabled={saving || reading}
+                  title="清空手填字段，从原书重新读取书名/作者/出版社/ISBN 填入表单；是否保存仍由你决定"
+                >
+                  {reading ? "读取中…" : "重新读取原书元数据"}
+                </button>
+              </div>
             </div>
 
             <div className="meta-field">
@@ -233,7 +271,7 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
                 onChange={(e) => setAuthor(e.target.value)}
                 placeholder="预填原书作者，可改可清空"
               />
-              <p className="meta-note">已预填原书作者（多名用、连接）；清空则不拼入标题。</p>
+              <p className="meta-note">已预填原书作者（多名用半角逗号连接，中文标点不进入书名）；清空则不拼入标题。</p>
             </div>
 
             <div className="meta-field">
@@ -347,8 +385,10 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
               type="submit"
               form="bookmeta-form"
               className="btn"
-              disabled={saving || titleMissing}
-              title={titleMissing ? "主书名必填" : undefined}
+              disabled={saving || reading || titleMissing}
+              title={
+                reading ? "正在从原书读取…" : titleMissing ? "主书名必填" : undefined
+              }
             >
               {saving ? "保存中…" : "保存"}
             </button>

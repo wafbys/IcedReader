@@ -49,7 +49,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 ## Tauri 命令
 
 - `open_book` / `close_book` / `pending_book` / `list_library` / `delete_book`（`fileName` + `progressKey`：删书库内 epub，并清该书进度、划线与伴生 md；前端必须先弹确认框再调）
-- `get_book_meta`（`fileName` → 编辑面板载荷：可编辑字段 + 拼接预览 + 原书名）/ `set_book_meta`（`fileName` + `fields`：写伴生 md；md 由程序维护，UI 面板是唯一编辑面）
+- `get_book_meta`（`fileName` → 编辑面板载荷：可编辑字段 + 拼接预览 + 原书名）/ `set_book_meta`（`fileName` + `fields`：写伴生 md 并按最终显示名改名库内文件；md 由程序维护，UI 面板是唯一编辑面）/ `reread_book_meta`（`fileName`：重新打开 epub，清空手填、用原书 title/authors/publisher/ISBN 重建表单；是否保存由用户决定）
 - `get_chapter`（返回 `{ html, publisherFonts }`。`publisherFonts`：本章原书 CSS 的 font-family 原文、`@font-face` 名、以及 `src` 不在书内的 `unloadableFaces`）/ `resource_origin`
 - `save_progress`
 - `list_annotations` / `add_annotation` / `delete_annotation`（划线，键同进度键，存 `data/annotations.json`）
@@ -60,7 +60,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 - 书架条目可编辑元数据存 `data/library/<stem>.md`（与 epub 同名伴生 md，当前 v2）。**md 由程序维护**：用户只走书架三点菜单的「编辑元数据…」面板，不手编 md；md 人类可读只是可拷贝/备份/进 git 的福利。元数据不含划线（划线仍存 `data/annotations.json`）。v1 md 缺 v2 字段时解析为空，不丢已有数据。
 - md 字段：`title`（主书名，必填）/ `subtitle` / `volume` / `author` / `translator`（译者）/ `year`（出版年份）/ `publisher` / `isbn` / `displayTitle`。`originalTitle` 与 `bookFile` 首次保存时定格。
 - 显示名裁决链：md `displayTitle`（用户确认过）→ 字段拼接 → `dc:title`（非空且非 "Untitled"）→ 文件名。`list_library` 与 `open_book` 统一应用，书架与阅读标题一致；手改显示名永不被字段拼接覆盖（面板里清空显示名才回到自动拼接）。面板的「自动填充」不覆盖手改。
-- 拼接模板：`书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 译者] [ - 出版年份] [ - 出版社] [ - ISBN]`。`_`（空格下划线空格）**只出现在书名与副标题之间**；卷册起一律 ` - `（空格连字符空格）。空字段整体跳过，绝不出现两个分隔符夹空段；书名必填，留空则不拼接（标题回退）。作者面板预填原书 `dc:creator`（多名用、连接，可清空）；译者填姓名即可、拼入时自动补「译者 」标签（已以「译者」开头则保留原样）；ISBN 填号码即可，拼入时自动补 ASCII `ISBN ` 前缀（值已以 ISBN 开头则保留原样）。
+- 拼接模板：`书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 译者] [ - 出版年份] [ - 出版社] [ - ISBN]`。`_`（空格下划线空格）**只出现在书名与副标题之间**；卷册起一律 ` - `（空格连字符空格）。空字段整体跳过，绝不出现两个分隔符夹空段；书名必填，留空则不拼接（标题回退）。作者面板预填原书 `dc:creator`（多名用半角逗号连接，可清空）；**作者/译者字段里的中文顿号（、）在保存与拼接时一律折成半角逗号+空格**——书名中不出现程序产生的中文标点；译者填姓名即可、拼入时自动补「译者 」标签（已以「译者」开头则保留原样）；ISBN 填号码即可，拼入时自动补 ASCII `ISBN ` 前缀（值已以 ISBN 开头则保留原样）。原书 `dc:title` 自带的字符（含全角冒号等）仍原样保留，不在此清洗范围。
 - **保存即按显示名改名**：`set_book_meta` 保存后，`data/library/` 里的 epub 与伴生 md 会按“保存后的显示名（手改或拼接）”改名——Windows 禁用作文件名清洗、同名冲突自动加 `-2`/`-3`…（同 `-N` 与原名视为同一本的既有规则）；有 `id:` 进度键的书（有 identifier）进度/划线天然不受影响，`lib:` 键的书自动把进度、划线、质量信号缓存迁到新名，不会丢。改名在写 md 之前执行，失败则整次保存报错。
 - 符号禁则：程序生成的符号一律 ASCII，**绝不产出全角**（上面模板里的 `_`/`-`/`ISBN` 前缀都是；多名作者预填串里的顿号属于作者名内容）。原书 `dc:title` 自带的字符（含全角冒号、`Ⅲ` 等）原样保留，不转半角。
 - `delete_book` 连带删除伴生 md（无 md 时静默忽略）；同名重新导入后从空 md 开始。
@@ -109,7 +109,7 @@ Windows 编译需要 MSVC。`scripts/dev.ps1` 会载入 vsvars；打 release 前
 
 改书架删书时：封面右下三点弹出小菜单，点菜单外 / Esc 应关闭；「从书库删除」先弹确认框，取消不动书；确认后卡片消失，`data/library/` 里文件没了，同名 `<stem>.md` 也没了，`progress.json` / `annotations.json` 里该书（同 stem 的 `lib:` 键）记录也清掉；同名重新导入进度从零开始。坏书（无法打开）也能删。
 
-改书元数据时：三点菜单含「编辑元数据…」（位于「从书库删除」上方），点开居中模态；原书名只读展示，主书名预填当前书名的空白/全角空格折叠版，作者预填原书 `dc:creator`；只改主书名保存 → 书架卡片标题即时更新且 `data/library/` 里的 epub 与伴生 md 按新标题改名（`<stem>.md` 出现，v2+ 含 translator/author/year/publisher/isbn 行）；拼接预览与保存后标题都按模板：`书名 _ 副标题 - 卷册 - 作者 - 译者 - 出版年份 - 出版社 - ISBN…`，空字段整体跳过、无连续分隔符，译者自动补「译者 」标签、ISBN 自动补 ASCII「ISBN 」前缀；主书名清空时保存禁用；面板手改框留空保存 = 自动拼接（再改字段、保存，标题跟随）；手改框填名字保存 = 锁定，之后改字段标题不变；清空手改框保存回到拼接；改名后旧进度/划线仍在（有 identifier 的书天然不丢，`lib:` 键的书自动迁键）；改名后同名旧文件不残留；打开该书顶栏标题与书架一致；从没保存过则无 md；删除书后 md 一并消失。
+改书元数据时：三点菜单含「编辑元数据…」（位于「从书库删除」上方），点开居中模态；原书名只读展示，主书名预填当前书名的空白/全角空格折叠版，作者预填原书 `dc:creator`（多名用半角逗号连接，无顿号）；面板有「重新读取原书元数据」按钮——清空手填与显示名、用原书书名/作者/出版社/ISBN 重新填表，不自动保存，点保存才落库；只改主书名保存 → 书架卡片标题即时更新且 `data/library/` 里的 epub 与伴生 md 按新标题改名（`<stem>.md` 出现，v2+ 含 translator/author/year/publisher/isbn 行）；拼接预览与保存后标题都按模板：`书名 _ 副标题 - 卷册 - 作者 - 译者 - 出版年份 - 出版社 - ISBN…`，空字段整体跳过、无连续分隔符，作者/译者多名的顿号已折半角逗号，译者自动补「译者 」标签、ISBN 自动补 ASCII「ISBN 」前缀；主书名清空时保存禁用；面板手改框留空保存 = 自动拼接（再改字段、保存，标题跟随）；手改框填名字保存 = 锁定，之后改字段标题不变；清空手改框保存回到拼接；改名后旧进度/划线仍在（有 identifier 的书天然不丢，`lib:` 键的书自动迁键）；改名后同名旧文件不残留；打开该书顶栏标题与书架一致；从没保存过则无 md；删除书后 md 一并消失。
 
 改正文链接时：点书内注文/目录链接应在阅读器内跳转（同文件锚点定位到那一页，跨文件切章），iframe 的 `contentDocument` 必须仍是 `about:srcdoc`——若 iframe 被链接导航走会跨源、布局变坏且无法翻页。用注文多的书（如东周列国志）点 `[n]` 链接核对。
 

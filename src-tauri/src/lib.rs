@@ -10,9 +10,10 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use iced_reader_core::{
-    clean_title, collect_publisher_fonts, progress_key, read_meta_file, resolved_title,
-    write_meta_file, AnnotationStore, Book, BookMeta, BookOpener, ChapterView, FontSettingsView,
-    FontSlot, Highlight, Locator, Metadata, ProgressStore, SettingsStore, SpineItem, TocNode,
+    clean_person_list, clean_title, collect_publisher_fonts, progress_key, read_meta_file,
+    resolved_title, write_meta_file, AnnotationStore, Book, BookMeta, BookOpener, ChapterView,
+    FontSettingsView, FontSlot, Highlight, Locator, Metadata, ProgressStore, SettingsStore,
+    SpineItem, TocNode,
 };
 use iced_reader_epub::EpubOpener;
 use serde::Serialize;
@@ -348,6 +349,33 @@ fn get_book_meta(
     Ok(book_meta::view_for(&profile, overlay.as_ref()))
 }
 
+/// Re-read the epub's own metadata and rebuild the 编辑元数据 form from it
+/// (清空手填、填充原书字段)。The panel only fills the form with the result —
+/// saving stays an explicit separate action by the user.
+#[tauri::command]
+fn reread_book_meta(
+    file_name: String,
+    state: tauri::State<AppState>,
+) -> Result<book_meta::BookMetaView, String> {
+    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let md_path = library::meta_path_for(&dir, &file_name)?;
+    let path = dir.join(&file_name);
+    if !path.is_file() {
+        return Err("book not in library".into());
+    }
+    let existing = read_meta_file(&md_path);
+    let profile = {
+        let mut cache = state.library_meta.lock().map_err(|e| e.to_string())?;
+        cache.profile(&path, &dir)
+    };
+    let original_title = existing
+        .and_then(|m| m.original_title)
+        .unwrap_or_else(|| profile.title.clone());
+    let book = EpubOpener.open(&path).map_err(|e| e.to_string())?;
+    let metadata = book.metadata();
+    Ok(book_meta::reread_view_for(&profile, &original_title, &metadata))
+}
+
 /// Save one book's metadata to its companion md. Creates the md on first save
 /// (freezing bookFile / originalTitle), overwrites it afterwards. The md is
 /// program-maintained — the UI panel is the only editing surface.
@@ -384,8 +412,8 @@ fn set_book_meta(
         title: clean_title(&fields.title),
         subtitle: clean_title(&fields.subtitle),
         volume: clean_title(&fields.volume),
-        author: clean_title(&fields.author),
-        translator: clean_title(&fields.translator),
+        author: clean_person_list(&fields.author),
+        translator: clean_person_list(&fields.translator),
         year: clean_title(&fields.year),
         publisher: clean_title(&fields.publisher),
         isbn: clean_title(&fields.isbn),
@@ -443,8 +471,8 @@ fn set_book_meta(
         title: clean_title(&fields.title),
         subtitle: clean_title(&fields.subtitle),
         volume: clean_title(&fields.volume),
-        author: clean_title(&fields.author),
-        translator: clean_title(&fields.translator),
+        author: clean_person_list(&fields.author),
+        translator: clean_person_list(&fields.translator),
         year: clean_title(&fields.year),
         publisher: clean_title(&fields.publisher),
         isbn: clean_title(&fields.isbn),
@@ -573,6 +601,7 @@ pub fn run() {
             close_book,
             list_library,
             get_book_meta,
+            reread_book_meta,
             set_book_meta,
             delete_book,
             resource_origin,
