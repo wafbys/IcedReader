@@ -601,6 +601,18 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // 焦点在可编辑控件（编辑元数据等模态输入框）时不劫持方向键——
+      // 左右键用于移动光标而非翻页。F11/Esc 不在此列，保持全局语义。
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.tagName === "SELECT" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
       if (e.code === "F11" || e.key === "F11") {
         e.preventDefault();
         e.stopImmediatePropagation();
