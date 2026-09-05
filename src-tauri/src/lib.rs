@@ -2,18 +2,20 @@ mod fonts;
 mod book_meta;
 mod book_signals;
 mod library;
+mod notes;
 mod portable;
 mod protocol;
 mod window_state;
 
 use std::collections::HashMap;
+use std::fs;
 use std::sync::Mutex;
 
 use iced_reader_core::{
     clean_person_list, clean_title, collect_publisher_fonts, progress_key, read_meta_file,
     resolved_title, write_meta_file, AnnotationStore, Book, BookMeta, BookOpener, ChapterView,
     FontSettingsView, FontSlot, Highlight, Locator, Metadata, ProgressStore, SettingsStore,
-    SpineItem, TocNode,
+    SpineItem, TocNode, COLOR_GREEN, COLOR_YELLOW,
 };
 use iced_reader_epub::EpubOpener;
 use serde::Serialize;
@@ -56,6 +58,10 @@ pub struct OpenedBook {
     pub metadata: Metadata,
     pub toc: Vec<TocNode>,
     pub spine: Vec<SpineItem>,
+    /// Per-chapter raw visible-text char counts (spine order) + implicit total.
+    /// Whole-book position weights for notes.md 全书% and 按位置跳转.
+    #[serde(rename = "chapterChars")]
+    pub chapter_chars: Vec<u64>,
 }
 
 #[tauri::command]
@@ -92,7 +98,7 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
     if !file_name.is_empty() {
         let need = book_signals::read_all()
             .get(&file_name)
-            .map(|s| s.rev != rev)
+            .map(|s| s.rev != rev || s.chapter_chars.is_empty())
             .unwrap_or(true);
         if need {
             let images = iced_reader_epub::image_stats(&imported).unwrap_or((0, 0, false));
@@ -128,6 +134,10 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
         metadata,
         toc: book.toc(),
         spine: book.spine(),
+        chapter_chars: book_signals::read_all()
+            .get(&file_name)
+            .map(|s| s.chapter_chars.clone())
+            .unwrap_or_default(),
     };
     state
         .books
@@ -142,6 +152,87 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// 本地 ISO 时间（notes.md 注释块机器字段）。
+fn local_iso(secs: i64) -> String {
+    use chrono::{DateTime, Local};
+    DateTime::from_timestamp(secs, 0)
+        .map(|d| d.with_timezone(&Local).format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+        .unwrap_or_default()
+}
+
+/// 本地人类可读时间（引用行「划于 …」「已删于 …」）。
+fn local_human(secs: i64) -> String {
+    use chrono::{DateTime, Local};
+    DateTime::from_timestamp(secs, 0)
+        .map(|d| d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
+}
+
+/// 划线 href → spine 下标（文件 + 可选 #fragment 双匹配；摊平目录里同一
+/// 文件多锚点靠 fragment 精确，回退到仅文件）。
+fn spine_index_for(spine: &[SpineItem], href: &str) -> Option<usize> {
+    fn key(h: &str) -> (String, String) {
+        let (file, frag) = h
+            .split_once('#')
+            .map(|(a, b)| (a, Some(b)))
+            .unwrap_or((h, None));
+        let file = file
+            .split('?')
+            .next()
+            .unwrap_or(file)
+            .trim()
+            .trim_start_matches('/')
+            .to_lowercase();
+        (file, frag.map(|f| f.to_lowercase()).unwrap_or_default())
+    }
+    let (file, frag) = key(href);
+    spine
+        .iter()
+        .position(|s| {
+            let (sf, sfrag) = key(&s.href);
+            sf == file && sfrag == frag
+        })
+        .or_else(|| spine.iter().position(|s| key(&s.href).0 == file))
+}
+
+/// 读某本书的 notes.md（不存在/无档案返回空串）。
+fn read_notes_text(file_name: &str) -> String {
+    let Ok(dir) = portable::library_dir() else {
+        return String::new();
+    };
+    match notes::notes_path_for(&dir, file_name) {
+        Ok(path) => fs::read_to_string(path).unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
+/// 写某本书的 notes.md；空内容 = 移除档案文件。
+fn write_notes_text(file_name: &str, text: &str) -> Result<(), String> {
+    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let path = notes::notes_path_for(&dir, file_name)?;
+    if text.trim().is_empty() {
+        if path.is_file() {
+            fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("notes.md.tmp");
+    fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// notes.md 里一条划线的用户笔记（读回供悬停/列表）。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NoteView {
+    id: String,
+    note: String,
 }
 
 #[tauri::command]
@@ -162,8 +253,16 @@ fn add_annotation(
     end_text: usize,
     end_offset: usize,
     text: String,
+    color: String,
+    pos: f64,
     state: tauri::State<AppState>,
 ) -> Result<Highlight, String> {
+    // 颜色规范化：只认 yellow/green，其余归默认黄（存储 key 即 ::highlight 名）。
+    let color = if color == COLOR_GREEN {
+        COLOR_GREEN.to_string()
+    } else {
+        COLOR_YELLOW.to_string()
+    };
     let highlight = Highlight {
         id: Uuid::new_v4().to_string(),
         href,
@@ -172,6 +271,8 @@ fn add_annotation(
         end_text,
         end_offset,
         text,
+        color,
+        pos: pos.clamp(0.0, 1.0),
         created_at: unix_now(),
     };
     state
@@ -183,15 +284,119 @@ fn add_annotation(
     Ok(highlight)
 }
 
+/// 删除划线：正文记录移除；notes.md 里该条若存在（写过备注）则打删除时间
+/// 留痕、用户笔记保留。纯划线（从未写备注）删除后档案无痕。
 #[tauri::command]
-fn delete_annotation(key: String, id: String, state: tauri::State<AppState>) -> Result<(), String> {
+fn delete_annotation(
+    file_name: String,
+    key: String,
+    id: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
     state
         .annotations
         .lock()
         .map_err(|e| e.to_string())?
         .remove(&key, &id)
         .map_err(|e| e.to_string())?;
+    let text = read_notes_text(&file_name);
+    if !text.is_empty() {
+        let now = unix_now();
+        if let Some(updated) = notes::mark_deleted(&text, &id, &local_iso(now), &local_human(now))
+        {
+            write_notes_text(&file_name, &updated)?;
+        }
+    }
     Ok(())
+}
+
+/// 写/改一条划线的备注（notes.md 用户区）。空串 = 撤掉该备注：移除程序
+/// 保护区，用户区文字转普通文本保留（外部编辑器写的不丢）。
+#[tauri::command]
+fn save_note(
+    file_name: String,
+    book_id: String,
+    key: String,
+    id: String,
+    note: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    // 划线必须在当前书里；章归属需要打开的书（spine 标题）。
+    let rec = state
+        .annotations
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list(&key)
+        .into_iter()
+        .find(|h| h.id == id)
+        .ok_or_else(|| "划线不存在".to_string())?;
+    let (section_title, created_iso, excerpt) = {
+        let books = state.books.lock().map_err(|e| e.to_string())?;
+        let book = books.get(&book_id).ok_or_else(|| "book not open".to_string())?;
+        let spine = book.spine();
+        let idx = spine_index_for(&spine, &rec.href).ok_or_else(|| "无法定位划线章节".to_string())?;
+        let total = spine.len();
+        let title = spine[idx]
+            .title
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let title_show = if title.is_empty() {
+            rec.href.clone()
+        } else {
+            title
+        };
+        let section = format!("## 第 {} 章 · {}（{}/{}）", idx + 1, title_show, idx + 1, total);
+        let created_iso = local_iso(rec.created_at);
+        let created_human = local_human(rec.created_at);
+        let excerpt = format!(
+            "> 【{}】{}（{} · 划于 {}）",
+            notes::color_label(&rec.color),
+            rec.text,
+            notes::pos_label(rec.pos),
+            created_human
+        );
+        (section, created_iso, excerpt)
+    };
+
+    let text = read_notes_text(&file_name);
+    if note.trim().is_empty() {
+        if !text.is_empty() {
+            if let Some(updated) = notes::remove_note(&text, &id) {
+                write_notes_text(&file_name, &updated)?;
+            }
+        }
+        return Ok(());
+    }
+    let comment_lines = vec![
+        notes::NOTE_OPEN.to_string(),
+        format!("id: {id}"),
+        format!("color: {}", rec.color),
+        format!("created: {created_iso}"),
+        "deleted:".to_string(),
+        format!("posPct: {}", (rec.pos.clamp(0.0, 1.0) * 100.0).round() as u32),
+        notes::NOTE_CLOSE.to_string(),
+    ];
+    let entry = notes::NoteEntry {
+        id,
+        section_title,
+        comment_lines,
+        excerpt,
+        note,
+    };
+    let updated = notes::upsert(&text, &entry);
+    write_notes_text(&file_name, &updated)
+}
+
+/// 读出整本 notes.md 的用户笔记（id → 笔记），供悬停浮层与划线列表。
+#[tauri::command]
+fn read_notes(file_name: String) -> Result<Vec<NoteView>, String> {
+    let text = read_notes_text(&file_name);
+    Ok(notes::notes_of(&text)
+        .into_iter()
+        .map(|(id, note)| NoteView { id, note })
+        .collect())
 }
 
 #[tauri::command]
@@ -611,6 +816,8 @@ pub fn run() {
             list_annotations,
             add_annotation,
             delete_annotation,
+            save_note,
+            read_notes,
             get_font_settings,
             set_use_original_fonts,
             set_font_scale,

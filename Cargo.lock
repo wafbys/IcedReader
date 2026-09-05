@@ -1483,6 +1483,7 @@ dependencies = [
 name = "iced-reader"
 version = "0.9.0"
 dependencies = [
+ "chrono",
  "iced-reader-core",
  "iced-reader-epub",
  "serde",

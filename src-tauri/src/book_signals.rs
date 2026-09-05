@@ -87,6 +87,11 @@ pub struct BookSignals {
     /// Per-document text sha256 (first 16 hex) in spine order. Equal sequences
     /// ⇒ the very same typesetting, even if repacked/renamed.
     pub chapter_shas: Vec<String>,
+    /// Per-document raw visible-text char counts in spine order (entities
+    /// decoded, whitespace kept — the same char regime as the front-end text
+    /// nodes). Whole-book position weights for notes.md 全书% and 按位置跳转.
+    #[serde(default)]
+    pub chapter_chars: Vec<u64>,
     /// sha of the joined `chapter_shas` — cheap group key.
     pub fingerprint: String,
     /// Replacement character count (mojibake) across the spine text.
@@ -441,17 +446,18 @@ pub fn analyze_book(
         .unwrap_or(IdQuality::None);
 
     let mut shas: Vec<String> = Vec::with_capacity(spine.len());
+    let mut chapter_chars: Vec<u64> = Vec::with_capacity(spine.len());
     let mut chars: u64 = 0;
     let mut mojibake = 0u64;
     let mut br_count = 0u64;
     let mut empty_p = 0u64;
     let mut img_count = 0u64;
     let mut headings: Vec<String> = Vec::new();
-    let mut text_cache: HashMap<String, String> = HashMap::new();
+    let mut text_cache: HashMap<String, (String, u64)> = HashMap::new();
 
     for item in &spine {
         let file = file_of_href(&item.href);
-        let text = if let Some(t) = text_cache.get(&file) {
+        let (text, raw_len) = if let Some(t) = text_cache.get(&file) {
             t.clone()
         } else {
             let res = book
@@ -464,16 +470,18 @@ pub fn analyze_book(
             empty_p += scan.empty_p;
             img_count += scan.imgs;
             let decoded = decode_entities(&scan.text);
+            let raw_len = decoded.chars().count() as u64;
             let normed = norm_ws(&decoded);
             if let Some(first_heading) = scan.headings.into_iter().next() {
                 headings.push(norm_ws(&first_heading));
             } else {
                 headings.push(String::new());
             }
-            text_cache.insert(file.clone(), normed.clone());
-            normed
+            text_cache.insert(file.clone(), (normed.clone(), raw_len));
+            (normed, raw_len)
         };
         chars += text.chars().count() as u64;
+        chapter_chars.push(raw_len);
         shas.push(sha16(&text));
     }
 
@@ -482,6 +490,7 @@ pub fn analyze_book(
         rev: rev.to_string(),
         chars,
         chapter_shas: shas,
+        chapter_chars,
         fingerprint,
         mojibake,
         br_count,
@@ -725,6 +734,7 @@ mod tests {
             rev: "r1".into(),
             chars: 500,
             chapter_shas: vec!["ab".into()],
+            chapter_chars: vec![120],
             fingerprint: "f".into(),
             mojibake: 0,
             br_count: 0,
@@ -757,6 +767,7 @@ mod tests {
             rev: "r1".into(),
             chars: 12,
             chapter_shas: vec!["ab".into()],
+            chapter_chars: vec![30],
             fingerprint: "f".into(),
             mojibake: 0,
             br_count: 1,

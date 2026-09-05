@@ -17,13 +17,18 @@ import {
   type FlowMetrics,
 } from "./flowLayout";
 import {
+  HIGHLIGHT_COLORS,
+  HIGHLIGHT_DEFAULT_COLOR,
   anchorFromRange,
   anchorOverlapInfo,
   charAtPoint,
+  collectTexts,
   highlightSupported,
   paintHighlights,
   rangeForRecord,
   spanAtChar,
+  textPrefix,
+  charOfPoint,
   type AppliedSpan,
   type HighlightAnchor,
 } from "./highlights";
@@ -32,6 +37,27 @@ import { ensureCoverFit } from "./coverFit";
 import { ensureWordNoteStyle } from "./wordNotes";
 import type { HighlightRecord } from "./types";
 import { normHref } from "./types";
+
+/** Session-level memory of the last colour used for a new highlight. */
+let lastChosenColor = HIGHLIGHT_DEFAULT_COLOR;
+
+/** Escape user note text for safe `innerHTML` rendering (note bubbles). */
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => {
+    switch (c) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
 
 export type PageInfo = {
   page: number;
@@ -42,6 +68,8 @@ export type PageInfo = {
 export type ChapterFrameHandle = {
   goPage: (delta: number) => "ok" | "before" | "after";
   goToPage: (page: number) => void;
+  /** Scroll so the chapter-internal fraction (0–1) sits on the current page. */
+  goToFraction: (fraction: number) => void;
 };
 
 type Props = {
@@ -59,8 +87,23 @@ type Props = {
   highlights: HighlightRecord[];
   /** Spine href of the chapter this frame is showing (for paint sync). */
   chapterHref: string;
-  onCreateHighlight: (href: string, anchor: HighlightAnchor) => Promise<void>;
+  /** Colour is chosen at stroke time (yellow 重点 / green 摘抄). `pos` (0–1)
+   *  is the whole-book position the frame computes from `bookPos` + its own
+   *  text char offset. */
+  onCreateHighlight: (
+    href: string,
+    anchor: HighlightAnchor,
+    color: string,
+    pos: number,
+  ) => Promise<void>;
   onDeleteHighlight: (id: string) => Promise<void>;
+  /** 备注正文 (notes.md 用户区) id → 文本；供 hover 浮层与列表。 */
+  notesById: Record<string, string>;
+  /** 保存/清空一条划线的备注（空串 = 撤掉该备注）。 */
+  onSaveNote: (id: string, note: string) => Promise<void>;
+  /** This chapter's first char offset into the whole book + total chars
+   *  (chapter-chars weights); lets the frame compute `pos` at stroke time. */
+  bookPos?: { start: number; total: number };
   /** A highlight to scroll into view once its chapter is laid out. */
   pendingHighlight: HighlightRecord | null;
   /** Called once the pending highlight has been located (clears it upstream). */
@@ -144,6 +187,9 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     chapterHref,
     onCreateHighlight,
     onDeleteHighlight,
+    notesById,
+    onSaveNote,
+    bookPos,
     pendingHighlight,
     onHighlightLocated,
     fontScale = 100,
@@ -186,6 +232,12 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   onCreateHighlightRef.current = onCreateHighlight;
   const onDeleteHighlightRef = useRef(onDeleteHighlight);
   onDeleteHighlightRef.current = onDeleteHighlight;
+  const onSaveNoteRef = useRef(onSaveNote);
+  onSaveNoteRef.current = onSaveNote;
+  const notesByIdRef = useRef(notesById);
+  notesByIdRef.current = notesById;
+  const bookPosRef = useRef(bookPos);
+  bookPosRef.current = bookPos;
   const onLocatedRef = useRef(onHighlightLocated);
   onLocatedRef.current = onHighlightLocated;
   /** Locate request; `done` marks the first placement so a font reflow can
@@ -209,12 +261,25 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
    *  inside the chapter doc is then swallowed (no link navigation) so the
    *  delete toolbar stays the sole result. */
   const swallowDocClick = useRef(false);
+  /** 备注 hover 当前展示的划线 id（mouseover 进入 / 离开时增删）。 */
+  const hlHoverRef = useRef<string | null>(null);
   /** Word-note hover tooltip: viewport-fixed bubble + the marker currently
    *  hovered (mousemove keeps it anchored; leaving / page moves hide it). */
   const noteTipRef = useRef<HTMLDivElement>(null);
   const noteTipTargetRef = useRef<Element | null>(null);
   const [toolbar, setToolbar] = useState<ToolbarState>(null);
   const [toolbarBusy, setToolbarBusy] = useState(false);
+  /** 新建划线的颜色（下笔即定；记住上次选择）。 */
+  const [pickColor, setPickColor] = useState<string>(lastChosenColor);
+  const chooseColor = (color: string) => {
+    lastChosenColor = color;
+    setPickColor(color);
+  };
+  /** 备注编辑（浮条内联展开）：正在编辑的划线 id 与草稿。 */
+  const [noteEditorId, setNoteEditorId] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  /** 备注保存重入锁（双击/连点只落一次写，防 notes.md 重复插块）。 */
+  const committingNote = useRef(false);
 
   /** Repaint highlights on the current iframe document (doc must be ready). */
   const paintDoc = () => {
@@ -229,10 +294,88 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     paintedRef.current = { doc, hl: highlightsRef.current };
   };
 
-  /** Hide the word-note hover tooltip (no-op when already hidden). */
+  /** Hide the hover tooltip (word-note or highlight-note; no-op when hidden). */
   const hideNoteTip = () => {
     noteTipTargetRef.current = null;
+    hlHoverRef.current = null;
     noteTipRef.current?.classList.remove("visible");
+  };
+
+  /** rAF handle for the throttled highlight-note hover check. */
+  const hlCheckRaf = useRef<number | null>(null);
+  /** Last hover-check coordinates (skip re-checks while the mouse is still). */
+  const hlCheckPos = useRef<{ x: number; y: number } | null>(null);
+
+  /**
+   * Place a note bubble at a parent-viewport point. `hl=true` switches to the
+   * highlight-note variant (light bubble, longer text); the class follows the
+   * content so a hover that only moves repositions without re-filling.
+   */
+  const placeNoteTip = (
+    parentX: number,
+    parentY: number,
+    text?: string,
+    hl = false,
+  ) => {
+    const el = noteTipRef.current;
+    if (!el) return;
+    if (text !== undefined) {
+      if (hl) {
+        // 备注浮层：换行转 <br>（内联 white-space 之外的第二层保险，不依赖
+        // CSS 优先级），文本先转义防注入。
+        const html = escapeHtml(text).replace(/\r\n|\r|\n/g, "<br>");
+        if (el.innerHTML !== html) el.innerHTML = html;
+      } else if (el.textContent !== text) {
+        el.textContent = text;
+      }
+    }
+    el.classList.toggle("hl", hl);
+    el.style.whiteSpace = hl ? "pre-wrap" : "";
+    const w = el.offsetWidth || (hl ? 360 : 320);
+    const h = el.offsetHeight || (hl ? 120 : 60);
+    let left = parentX + 14;
+    let top = parentY + 16;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (left + w + 8 > vw) left = parentX - w - 12;
+    if (left < 4) left = 4;
+    if (top + h + 8 > vh) top = parentY - h - 12;
+    if (top < 4) top = 4;
+    el.style.left = `${Math.round(left)}px`;
+    el.style.top = `${Math.round(top)}px`;
+    el.classList.add("visible");
+  };
+
+  /** Throttled hover check for highlight notes (rAF). Detects whether the
+   *  cursor sits on a highlight whose id has a note in notesById, shows the
+   *  note bubble, and hides it when it leaves or the note disappears. */
+  const scheduleHlHoverCheck = (iframeRect: DOMRect, e: MouseEvent) => {
+    const pos = { x: iframeRect.left + e.clientX, y: iframeRect.top + e.clientY };
+    const prev = hlCheckPos.current;
+    if (prev && Math.abs(prev.x - pos.x) < 2 && Math.abs(prev.y - pos.y) < 2) {
+      return;
+    }
+    hlCheckPos.current = pos;
+    if (hlCheckRaf.current !== null) return;
+    hlCheckRaf.current = requestAnimationFrame(() => {
+      hlCheckRaf.current = null;
+      if (noteTipTargetRef.current) return; // word note owns the bubble
+      const doc = iframeRef.current?.contentDocument ?? null;
+      if (!doc || !doc.body) return;
+      const char = charAtPoint(doc, e.clientX, e.clientY);
+      const span = char !== null ? spanAtChar(appliedRef.current, char) : null;
+      const note = span ? (notesByIdRef.current[span.id] ?? "") : "";
+      if (span && note) {
+        if (hlHoverRef.current !== span.id) {
+          hlHoverRef.current = span.id;
+          placeNoteTip(pos.x, pos.y, note, true);
+        } else {
+          placeNoteTip(pos.x, pos.y); // move only
+        }
+      } else if (hlHoverRef.current) {
+        hideNoteTip();
+      }
+    });
   };
 
   /**
@@ -261,33 +404,6 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       void doc.documentElement.offsetHeight;
       apply();
     }
-  };
-
-  /**
-   * Place the word-note tooltip at a parent-viewport point. When the text is
-   * given and differs, the bubble is re-filled first; a hover that only moves
-   * repositions without touching the text. The bubble flips to the other side
-   * of the cursor when it would run off the window edge.
-   */
-  const placeNoteTip = (parentX: number, parentY: number, text?: string) => {
-    const el = noteTipRef.current;
-    if (!el) return;
-    if (text !== undefined && el.textContent !== text) {
-      el.textContent = text;
-    }
-    const w = el.offsetWidth || 320;
-    const h = el.offsetHeight || 60;
-    let left = parentX + 14;
-    let top = parentY + 16;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    if (left + w + 8 > vw) left = parentX - w - 12;
-    if (left < 4) left = 4;
-    if (top + h + 8 > vh) top = parentY - h - 12;
-    if (top < 4) top = 4;
-    el.style.left = `${Math.round(left)}px`;
-    el.style.top = `${Math.round(top)}px`;
-    el.classList.add("visible");
   };
 
   const applyPage = (page: number, announce: boolean) => {
@@ -486,6 +602,11 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     () => ({
       goPage,
       goToPage: (page: number) => applyPage(page, true),
+      goToFraction: (fraction: number) => {
+        const st = layout.current;
+        if (!st.metrics || st.pages <= 0) return;
+        applyPage(pageIndexFromFraction(fraction, st.pages), true);
+      },
     }),
     [],
   );
@@ -531,7 +652,10 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     if (result === "after") onNeedChapterRef.current(1);
   };
 
-  const hideToolbar = () => setToolbar(null);
+  const hideToolbar = () => {
+    setToolbar(null);
+    setNoteEditorId(null);
+  };
 
   /** Show a highlight; called with parent-viewport coordinates. */
   const docMouseUp = (e: MouseEvent, doc: Document, iframe: HTMLIFrameElement) => {
@@ -573,11 +697,26 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     }
   };
 
+  /** Whole-book position (0–1) of an anchor's start char, from this
+   *  chapter's first char offset (`bookPos.start`) and the chapter's own text
+   *  node chars — the same raw-visible-text regime as the Rust weights. */
+  const computeAnchorPos = (anchor: HighlightAnchor): number => {
+    const doc = iframeRef.current?.contentDocument;
+    const bp = bookPosRef.current;
+    if (!doc || !bp || bp.total <= 0) return 0;
+    const texts = collectTexts(doc);
+    const prefix = textPrefix(texts);
+    const from = charOfPoint(prefix, anchor.start);
+    if (from === null) return 0;
+    return Math.min(1, Math.max(0, (bp.start + from) / bp.total));
+  };
+
   const doCreate = async (href: string, anchor: HighlightAnchor) => {
     if (toolbarBusy) return;
     setToolbarBusy(true);
     try {
-      await onCreateHighlightRef.current(href, anchor);
+      const pos = computeAnchorPos(anchor);
+      await onCreateHighlightRef.current(href, anchor, pickColor, pos);
       setToolbar(null);
       const doc = iframeRef.current?.contentDocument;
       doc?.getSelection()?.removeAllRanges();
@@ -592,9 +731,37 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     try {
       await onDeleteHighlightRef.current(id);
       setToolbar(null);
+      setNoteEditorId(null);
       const doc = iframeRef.current?.contentDocument;
       doc?.getSelection()?.removeAllRanges();
     } finally {
+      setToolbarBusy(false);
+    }
+  };
+
+  /** Open the note editor for one highlight (draft = its current note). */
+  const openNoteEditor = (id: string) => {
+    setNoteDraft(notesByIdRef.current[id] ?? "");
+    setNoteEditorId(id);
+  };
+  const closeNoteEditor = () => {
+    setNoteEditorId(null);
+    setNoteDraft("");
+  };
+  /** Persist the note draft (or clear it when empty) then close. */
+  const commitNoteEditor = async () => {
+    if (toolbarBusy || !noteEditorId) return;
+    if (committingNote.current) return;
+    committingNote.current = true;
+    setToolbarBusy(true);
+    try {
+      await onSaveNoteRef.current(noteEditorId, noteDraft);
+      closeNoteEditor();
+      setToolbar(null);
+      const doc = iframeRef.current?.contentDocument;
+      doc?.getSelection()?.removeAllRanges();
+    } finally {
+      committingNote.current = false;
       setToolbarBusy(false);
     }
   };
@@ -702,19 +869,30 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
               }
               noteTipTargetRef.current = marker;
               const iframeRect = iframe.getBoundingClientRect();
-              placeNoteTip(iframeRect.left + e.clientX, iframeRect.top + e.clientY, text);
+              placeNoteTip(
+                iframeRect.left + e.clientX,
+                iframeRect.top + e.clientY,
+                text,
+              );
             };
             const onDocMouseMove = (e: MouseEvent) => {
-              if (!noteTipTargetRef.current) return;
-              const marker = (e.target as Element | null)?.closest?.(
-                "a.wr-note",
-              ) as Element | null;
-              if (!marker) {
-                hideNoteTip();
+              const iframeRect = iframe.getBoundingClientRect();
+              if (noteTipTargetRef.current) {
+                const marker = (e.target as Element | null)?.closest?.(
+                  "a.wr-note",
+                ) as Element | null;
+                if (!marker) {
+                  hideNoteTip();
+                  return;
+                }
+                placeNoteTip(
+                  iframeRect.left + e.clientX,
+                  iframeRect.top + e.clientY,
+                );
                 return;
               }
-              const iframeRect = iframe.getBoundingClientRect();
-              placeNoteTip(iframeRect.left + e.clientX, iframeRect.top + e.clientY);
+              // Highlight-note hover, throttled to a rAF.
+              scheduleHlHoverCheck(iframeRect, e);
             };
             doc.addEventListener("mouseover", onDocMouseOver);
             doc.addEventListener("mousemove", onDocMouseMove);
@@ -727,6 +905,10 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             if (hostRef.current) ro.observe(hostRef.current);
 
             const cleanup = () => {
+              if (hlCheckRaf.current !== null) {
+                cancelAnimationFrame(hlCheckRaf.current);
+                hlCheckRaf.current = null;
+              }
               ro.disconnect();
               doc.removeEventListener("wheel", onDocWheel);
               doc.removeEventListener("mouseup", onDocMouseUp);
@@ -751,42 +933,109 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
           onMouseDown={(e) => e.stopPropagation()}
         >
           {toolbar.kind === "create" ? (
-            <>
-              {toolbar.overlaps && !toolbar.containedId ? (
+            toolbar.overlaps && !toolbar.containedId ? (
+              <>
                 <span className="hl-pop-hint">与已有划线重叠</span>
-              ) : (
                 <button
                   type="button"
-                  className={`btn ghost small ${toolbar.overlaps ? "danger" : "paint"}`}
-                  disabled={toolbarBusy}
-                  title={
-                    toolbar.overlaps
-                      ? "已划线的这处文字，点击删除此划线"
-                      : undefined
-                  }
-                  onClick={() => {
-                    if (toolbar.overlaps && toolbar.containedId) {
-                      void doDelete(toolbar.containedId);
-                    } else {
-                      void doCreate(toolbar.href, toolbar.anchor);
-                    }
-                  }}
+                  className="btn ghost small icon"
+                  aria-label="关闭"
+                  title="关闭"
+                  onClick={hideToolbar}
                 >
-                  {toolbar.overlaps ? "删除此划线" : "划线"}
+                  ✕
                 </button>
-              )}
+              </>
+            ) : toolbar.overlaps ? (
+              <>
+                <button
+                  type="button"
+                  className="btn ghost small danger"
+                  disabled={toolbarBusy}
+                  title="已划线的这处文字，点击删除此划线"
+                  onClick={() => void doDelete(toolbar.containedId!)}
+                >
+                  删除此划线
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost small icon"
+                  aria-label="关闭"
+                  title="关闭"
+                  onClick={hideToolbar}
+                >
+                  ✕
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="hl-colors" role="group" aria-label="划线颜色">
+                  {Object.entries(HIGHLIGHT_COLORS).map(([color, v]) => (
+                    <button
+                      key={color}
+                      type="button"
+                      className={`hl-swatch${pickColor === color ? " selected" : ""}`}
+                      style={{ background: v.bg }}
+                      title={v.label}
+                      aria-label={v.label}
+                      aria-pressed={pickColor === color}
+                      onClick={() => chooseColor(color)}
+                    />
+                  ))}
+                </span>
+                <button
+                  type="button"
+                  className="btn ghost small paint"
+                  disabled={toolbarBusy}
+                  style={{
+                    background: HIGHLIGHT_COLORS[pickColor]?.bg ?? undefined,
+                  }}
+                  onClick={() => void doCreate(toolbar.href, toolbar.anchor)}
+                >
+                  划线
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost small icon"
+                  aria-label="关闭"
+                  title="关闭"
+                  onClick={hideToolbar}
+                >
+                  ✕
+                </button>
+              </>
+            )
+          ) : noteEditorId === toolbar.id ? (
+            <>
+              <span className="hl-pop-hint">正在编辑备注</span>
               <button
                 type="button"
                 className="btn ghost small icon"
                 aria-label="关闭"
                 title="关闭"
-                onClick={hideToolbar}
+                onClick={() => {
+                  closeNoteEditor();
+                  setToolbar(null);
+                }}
               >
                 ✕
               </button>
             </>
           ) : (
             <>
+              <button
+                type="button"
+                className={`btn ghost small note${notesById[toolbar.id] ? " has" : ""}`}
+                disabled={toolbarBusy}
+                title={
+                  notesById[toolbar.id]
+                    ? "编辑备注（与划线一起存在 notes.md）"
+                    : "写备注（保存后与划线一起存入 notes.md）"
+                }
+                onClick={() => openNoteEditor(toolbar.id)}
+              >
+                {notesById[toolbar.id] ? "✎ 编辑备注" : "✎ 备注"}
+              </button>
               <button
                 type="button"
                 className="btn ghost small danger"
@@ -806,6 +1055,56 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
               </button>
             </>
           )}
+        </div>
+      )}
+
+      {noteEditorId && toolbar?.kind === "delete" && (
+        <div
+          className="hl-note-card"
+          style={{ left: toolbar.x, top: toolbar.y + 46 }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <textarea
+            autoFocus
+            value={noteDraft}
+            placeholder="写备注…（多行可换行）"
+            onChange={(e) => setNoteDraft(e.target.value)}
+            rows={4}
+          />
+          <div className="hl-note-actions">
+            <button
+              type="button"
+              className="btn small paint"
+              disabled={toolbarBusy}
+              onClick={() => void commitNoteEditor()}
+            >
+              保存备注
+            </button>
+            <button
+              type="button"
+              className="btn small ghost"
+              disabled={toolbarBusy}
+              onClick={closeNoteEditor}
+            >
+              取消
+            </button>
+            {noteDraft.trim() !== "" && (
+              <button
+                type="button"
+                className="btn small ghost danger"
+                disabled={toolbarBusy}
+                onClick={() => {
+                  setNoteDraft("");
+                  void commitNoteEditor();
+                }}
+              >
+                清除备注
+              </button>
+            )}
+          </div>
+          <p className="hl-note-hint">
+            备注与划线一起存入 notes.md，可在外部 md 软件继续编辑；划线删除后备注仍保留在档案里。
+          </p>
         </div>
       )}
     </div>

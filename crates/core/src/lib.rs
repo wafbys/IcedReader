@@ -14,7 +14,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-pub use annotations::{AnnotationStore, Highlight};
+pub use annotations::{
+    AnnotationStore, Highlight, COLOR_GREEN, COLOR_YELLOW,
+};
 pub use book_meta::{
     clean_person_list, clean_title, join_title, read_meta_file, resolved_title, write_meta_file,
     BookMeta, FIELD_SEP, TITLE_JOIN_SEP,

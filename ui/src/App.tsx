@@ -30,6 +30,11 @@ import {
   toggleAppFullscreen,
 } from "./fullscreen";
 
+/** 库内 epub 文件名（书命令与 notes.md 档案用）。 */
+function fileNameOf(b: OpenedBook): string {
+  return b.path.split(/[\\/]/).pop() ?? "";
+}
+
 export default function App() {
   const [book, setBook] = useState<OpenedBook | null>(null);
   const [library, setLibrary] = useState<LibraryEntry[]>([]);
@@ -49,6 +54,9 @@ export default function App() {
   const [chromeOn, setChromeOn] = useState(false);
   /** Narrow-window overflow menu in the top bar (reading view only). */
   const [topMenuOpen, setTopMenuOpen] = useState(false);
+  /** 「跳到全书位置」输入浮层。 */
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [jumpValue, setJumpValue] = useState("");
   const fullscreenRef = useRef(false);
   const tocOpenRef = useRef(false);
   const fontOpenRef = useRef(false);
@@ -67,6 +75,10 @@ export default function App() {
   const [usedFonts, setUsedFonts] = useState<UsedFontReport | null>(null);
   /** Highlights of the open book (filtered per chapter when handed to the frame). */
   const [highlights, setHighlights] = useState<HighlightRecord[]>([]);
+  /** 备注正文（notes.md 用户区）id → 文本；hover 浮层与划线列表的数据源。 */
+  const [notesById, setNotesById] = useState<Record<string, string>>({});
+  const notesRef = useRef(notesById);
+  notesRef.current = notesById;
   /** Highlight to jump to (set by the list; cleared once the frame locates it). */
   const [pendingHighlight, setPendingHighlight] = useState<HighlightRecord | null>(
     null,
@@ -91,6 +103,35 @@ export default function App() {
   const spine = book?.spine ?? [];
   const current = spine[index];
 
+  /** 每章在全书的起始字符偏移（前缀和）+ 总字符；划线 pos 与「全书%」跳转共用。 */
+  const bookCum = useMemo(() => {
+    const chars = book?.chapterChars ?? [];
+    const cum = new Array<number>(chars.length + 1);
+    let acc = 0;
+    for (let i = 0; i < chars.length; i++) {
+      cum[i] = acc;
+      acc += chars[i];
+    }
+    cum[chars.length] = acc;
+    return cum;
+  }, [book?.chapterChars]);
+  const bookPos =
+    bookCum.length > 1 && bookCum[bookCum.length - 1] > 0
+      ? { start: bookCum[Math.min(index, bookCum.length - 2)], total: bookCum[bookCum.length - 1] }
+      : undefined;
+  /** 当前阅读位置的全书百分比（页比例近似章内字符比例，用于显示与跳转）。 */
+  const bookPercent = (() => {
+    const total = bookCum.length > 1 ? bookCum[bookCum.length - 1] : 0;
+    if (total <= 0) return null;
+    const curChars = book?.chapterChars?.[index] ?? 0;
+    const frac =
+      pageInfo.pages > 1 ? pageInfo.page / (pageInfo.pages - 1) : 0;
+    return Math.round(
+      ((bookCum[index] + frac * curChars) / total) * 100,
+    );
+  })();
+
+
   /** Highlights belonging to the currently displayed chapter. */
   const chapterHighlights = useMemo(() => {
     if (!current) return [];
@@ -112,33 +153,93 @@ export default function App() {
     );
   }, [highlights, spine]);
 
-  const createHighlight = useCallback(async (href: string, anchor: HighlightAnchor) => {
+  const createHighlight = useCallback(
+    async (href: string, anchor: HighlightAnchor, color: string, pos: number) => {
+      const b = bookRef.current;
+      if (!b) return;
+      try {
+        const rec = await invoke<HighlightRecord>("add_annotation", {
+          key: b.progressKey,
+          href,
+          startText: anchor.start.seq,
+          startOffset: anchor.start.offset,
+          endText: anchor.end.seq,
+          endOffset: anchor.end.offset,
+          text: anchor.text,
+          color,
+          pos,
+        });
+        setHighlights((prev) => [...prev, rec]);
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [],
+  );
+
+  const deleteHighlight = useCallback(async (id: string) => {
     const b = bookRef.current;
     if (!b) return;
+    const note = notesRef.current[id];
+    if (note !== undefined) {
+      const preview = note.length > 60 ? `${note.slice(0, 60)}…` : note;
+      const ok = window.confirm(
+        `这条划线有备注：\n「${preview}」\n\n删除后正文高亮消失；划线内容与备注保留在 notes.md 并记删除时间。\n确定删除这条划线？`,
+      );
+      if (!ok) return;
+    }
     try {
-      const rec = await invoke<HighlightRecord>("add_annotation", {
+      await invoke("delete_annotation", {
+        fileName: fileNameOf(b),
         key: b.progressKey,
-        href,
-        startText: anchor.start.seq,
-        startOffset: anchor.start.offset,
-        endText: anchor.end.seq,
-        endOffset: anchor.end.offset,
-        text: anchor.text,
+        id,
       });
-      setHighlights((prev) => [...prev, rec]);
+      setHighlights((prev) => prev.filter((h) => h.id !== id));
+      setNotesById((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     } catch (err) {
       setError(String(err));
     }
   }, []);
 
-  const deleteHighlight = useCallback(async (id: string) => {
+  /** 写/清一条划线的备注（notes.md 是备注的唯一真相源）。 */
+  const saveNote = useCallback(async (id: string, note: string) => {
     const b = bookRef.current;
     if (!b) return;
+    const cleaned = note.trim();
     try {
-      await invoke("delete_annotation", { key: b.progressKey, id });
-      setHighlights((prev) => prev.filter((h) => h.id !== id));
+      await invoke("save_note", {
+        fileName: fileNameOf(b),
+        bookId: b.id,
+        key: b.progressKey,
+        id,
+        note: cleaned,
+      });
+      setNotesById((prev) => {
+        const next = { ...prev };
+        if (cleaned) next[id] = cleaned;
+        else delete next[id];
+        return next;
+      });
     } catch (err) {
       setError(String(err));
+    }
+  }, []);
+
+  /** 读回 notes.md 的备注（打开书后调用；书外改过的备注在此刷新）。 */
+  const loadNotes = useCallback(async (fileName: string) => {
+    try {
+      const list = await invoke<{ id: string; note: string }[]>("read_notes", {
+        fileName,
+      });
+      const map: Record<string, string> = {};
+      for (const x of list) map[x.id] = x.note;
+      setNotesById(map);
+    } catch {
+      setNotesById({});
     }
   }, []);
 
@@ -412,6 +513,7 @@ export default function App() {
         }
         const opened = await invoke<OpenedBook>("open_book", { path: selected });
         setHighlights([]);
+        setNotesById({});
         void invoke<HighlightRecord[]>("list_annotations", { key: opened.progressKey })
           .then((list) => {
             // Ignore stale results when another book was opened meanwhile.
@@ -420,6 +522,7 @@ export default function App() {
           .catch(() => {
             if (bookRef.current?.id === opened.id) setHighlights([]);
           });
+        void loadNotes(fileNameOf(opened));
         const restored = chapterIndex(opened.spine, opened.progress?.href);
         setBook(opened);
         setIndex(restored >= 0 ? restored : 0);
@@ -445,7 +548,7 @@ export default function App() {
         setBusy(false);
       }
     },
-    [persistReadingPosition, loadLibrary],
+    [persistReadingPosition, loadLibrary, loadNotes],
   );
 
   const openEpub = useCallback(async () => {
@@ -514,6 +617,44 @@ export default function App() {
     },
     [flushProgress],
   );
+
+  /** 跳到「全书 N%」：按每章字符权重换算到章 + 章内比例；同章直接定位，
+   *  跨章先存当前进度再切章。跳转后按新位置保存进度（与翻章同语义）。 */
+  const jumpToBookPercent = useCallback(
+    (pct: number) => {
+      const b = bookRef.current;
+      if (!b || !b.chapterChars.length) return;
+      setJumpOpen(false);
+      const chars = b.chapterChars;
+      const total = chars.reduce((acc, c) => acc + c, 0);
+      if (total <= 0) return;
+      const target = Math.min(total - 1, Math.max(0, (pct / 100) * total));
+      let i = 0;
+      let acc = 0;
+      while (i < chars.length - 1 && acc + chars[i] <= target) {
+        acc += chars[i];
+        i += 1;
+      }
+      const len = chars[i] || 1;
+      const frac = Math.min(0.9999, Math.max(0, (target - acc) / len));
+      if (i === indexRef.current) {
+        lastFraction.current = frac;
+        frameRef.current?.goToFraction(frac);
+        return;
+      }
+      void persistReadingPosition().then(() => {
+        lastFraction.current = frac;
+        setRestoreFraction(frac);
+        setIndex(i);
+      });
+    },
+    [persistReadingPosition],
+  );
+
+  const confirmJump = () => {
+    const n = Number(jumpValue);
+    if (Number.isFinite(n)) jumpToBookPercent(Math.min(100, Math.max(0, n)));
+  };
 
   const goToHighlight = useCallback(
     (rec: HighlightRecord) => {
@@ -857,6 +998,19 @@ export default function App() {
                 {spine.length ? `${index + 1}/${spine.length}章` : "0章"}
                 {` · ${pageInfo.page + 1}/${pageInfo.pages}页`}
                 {pageInfo.columns === 2 ? " · 双栏" : ""}
+                {bookPercent !== null && (
+                  <button
+                    type="button"
+                    className="pos-jump"
+                    title="跳到全书位置（输入 0–100%）"
+                    onClick={() => {
+                      setJumpValue(String(bookPercent));
+                      setJumpOpen(true);
+                    }}
+                  >
+                    · 全书 {bookPercent}%
+                  </button>
+                )}
               </span>
               <button
                 type="button"
@@ -881,6 +1035,46 @@ export default function App() {
           onUpload={uploadFont}
           onClear={clearFont}
         />
+      )}
+
+      {jumpOpen && (
+        <div
+          className="jump-pop-wrap"
+          onClick={() => setJumpOpen(false)}
+        >
+          <div
+            className="jump-pop"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") confirmJump();
+              if (e.key === "Escape") setJumpOpen(false);
+            }}
+          >
+            <span className="jump-label">跳到全书位置</span>
+            <input
+              autoFocus
+              inputMode="decimal"
+              value={jumpValue}
+              onChange={(e) => setJumpValue(e.target.value)}
+              placeholder="0–100"
+            />
+            <span className="jump-unit">%</span>
+            <button
+              type="button"
+              className="btn small paint"
+              onClick={confirmJump}
+            >
+              跳转
+            </button>
+            <button
+              type="button"
+              className="btn small ghost"
+              onClick={() => setJumpOpen(false)}
+            >
+              取消
+            </button>
+          </div>
+        </div>
       )}
 
       {error && <div className="banner">{error}</div>}
@@ -928,6 +1122,7 @@ export default function App() {
               highlights={sortedHighlights}
               spine={spine}
               currentHref={current?.href ?? ""}
+              notesById={notesById}
               onSelect={goToHighlight}
               onDelete={(id) => void deleteHighlight(id)}
               onClose={() => setHighlightsOpen(false)}
@@ -962,6 +1157,9 @@ export default function App() {
                 chapterHref={current.href}
                 onCreateHighlight={createHighlight}
                 onDeleteHighlight={deleteHighlight}
+                notesById={notesById}
+                onSaveNote={saveNote}
+                bookPos={bookPos}
                 pendingHighlight={pendingHighlight}
                 onHighlightLocated={onHighlightLocated}
                 onProgress={queueProgress}

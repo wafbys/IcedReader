@@ -327,6 +327,19 @@ pub fn meta_path_for(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
     Ok(dir.join(as_path).with_extension("md"))
 }
 
+/// Companion notes archive `<stem>.notes.md` (划线+备注档案，删除留痕)。
+/// Same name guard as [`meta_path_for`]: plain file name only, and the
+/// extension swap keeps `<stem>.epub → <stem>.notes.md`.
+pub fn notes_path_for(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    let as_path = Path::new(file_name);
+    if file_name.is_empty()
+        || as_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err("invalid book file name".into());
+    }
+    Ok(dir.join(as_path).with_extension("notes.md"))
+}
+
 /// Turn a display title into a usable file stem for the library directory:
 /// fold whitespace (via [`iced_reader_core::clean_title`]), replace Windows-
 /// forbidden characters (`<>:"/\|?*`) and control chars with spaces, trim
@@ -422,6 +435,14 @@ pub fn rename_book_files(
         // Best-effort: the new md is written right after this returns.
         let _ = fs::remove_file(&md_old);
     }
+    // The notes archive travels with the stem (rename, not drop — it holds
+    // the user's notes). Best-effort like the md above.
+    let notes_old = notes_path_for(dir, old_file_name)?;
+    if notes_old.is_file() {
+        if let Ok(notes_new) = notes_path_for(dir, &format!("{new_stem}.epub")) {
+            let _ = fs::rename(&notes_old, &notes_new);
+        }
+    }
     Ok(format!("{new_stem}.epub"))
 }
 
@@ -442,6 +463,8 @@ pub fn delete_book_from(dir: &Path, file_name: &str) -> Result<PathBuf, String> 
     fs::remove_file(&path).map_err(|e| e.to_string())?;
     // The companion md (user metadata) dies with the book; missing is fine.
     let _ = fs::remove_file(meta_path_for(dir, file_name)?);
+    // The notes archive (划线+备注) dies with the book too.
+    let _ = fs::remove_file(notes_path_for(dir, file_name)?);
     Ok(path)
 }
 

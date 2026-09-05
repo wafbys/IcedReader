@@ -22,8 +22,22 @@
 
 import type { HighlightRecord } from "./types";
 
-/** CSS.highlights registry name for all highlights of one chapter. */
-export const HIGHLIGHT_NAME = "iced-reader-highlight";
+/** Highlight colour keys with their paint values & md label semantics. The
+ * key is the storage value and the `::highlight(iced-reader-highlight-{key})`
+ * suffix (AGENTS 约束③：每个规则只含背景色与 color: inherit).
+ * Opinionated semantics: yellow = 重点 (default), green = 摘抄. */
+export const HIGHLIGHT_COLORS: Record<string, { label: string; bg: string }> = {
+  yellow: { label: "重点", bg: "rgba(255, 208, 96, 0.55)" },
+  green: { label: "摘抄", bg: "rgba(126, 216, 128, 0.55)" },
+};
+
+export const HIGHLIGHT_DEFAULT_COLOR = "yellow";
+
+/** ::highlight name for one colour. */
+export function highlightName(color: string): string {
+  return `iced-reader-highlight-${color}`;
+}
+
 /** <style id=...> injected into the chapter head, next to the flow style. */
 export const HIGHLIGHT_STYLE_ID = "iced-reader-highlight-style";
 
@@ -42,7 +56,7 @@ export type HighlightAnchor = {
 };
 
 /** A highlight span expressed over the concatenated chapter text (chars). */
-export type AppliedSpan = { id: string; from: number; to: number };
+export type AppliedSpan = { id: string; from: number; to: number; color: string };
 
 export function collectTexts(doc: Document): Text[] {
   const texts: Text[] = [];
@@ -320,7 +334,7 @@ export function recordsToRanges(
     range.setStart(texts[fromPt.seq], fromPt.offset);
     range.setEnd(texts[toPt.seq], toPt.offset);
     ranges.push(range);
-    applied.push({ id: rec.id, from: span.from, to: span.to });
+    applied.push({ id: rec.id, from: span.from, to: span.to, color: rec.color });
   }
   return { ranges, applied, missing };
 }
@@ -356,9 +370,10 @@ export function highlightSupported(doc: Document): boolean {
 }
 
 /**
- * Rebuild the full highlight overlay for this chapter document.
- * Returns the painted spans (for hit-testing), or null when the WebView does
- * not support the CSS Custom Highlight API.
+ * Rebuild the full highlight overlay for this chapter document, one
+ * `::highlight(iced-reader-highlight-{color})` per colour. Returns the painted
+ * spans (for hit-testing), or null when the WebView does not support the CSS
+ * Custom Highlight API.
  */
 export function paintHighlights(
   doc: Document,
@@ -376,23 +391,40 @@ export function paintHighlights(
   const HighlightCtor = win?.Highlight;
   if (!registry || !HighlightCtor) return null;
 
-  // Ensure ::highlight(iced-reader-highlight) styling exists in this doc.
+  // Ensure ::highlight rules exist in this doc (AGENTS 约束③：每色一条规则，
+  // 只含背景色与 color: inherit)。
   let styleEl = doc.getElementById(HIGHLIGHT_STYLE_ID) as HTMLStyleElement | null;
   if (!styleEl) {
     styleEl = doc.createElement("style");
     styleEl.id = HIGHLIGHT_STYLE_ID;
     doc.head.appendChild(styleEl);
   }
-  styleEl.textContent = `
-::highlight(${HIGHLIGHT_NAME}) {
-  background-color: rgba(255, 208, 96, 0.55);
+  styleEl.textContent = Object.entries(HIGHLIGHT_COLORS)
+    .map(
+      ([color, v]) => `
+::highlight(${highlightName(color)}) {
+  background-color: ${v.bg};
   color: inherit;
-}`;
+}`,
+    )
+    .join("");
 
+  // Group live ranges by colour, then register each group under its own name.
   const { ranges, applied } = recordsToRanges(doc, records);
-  registry.delete(HIGHLIGHT_NAME);
-  if (ranges.length > 0) {
-    registry.set(HIGHLIGHT_NAME, new HighlightCtor(...ranges));
+  const byColor = new Map<string, Range[]>();
+  for (let i = 0; i < ranges.length; i++) {
+    const color = applied[i].color;
+    const list = byColor.get(color) ?? [];
+    list.push(ranges[i]);
+    byColor.set(color, list);
+  }
+  // Old single-colour registry name is dropped on repaint.
+  registry.delete("iced-reader-highlight");
+  for (const color of Object.keys(HIGHLIGHT_COLORS)) {
+    registry.delete(highlightName(color));
+  }
+  for (const [color, list] of byColor) {
+    registry.set(highlightName(color), new HighlightCtor(...list));
   }
   return applied;
 }

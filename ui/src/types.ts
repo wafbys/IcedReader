@@ -31,6 +31,11 @@ export type Locator = {
  * One user highlight. Anchored inside one chapter by the global text-node
  * sequence + in-node offset (stable because chapter HTML is deterministic),
  * plus an excerpt used for validation/display. `href` matches the spine unit.
+ * `color` is chosen at stroke time and never edited afterwards (换色 = 删除
+ * 重划): yellow = 重点 (default), green = 摘抄. `pos` is the whole-book
+ * position 0–1 from per-chapter raw visible-text char weights (same char
+ * regime as the front-end text nodes), written into notes.md and used by
+ * 按位置跳转.
  */
 export type HighlightRecord = {
   id: string;
@@ -40,6 +45,8 @@ export type HighlightRecord = {
   endText: number;
   endOffset: number;
   text: string;
+  color: string;
+  pos: number;
   createdAt: number;
 };
 
@@ -114,6 +121,9 @@ export type OpenedBook = {
   metadata: Metadata;
   toc: TocNode[];
   spine: SpineItem[];
+  /** Per-chapter raw visible-text char counts (spine order). Whole-book
+   *  position weights for notes.md 全书% and 按位置跳转. */
+  chapterChars: number[];
 };
 
 export type FontSlotId = "serif" | "sans" | "mono" | "cjk";
