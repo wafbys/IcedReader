@@ -1,3 +1,17 @@
+//! Reading progress: `Locator` (`href` + fraction 0..=1, `cfi` unused) keyed
+//! so a moved portable folder still finds the same book.
+//!
+//! Key order in [`progress_key`]: non-empty EPUB identifier → `id:{id}`; else
+//! a path relative to the portable library → `lib:{rel}`; else `path:` as
+//! last-resort fallback (absolute, breaks if the folder moves). Never use
+//! `path:` as the primary key when a library dir exists.
+//!
+//! `lib:书名-N.epub` and `lib:书名.epub` are the same book ([`same_book`] /
+//! [`lib_book_stem`]): a trailing `-` + digits is a numbered copy, not part
+//! of the title (`三体3` stays distinct from `三体`; `1984-2` still matches
+//! `1984`). Import reuses an existing same-name file instead of writing
+//! `书名-2.epub`.
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};

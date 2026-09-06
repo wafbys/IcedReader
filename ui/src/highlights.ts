@@ -14,17 +14,20 @@
  *
  * Painting
  * --------
- * Highlights are painted with the CSS Custom Highlight API (Chromium 105+,
- * which WebView2 ships). Nothing is injected into the chapter DOM — no <mark>,
- * no layout change — the colour lives in `::highlight(iced-reader-highlight)`
- * in the chapter document's head, alongside the pagination flow style.
+ * CSS Custom Highlight API; nothing is injected into the chapter DOM — no
+ * <mark>, no layout change. Injected style id `iced-reader-highlight-style`
+ * may only contain `::highlight(iced-reader-highlight-{color})` background
+ * plus `color: inherit` (keys: yellow = 重点, green = 摘抄). Stroke is final:
+ * no recolor, no range edit (replace = delete and draw again).
+ * `pos` is whole-book 0–1 from per-chapter visible-text weights (same char
+ * regime as the iframe text nodes).
  */
 
 import type { HighlightRecord } from "./types";
 
 /** Highlight colour keys with their paint values & md label semantics. The
  * key is the storage value and the `::highlight(iced-reader-highlight-{key})`
- * suffix (AGENTS 约束③：每个规则只含背景色与 color: inherit).
+ * suffix. Each rule is background + `color: inherit` only.
  * Opinionated semantics: yellow = 重点 (default), green = 摘抄. */
 export const HIGHLIGHT_COLORS: Record<string, { label: string; bg: string }> = {
   yellow: { label: "重点", bg: "rgba(255, 208, 96, 0.55)" },
@@ -391,8 +394,8 @@ export function paintHighlights(
   const HighlightCtor = win?.Highlight;
   if (!registry || !HighlightCtor) return null;
 
-  // Ensure ::highlight rules exist in this doc (AGENTS 约束③：每色一条规则，
-  // 只含背景色与 color: inherit)。
+  // Ensure ::highlight rules exist in this doc (one rule per colour:
+  // background + color inherit only).
   let styleEl = doc.getElementById(HIGHLIGHT_STYLE_ID) as HTMLStyleElement | null;
   if (!styleEl) {
     styleEl = doc.createElement("style");

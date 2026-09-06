@@ -87,7 +87,8 @@ pub struct SpineItem {
 }
 
 /// Position that survives font-size and platform changes.
-/// `fraction` is 0..=1 within the chapter; `cfi` is filled in once pagination exists.
+/// `fraction` is 0..=1 within the chapter. `cfi` is reserved and must stay
+/// `None` — pagination exists, but do not invent a fake CFI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Locator {

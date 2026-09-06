@@ -2,6 +2,13 @@
  * CSS multi-column pagination used by Foliate / Epub.js.
  * Column count is min(maxColumnCount, ceil(container / maxInlineSize)).
  * Extra window width becomes side margin, not wider text.
+ *
+ * Injected as `#iced-reader-flow`. Legal properties only: column-width/gap/fill,
+ * height, overflow hidden, overflow-wrap, page padding, html font-size N%
+ * (80–160), media max-width/height + object-fit contain + break-inside avoid,
+ * and a layout reset on **html and body** (box-sizing, margin/border 0,
+ * position static, min/max-width/height cleared). No color, font-family,
+ * line-height, or max-width centering.
  */
 
 export const FLOW_STYLE_ID = "iced-reader-flow";

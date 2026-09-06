@@ -1,4 +1,14 @@
-/** Actual fonts used to paint the current chapter, from the rendered iframe. */
+/**
+ * Actual fonts used to paint the current chapter, from the rendered iframe.
+ *
+ * Do not canvas-match generics or missing names against a pile of system
+ * fonts (that labels serif Han as 雅黑 and counts uninstalled KaiTi).
+ * Named fonts: only report as used if actually installed. A CSS generic that
+ * wins is labeled `（系统 serif）` (source `generic`) — do not guess 宋体.
+ * Only when the stack has neither a usable named font nor a generic, label
+ * fallback as `（系统 CJK 默认）` or the installed CJK face that actually
+ * painted.
+ */
 
 const MISSING = "__IcedReaderMissingFont__";
 const GENERIC = new Set([

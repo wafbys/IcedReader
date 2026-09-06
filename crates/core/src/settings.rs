@@ -1,3 +1,10 @@
+//! Reader settings (`data/settings.json`) and the four font-slot registry.
+//!
+//! Custom fonts are active only when `useOriginalFonts` is false **and**
+//! every slot (serif/sans/mono/cjk) is registered and the file is present.
+//! Missing any slot → no override. Files on disk that are not in this
+//! registry are ignored.
+
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};

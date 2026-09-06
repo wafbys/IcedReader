@@ -1,3 +1,18 @@
+//! Portable layout next to the exe: `{exe}/data/`. Never `%APPDATA%` or the
+//! registry as primary storage. Debug and release each have their own `data/`.
+//!
+//! ```text
+//! data/
+//!   library/          *.epub, <stem>.md, <stem>.notes.md
+//!   fonts/            serif/sans/mono/cjk + sniffed extension
+//!   settings.json     阅读设置（含四槽登记）
+//!   window.json       位置 / 大小 / 最大化（不含全屏）
+//!   progress.json
+//!   annotations.json  划线（键同进度键）
+//!   book-signals.json 指纹与质量（键=文件名，文件变才重算）
+//!   webview/          WebView2 用户数据
+//! ```
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};

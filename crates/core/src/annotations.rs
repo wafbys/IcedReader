@@ -1,7 +1,8 @@
 //! User annotations (highlights) keyed by the same progress key as reading
 //! progress (`id:...` / `lib:...`). A highlight anchors to a span inside one
 //! chapter by global text-node sequence + in-node offset, stable because
-//! chapter HTML is regenerated deterministically on every open.
+//! chapter HTML is regenerated deterministically on every open. Records carry
+//! `color` (yellow = 重点, green = 摘抄) and whole-book `pos` (0–1).
 
 use std::collections::HashMap;
 use std::fs;

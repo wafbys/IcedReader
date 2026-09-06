@@ -32,7 +32,7 @@
 //!   "derive it"; when non-empty it wins over everything else (never silently
 //!   overwritten by auto-generation).
 //!
-//! Display-title join template (AGENTS): `书名 [ _ 副标题] [ - 卷册]
+//! Display-title join template: `书名 [ _ 副标题] [ - 卷册]
 //! [ - 作者] [ - 译者] [ - 出版年份] [ - 出版社] [ - ISBN…]`. Auto-generated
 //! separators are ASCII only — `" _ "` appears **only** between 书名 and
 //! 副标题; every later segment (卷册 and the bibliographic data) is joined
@@ -76,7 +76,7 @@ pub struct BookMeta {
     pub subtitle: String,
     /// 卷册 (volume).
     pub volume: String,
-    /// 作者 (author, single line; multiple names joined with 、 by the panel).
+    /// 作者 (author, single line; multiple names joined with `, `).
     pub author: String,
     /// 译者 (translator, single line).
     pub translator: String,
@@ -201,8 +201,8 @@ fn with_label(value: &str, label: &str) -> String {
     }
 }
 
-/// Display-title resolution chain (single source of truth, mirrored in
-/// AGENTS.md): user-confirmed `displayTitle` → derived join of the edited
+/// Display-title resolution chain (single source of truth):
+/// user-confirmed `displayTitle` → derived join of the edited
 /// fields → whatever the book previously resolved to (`dc:title` or the file
 /// name fallback, passed in as `base`).
 pub fn resolved_title(overlay: Option<&BookMeta>, base: &str) -> String {

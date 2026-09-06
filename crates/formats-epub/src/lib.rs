@@ -236,6 +236,9 @@ impl Book for EpubBook {
     fn spine(&self) -> Vec<SpineItem> {
         let opf = self.opf_spine();
         let toc = self.toc_spine();
+        // TOC-as-chapters: flatten when there are ≥2 entries and either a
+        // fragment href or the tree is longer than the OPF spine. Fewer than
+        // two entries stay on the OPF spine (typical one-file-per-chapter).
         if toc.len() >= 2 && (toc.iter().any(|s| s.href.contains('#')) || toc.len() > opf.len()) {
             toc
         } else {

@@ -1,9 +1,16 @@
 //! Custom fonts: CJK overlay, CSS rewrite, and `@font-face` injection.
 //!
-//! Applied only when the caller decides custom fonts are active (all four
-//! slots present and 「使用原书字体」 is off). One file per slot; faces have
-//! no `font-weight` / `font-style` variants (engine synthesizes bold/italic).
-//! This crate does not inject reader chrome.
+//! Applied only when all four slots are registered, the files exist, and
+//! 「使用原书字体」 is off (`SettingsStore::custom_fonts_active`). One file
+//! per slot; disk name is `serif` / `sans` / `mono` / `cjk` plus the sniffed
+//! extension. Enablement is the `settings.json` registry — do not scan
+//! `data/fonts/` as an import, and dropping a file in that folder does
+//! nothing until the user uploads it from the font panel.
+//!
+//! Faces have no `font-weight` / `font-style` variants (engine synthesizes
+//! bold/italic). Do not expand to Regular/Italic/Bold four-file families or
+//! pair files by name. CJK uses [`CJK_UNICODE_RANGE`]; the other three use
+//! [`LATIN_UNICODE_RANGE`]. This crate does not inject reader chrome.
 
 use crate::settings::FontSlot;
 
