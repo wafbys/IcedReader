@@ -33,7 +33,7 @@ import {
   type HighlightAnchor,
 } from "./highlights";
 import { collectUsedFonts, type UsedFontReport } from "./usedFonts";
-import { ensureCoverFit } from "./coverFit";
+import { COVER_FIT_STYLE_ID, ensureCoverFit } from "./coverFit";
 import { ensureWordNoteStyle } from "./wordNotes";
 import type { HighlightRecord } from "./types";
 import { normHref } from "./types";
@@ -70,6 +70,8 @@ export type ChapterFrameHandle = {
   goToPage: (page: number) => void;
   /** Scroll so the chapter-internal fraction (0–1) sits on the current page. */
   goToFraction: (fraction: number) => void;
+  /** Scroll so `#fragment` sits on the current page (in-book links). */
+  goToFragment: (frag: string) => void;
 };
 
 type Props = {
@@ -108,6 +110,9 @@ type Props = {
   pendingHighlight: HighlightRecord | null;
   /** Called once the pending highlight has been located (clears it upstream). */
   onHighlightLocated: () => void;
+  /** In-book link fragment to jump to after this chapter lays out. */
+  pendingFragment?: string | null;
+  onFragmentLocated?: () => void;
   fontScale?: number;
 };
 
@@ -156,13 +161,14 @@ export function ensureHtmlLang(html: string, bookLang?: string | null): string {
 
 function paperBackground(doc: Document): string {
   const win = doc.defaultView;
-  if (!win) return "";
+  if (!win || !doc.body) return "";
+  if (doc.getElementById(COVER_FIT_STYLE_ID)) return "";
   const body = win.getComputedStyle(doc.body);
-  const transparent =
-    body.backgroundColor === "rgba(0, 0, 0, 0)" && body.backgroundImage === "none";
+  const color = body.backgroundColor;
+  const transparent = color === "rgba(0, 0, 0, 0)" || color === "transparent";
   return transparent
-    ? win.getComputedStyle(doc.documentElement).background
-    : body.background;
+    ? win.getComputedStyle(doc.documentElement).backgroundColor
+    : color;
 }
 
 type LayoutState = {
@@ -192,6 +198,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     bookPos,
     pendingHighlight,
     onHighlightLocated,
+    pendingFragment = null,
+    onFragmentLocated,
     fontScale = 100,
   },
   ref,
@@ -240,6 +248,10 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   bookPosRef.current = bookPos;
   const onLocatedRef = useRef(onHighlightLocated);
   onLocatedRef.current = onHighlightLocated;
+  const onFragLocatedRef = useRef(onFragmentLocated);
+  onFragLocatedRef.current = onFragmentLocated;
+  const pendingFragRef = useRef<string | null>(null);
+  pendingFragRef.current = pendingFragment ?? null;
   /** Locate request; `done` marks the first placement so a font reflow can
    *  then make one precise final jump before the request is cleared. */
   const pendingRef = useRef<{ rec: HighlightRecord; done: boolean } | null>(
@@ -267,6 +279,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
    *  hovered (mousemove keeps it anchored; leaving / page moves hide it). */
   const noteTipRef = useRef<HTMLDivElement>(null);
   const noteTipTargetRef = useRef<Element | null>(null);
+  const keepHlTip = useRef(false);
+  const hideHlTipTimer = useRef<number | null>(null);
   const [toolbar, setToolbar] = useState<ToolbarState>(null);
   const [toolbarBusy, setToolbarBusy] = useState(false);
   /** 新建划线的颜色（下笔即定；记住上次选择）。 */
@@ -373,14 +387,24 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       const span = char !== null ? spanAtChar(appliedRef.current, char) : null;
       const note = span ? (notesByIdRef.current[span.id] ?? "") : "";
       if (span && note) {
+        if (hideHlTipTimer.current !== null) {
+          window.clearTimeout(hideHlTipTimer.current);
+          hideHlTipTimer.current = null;
+        }
         if (hlHoverRef.current !== span.id) {
           hlHoverRef.current = span.id;
           placeNoteTip(pos.x, pos.y, note, true);
         } else {
           placeNoteTip(pos.x, pos.y); // move only
         }
-      } else if (hlHoverRef.current) {
-        hideNoteTip();
+      } else if (hlHoverRef.current && !keepHlTip.current) {
+        if (hideHlTipTimer.current !== null) {
+          window.clearTimeout(hideHlTipTimer.current);
+        }
+        hideHlTipTimer.current = window.setTimeout(() => {
+          hideHlTipTimer.current = null;
+          if (!keepHlTip.current) hideNoteTip();
+        }, 120);
       }
     });
   };
@@ -495,6 +519,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       return;
     }
     if (url.protocol !== "http:" && url.protocol !== "https:") return;
+    if (url.hostname !== "icedreader.localhost") return;
     // Rewritten book links are absolute under `http://icedreader.localhost/book/{id}/`;
     // strip that prefix to recover the spine-style path (e.g. text/part0008.html).
     let bookPath = url.pathname;
@@ -592,6 +617,12 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       : 0;
     applyPage(page, false);
     tryLocate();
+    const frag = pendingFragRef.current;
+    if (frag) {
+      jumpToFragment(doc, frag);
+      pendingFragRef.current = null;
+      onFragLocatedRef.current?.();
+    }
   };
 
   const goPage = (delta: number): "ok" | "before" | "after" => {
@@ -613,6 +644,10 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
         const st = layout.current;
         if (!st.metrics || st.pages <= 0) return;
         applyPage(pageIndexFromFraction(fraction, st.pages), true);
+      },
+      goToFragment: (frag: string) => {
+        const doc = iframeRef.current?.contentDocument;
+        if (doc) jumpToFragment(doc, frag);
       },
     }),
     [],
@@ -847,6 +882,11 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             };
             doc.addEventListener("mouseup", onDocMouseUp);
 
+            const routeBookAnchor = (e: Event, href: string) => {
+              e.preventDefault();
+              e.stopPropagation();
+              followBookLink(doc, href);
+            };
             const onDocClick = (e: MouseEvent) => {
               if (!live()) return;
               if (swallowDocClick.current) {
@@ -858,13 +898,42 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
               const target = e.target as Element | null;
               const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
               if (!anchor) return;
-              // Never let a book link navigate the iframe away from srcDoc;
-              // route it inside the reader instead.
-              e.preventDefault();
-              e.stopPropagation();
-              followBookLink(doc, anchor.getAttribute("href") ?? anchor.href);
+              routeBookAnchor(e, anchor.getAttribute("href") ?? anchor.href);
+            };
+            const onDocAuxClick = (e: MouseEvent) => {
+              if (!live()) return;
+              const target = e.target as Element | null;
+              const anchor = target?.closest?.("a[href]") as HTMLAnchorElement | null;
+              if (!anchor) return;
+              routeBookAnchor(e, anchor.getAttribute("href") ?? anchor.href);
+            };
+            const onDocKeyDown = (e: KeyboardEvent) => {
+              if (!live()) return;
+              if (e.key === "ArrowRight" || e.key === "PageDown") {
+                e.preventDefault();
+                turn(1);
+                return;
+              }
+              if (e.key === "ArrowLeft" || e.key === "PageUp") {
+                e.preventDefault();
+                turn(-1);
+                return;
+              }
+              if (e.key === "Escape" || e.code === "F11" || e.key === "F11") {
+                e.preventDefault();
+                window.dispatchEvent(
+                  new KeyboardEvent("keydown", {
+                    key: e.key,
+                    code: e.code,
+                    bubbles: true,
+                    cancelable: true,
+                  }),
+                );
+              }
             };
             doc.addEventListener("click", onDocClick);
+            doc.addEventListener("auxclick", onDocAuxClick);
+            doc.addEventListener("keydown", onDocKeyDown);
 
             // Word-note hover tooltip: a dark bubble (black bg, light text) in
             // the parent-page DOM. The marker carries its full note text in
@@ -930,6 +999,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
               doc.removeEventListener("wheel", onDocWheel);
               doc.removeEventListener("mouseup", onDocMouseUp);
               doc.removeEventListener("click", onDocClick);
+              doc.removeEventListener("auxclick", onDocAuxClick);
+              doc.removeEventListener("keydown", onDocKeyDown);
               doc.removeEventListener("mouseover", onDocMouseOver);
               doc.removeEventListener("mousemove", onDocMouseMove);
               hideNoteTip();
@@ -941,7 +1012,23 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       </div>
 
       {/* Word-note hover bubble (parent-page DOM, viewport-fixed, dark). */}
-      <div className="note-tip" ref={noteTipRef} role="tooltip" />
+      <div
+        className="note-tip"
+        ref={noteTipRef}
+        role="tooltip"
+        onWheel={(e) => e.stopPropagation()}
+        onMouseEnter={() => {
+          keepHlTip.current = true;
+          if (hideHlTipTimer.current !== null) {
+            window.clearTimeout(hideHlTipTimer.current);
+            hideHlTipTimer.current = null;
+          }
+        }}
+        onMouseLeave={() => {
+          keepHlTip.current = false;
+          hideNoteTip();
+        }}
+      />
 
       {toolbar && (
         <div

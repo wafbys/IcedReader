@@ -122,9 +122,14 @@ html.${FLOW_STYLE_ID} {
   min-width: 0 !important;
 }
 html.${FLOW_STYLE_ID} body {
+  box-sizing: border-box !important;
   margin: 0 !important;
+  border: 0 !important;
+  position: static !important;
   max-height: none !important;
   max-width: none !important;
+  min-height: 0 !important;
+  min-width: 0 !important;
 }
 html.${FLOW_STYLE_ID} img,
 html.${FLOW_STYLE_ID} svg,

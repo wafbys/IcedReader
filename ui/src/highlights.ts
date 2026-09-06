@@ -102,8 +102,17 @@ export function pointOfChar(
   prefix: number[],
   char: number,
 ): TextPoint | null {
+  if (texts.length === 0) return null;
   const total = prefix[texts.length];
   const c = Math.min(Math.max(0, char), total);
+  if (c >= total) {
+    for (let i = texts.length - 1; i >= 0; i--) {
+      if (texts[i].data.length > 0 || i === 0) {
+        return { seq: i, offset: texts[i].data.length };
+      }
+    }
+    return null;
+  }
   let lo = 0;
   let hi = texts.length;
   while (lo < hi) {

@@ -38,6 +38,15 @@ impl ProgressStore {
         Self::default()
     }
 
+    /// Clone records without the file path (callers drop the store lock, then
+    /// open epubs). Writes on the snapshot are not persisted.
+    pub fn snapshot(&self) -> Self {
+        Self {
+            path: None,
+            entries: self.entries.clone(),
+        }
+    }
+
     pub fn open(path: PathBuf) -> Result<Self, CoreError> {
         let entries = if path.exists() {
             let bytes = fs::read(&path).map_err(|e| CoreError::msg(e.to_string()))?;

@@ -77,20 +77,32 @@ pub fn expand_word_notes(html: &str, doc_base: &str) -> String {
             continue;
         }
         out.push_str(&html[open..open_end]);
-        // Unclosed container swallows the rest of the document; bail verbatim.
-        let Some(close) = find_close_tag(html, open_end, tag) else {
-            out.push_str(&html[open_end..]);
-            return out;
+        // Explicit `</tag>`, else HTML5 implied close: next p/h1–h6 (or EOF).
+        // Do not abort the rest of the document on a missing `</p>`.
+        let (body_end, after, copy_close) = match find_close_tag(html, open_end, tag) {
+            Some(close) => {
+                let close_end = tag_end(html, close).unwrap_or(close + tag.len() + 3);
+                (close, close_end, true)
+            }
+            None if tag == "p" => match next_container(html, open_end) {
+                Some((at, _)) => (at, at, false),
+                None => (html.len(), html.len(), false),
+            },
+            None => {
+                out.push_str(&html[open_end..]);
+                return out;
+            }
         };
-        let body = &html[open_end..close];
+        let body = &html[open_end..body_end];
         let (converted, notes) = convert_paragraph(body, &mut seq, doc_base);
         out.push_str(&converted);
-        let close_end = tag_end(html, close).unwrap_or(close + tag.len() + 3);
-        out.push_str(&html[close..close_end]);
+        if copy_close {
+            out.push_str(&html[body_end..after]);
+        }
         if !notes.is_empty() {
             out.push_str(&note_block(&notes, doc_base));
         }
-        pos = close_end;
+        pos = after;
     }
     out.push_str(&html[pos..]);
     out
@@ -172,7 +184,7 @@ fn convert_paragraph(body: &str, seq: &mut u64, doc_base: &str) -> (String, Vec<
         };
         out.push_str(&body[pos..start]);
         let tag = &body[start..tag_end];
-        if !contains_ci(tag, NOTE_ATTR) || is_self_closing(body, tag_end) {
+        if !contains_ci(tag, NOTE_ATTR) {
             out.push_str(tag);
             pos = tag_end;
             continue;
@@ -182,13 +194,16 @@ fn convert_paragraph(body: &str, seq: &mut u64, doc_base: &str) -> (String, Vec<
             pos = tag_end;
             continue;
         };
-        // Locate the matching </span>, tolerating nested spans.
-        let (inner_end, span_end) = match span_close(body, tag_end) {
-            Some((a, b)) => (a, b),
-            None => {
-                out.push_str(tag);
-                pos = tag_end;
-                continue;
+        let (inner, span_end) = if is_self_closing(body, tag_end) {
+            ("", tag_end)
+        } else {
+            match span_close(body, tag_end) {
+                Some((a, b)) => (&body[tag_end..a], b),
+                None => {
+                    out.push_str(tag);
+                    pos = tag_end;
+                    continue;
+                }
             }
         };
         let label = notes.len() + 1;
@@ -198,7 +213,6 @@ fn convert_paragraph(body: &str, seq: &mut u64, doc_base: &str) -> (String, Vec<
             seq: *seq,
             text,
         });
-        let inner = &body[tag_end..inner_end];
         let note_seq = notes.last().unwrap().seq;
         let marker_id = format!("{MARKER_ID_PREFIX}{note_seq}");
         let note_href = format!("{doc_base}#wr-note-{note_seq}");
@@ -391,44 +405,42 @@ fn tag_name(rest: &str) -> (usize, String) {
 }
 
 /// Decoded value of attribute `name` inside a single tag, or `None`.
+/// The name is matched case-insensitively; the value is sliced from the
+/// original tag so Latin letters in the note text keep their case.
 fn attr_value(tag: &str, name: &str) -> Option<String> {
     let lower = tag.to_ascii_lowercase();
+    let needle = name.to_ascii_lowercase();
     let mut search = 0usize;
     while search < lower.len() {
-        let rel = lower[search..].find(name)?;
+        let rel = lower[search..].find(&needle)?;
         let at = search + rel;
-        let after = &lower[at + name.len()..];
-        let after_trim = after.trim_start();
-        if after_trim.starts_with('=') {
-            let after_eq = after_trim[1..].trim_start();
-            let mut quote: Option<char> = None;
-            let mut end = 0usize;
-            for (i, c) in after_eq.char_indices() {
-                if i == 0 && (c == '"' || c == '\'') {
-                    quote = Some(c);
-                    continue;
-                }
-                match quote {
-                    Some(q) if c == q => {
-                        end = i;
-                        break;
-                    }
-                    Some(_) => {}
-                    None if c.is_ascii_whitespace() || c == '>' => {
-                        end = i;
-                        break;
-                    }
-                    None => {}
-                }
-            }
-            let raw = &after_eq[..end];
-            let raw = match quote {
-                Some(q) if raw.starts_with(q) && raw.len() >= 1 => &raw[q.len_utf8()..],
-                _ => raw,
-            };
-            return Some(decode_entities(raw));
+        let after_name = at + needle.len();
+        let rest = &lower[after_name..];
+        let ws = rest.len() - rest.trim_start().len();
+        let eq_at = after_name + ws;
+        if !lower[eq_at..].starts_with('=') {
+            search = after_name;
+            continue;
         }
-        search = at + name.len();
+        let after_eq = eq_at + 1;
+        let rest2 = &lower[after_eq..];
+        let ws2 = rest2.len() - rest2.trim_start().len();
+        let val_at = after_eq + ws2;
+        let bytes = lower.as_bytes();
+        let (quote, content_start) = match bytes.get(val_at) {
+            Some(q @ (b'"' | b'\'')) => (Some(*q), val_at + 1),
+            _ => (None, val_at),
+        };
+        let mut end = content_start;
+        while end < bytes.len() {
+            let c = bytes[end];
+            match quote {
+                Some(q) if c == q => break,
+                None if c.is_ascii_whitespace() || c == b'>' => break,
+                _ => end += 1,
+            }
+        }
+        return Some(decode_entities(&tag[content_start..end]));
     }
     None
 }
@@ -594,9 +606,28 @@ mod tests {
     }
 
     #[test]
-    fn unclosed_paragraph_is_left_verbatim() {
+    fn unclosed_paragraph_still_expands_to_eof() {
         let html = r#"<p>开头<span data-wr-footernote="n"></span>没有闭合"#;
-        assert_eq!(expand_word_notes(html, DOC_BASE), html);
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains("data-note=\"n\""), "{out}");
+        assert!(out.contains("class=\"wr-note\""), "{out}");
+    }
+
+    #[test]
+    fn implied_p_close_before_heading_continues() {
+        let html = r#"<p>上<span data-wr-footernote="See Rome."></span><h1>标<span data-wr-footernote="B"></span></h1>"#;
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains("data-note=\"See Rome.\""), "{out}");
+        assert!(out.contains("data-note=\"B\""), "{out}");
+        assert_eq!(out.matches("<div class=\"wr-notes\">").count(), 2, "{out}");
+    }
+
+    #[test]
+    fn self_closing_note_span_expands() {
+        let html = r#"<p>x<span data-wr-footernote="n" /></p>"#;
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains("data-note=\"n\""), "{out}");
+        assert!(!out.contains("data-wr-footernote"), "{out}");
     }
 
     #[test]

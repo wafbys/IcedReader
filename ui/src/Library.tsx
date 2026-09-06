@@ -275,7 +275,7 @@ export default function Library({
             >
               <strong>{entry.title}</strong>
               <span>
-                {entry.authors.length ? entry.authors.join("、") : "未知作者"}
+                {entry.authors.length ? entry.authors.join(", ") : "未知作者"}
               </span>
               <span className="lib-progress">{progressLabel(entry)}</span>
               {entry.duplicates.length > 0 && (

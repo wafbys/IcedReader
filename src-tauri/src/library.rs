@@ -110,6 +110,14 @@ pub fn list_library_cached(
             if let Ok(meta_path) = meta_path_for(dir, &entry.file_name) {
                 if let Some(meta) = read_meta_file(&meta_path) {
                     entry.title = resolved_title(Some(&meta), &entry.title);
+                    if !meta.author.trim().is_empty() {
+                        entry.authors = meta
+                            .author
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
                 }
             }
             entry
@@ -370,36 +378,56 @@ pub fn clean_file_stem(input: &str) -> String {
     stem
 }
 
-/// Pick a stem that does not collide with any existing library file, using
-/// the same `-2`, `-3`… numbering the importer's aliases use (a `-N` copy and
-/// the plain name are one book, AGENTS 进度键). Case-insensitive, like NTFS.
+/// Pick a stem that does not collide with any existing library file.
+/// Collision copies use ` (2)`, ` (3)`… — not `-N`, which `lib:` progress
+/// keys treat as the same book. Case-insensitive, like NTFS.
 /// `preferred` is already clean (see [`clean_file_stem`]).
+#[allow(dead_code)]
 pub fn unique_stem(dir: &Path, preferred: &str) -> String {
+    unique_stem_ignoring(dir, preferred, &[])
+}
+
+/// Like [`unique_stem`], but `ignore` file names (the book being renamed)
+/// do not count as taken, so a re-save does not bump `三体 (2)` to `(3)`.
+pub fn unique_stem_ignoring(dir: &Path, preferred: &str, ignore: &[&str]) -> String {
     let Ok(read) = fs::read_dir(dir) else {
         return preferred.to_string();
     };
+    let ignore_lower: std::collections::HashSet<String> =
+        ignore.iter().map(|n| n.to_lowercase()).collect();
     let taken: std::collections::HashSet<String> = read
         .filter_map(|item| item.ok())
         .filter(|item| item.path().is_file())
         .filter_map(|item| item.file_name().to_str().map(|n| n.to_lowercase()))
+        .filter(|name| !ignore_lower.contains(name))
         .filter(|name| name.ends_with(".epub") || name.ends_with(".md"))
         .collect();
-    let preferred_lower = format!("{preferred}.epub").to_lowercase();
-    if !taken.contains(&preferred_lower)
-        && !taken.contains(&format!("{preferred}.md").to_lowercase())
-    {
+    if !stem_taken(&taken, preferred) {
         return preferred.to_string();
     }
     let mut n = 2;
     loop {
-        let candidate = format!("{preferred}-{n}");
-        let candidate_lower = format!("{candidate}.epub").to_lowercase();
-        if !taken.contains(&candidate_lower)
-            && !taken.contains(&format!("{candidate}.md").to_lowercase())
-        {
+        let candidate = format!("{preferred} ({n})");
+        if !stem_taken(&taken, &candidate) {
             return candidate;
         }
         n += 1;
+    }
+}
+
+fn stem_taken(taken: &std::collections::HashSet<String>, stem: &str) -> bool {
+    let s = stem.to_lowercase();
+    taken.contains(&format!("{s}.epub"))
+        || taken.contains(&format!("{s}.md"))
+        || taken.contains(&format!("{s}.notes.md"))
+}
+
+/// File stem of a library epub name (`Foo.EPUB` → `Foo`).
+pub fn epub_stem(file_name: &str) -> &str {
+    if file_name.len() >= 5 && file_name[file_name.len() - 5..].eq_ignore_ascii_case(".epub") {
+        &file_name[..file_name.len() - 5]
+    } else {
+        file_name
     }
 }
 
@@ -425,7 +453,11 @@ pub fn rename_book_files(
     if !epub_old.is_file() {
         return Err("book not in library".into());
     }
-    let epub_new = dir.join(format!("{new_stem}.epub"));
+    let new_name = format!("{new_stem}.epub");
+    if old_file_name.eq_ignore_ascii_case(&new_name) {
+        return Ok(old_file_name.to_string());
+    }
+    let epub_new = dir.join(&new_name);
     if epub_new.is_file() {
         return Err(format!("target already exists: {new_stem}.epub"));
     }
@@ -443,7 +475,7 @@ pub fn rename_book_files(
             let _ = fs::rename(&notes_old, &notes_new);
         }
     }
-    Ok(format!("{new_stem}.epub"))
+    Ok(new_name)
 }
 
 /// Delete one library book file. Only a plain file name inside `dir` is
@@ -685,10 +717,15 @@ mod tests {
         fs::write(root.join("三体 - 刘慈欣.epub"), b"a").unwrap();
         fs::write(root.join("三体 - 刘慈欣-2.md"), b"b").unwrap();
         fs::write(root.join("OTHER.EPUB"), b"c").unwrap();
-        // .epub collision → -2; -2.md collision → -3 (case-insensitive).
-        assert_eq!(unique_stem(&root, "三体 - 刘慈欣"), "三体 - 刘慈欣-3");
-        assert_eq!(unique_stem(&root, "other"), "other-2");
-        assert_eq!(unique_stem(&root, "三体 - 刘慈欣-2"), "三体 - 刘慈欣-2-2");
+        // .epub collision → (2); existing (2) → (3). `-N` is not used (lib: aliases).
+        assert_eq!(unique_stem(&root, "三体 - 刘慈欣"), "三体 - 刘慈欣 (2)");
+        assert_eq!(unique_stem(&root, "other"), "other (2)");
+        fs::write(root.join("三体 - 刘慈欣 (2).epub"), b"d").unwrap();
+        assert_eq!(unique_stem(&root, "三体 - 刘慈欣"), "三体 - 刘慈欣 (3)");
+        assert_eq!(
+            unique_stem_ignoring(&root, "三体 - 刘慈欣", &["三体 - 刘慈欣.epub"]),
+            "三体 - 刘慈欣"
+        );
     }
 
     #[test]

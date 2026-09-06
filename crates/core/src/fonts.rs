@@ -187,6 +187,29 @@ pub fn rewrite_css_font_families(input: &str) -> String {
             i = val_end;
             continue;
         }
+        if is_font_shorthand_at(&lower, i) {
+            out.push_str(&input[i..i + 4]);
+            i += 4;
+            let ws_start = i;
+            while i < n && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= n || bytes[i] != b':' {
+                out.push_str(&input[ws_start..i]);
+                continue;
+            }
+            out.push_str(&input[ws_start..=i]);
+            i += 1;
+            let pad_start = i;
+            while i < n && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            out.push_str(&input[pad_start..i]);
+            let val_end = scan_declaration_value(bytes, i);
+            out.push_str(&map_font_shorthand_value(&input[i..val_end]));
+            i = val_end;
+            continue;
+        }
         let ch = input[i..].chars().next().expect("index on char boundary");
         out.push(ch);
         i += ch.len_utf8();
@@ -394,6 +417,102 @@ fn is_font_family_at(lower: &str, i: usize) -> bool {
         return false;
     }
     true
+}
+
+fn is_font_shorthand_at(lower: &str, i: usize) -> bool {
+    if i + 4 > lower.len() || &lower[i..i + 4] != "font" {
+        return false;
+    }
+    let bytes = lower.as_bytes();
+    if i > 0 && is_ident_char(bytes[i - 1]) {
+        return false;
+    }
+    let after = i + 4;
+    if after < bytes.len() && is_ident_char(bytes[after]) {
+        return false;
+    }
+    true
+}
+
+fn map_font_shorthand_value(value: &str) -> String {
+    let trimmed = value.trim_end();
+    let (main, important) = split_important(trimmed);
+    let main = main.trim();
+    if main.is_empty() || is_css_wide_keyword(main) {
+        return trimmed.to_string();
+    }
+    let Some(at) = family_start_in_font_shorthand(main) else {
+        return trimmed.to_string();
+    };
+    let prefix = &main[..at];
+    let mapped = map_font_family_value(&main[at..]);
+    if important && !mapped.contains("!important") {
+        format!("{prefix}{mapped} !important")
+    } else {
+        format!("{prefix}{mapped}")
+    }
+}
+
+fn family_start_in_font_shorthand(value: &str) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let start = i;
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            return Some(start);
+        }
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'/' {
+            i += 1;
+        }
+        let tok = value[start..i].trim_end_matches(',');
+        if is_font_size_token(tok) {
+            if i < bytes.len() && bytes[i] == b'/' {
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+            }
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            return Some(i.min(bytes.len()));
+        }
+        if i < bytes.len() && bytes[i] == b'/' {
+            i += 1;
+        }
+    }
+    None
+}
+
+fn is_font_size_token(tok: &str) -> bool {
+    let t = tok.to_ascii_lowercase();
+    if t.chars().all(|c| c.is_ascii_digit()) {
+        // Bare 100–900 is font-weight, not a size.
+        return false;
+    }
+    matches!(
+        t.as_str(),
+        "xx-small"
+            | "x-small"
+            | "small"
+            | "medium"
+            | "large"
+            | "x-large"
+            | "xx-large"
+            | "xxx-large"
+            | "smaller"
+            | "larger"
+            | "math"
+    ) || t.starts_with(|c: char| c.is_ascii_digit() || c == '.')
 }
 
 fn map_font_family_value(value: &str) -> String {
@@ -607,6 +726,16 @@ h1 { font-family: "PingFang SC", sans-serif !important; }
             out.contains("h1 { font-family: \"IcedReaderSans\" !important; }"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn rewrite_maps_font_shorthand() {
+        let css = r#"p { font: 12px/1.5 "SimSun", serif; }"#;
+        let out = rewrite_css_font_families(css);
+        assert!(out.contains("font: 12px/1.5 \"IcedReaderSerif\""), "{out}");
+        let css = r#"p { font: italic 700 14px sans-serif; }"#;
+        let out = rewrite_css_font_families(css);
+        assert!(out.contains("font: italic 700 14px \"IcedReaderSans\""), "{out}");
     }
 
     #[test]

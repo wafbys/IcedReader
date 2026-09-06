@@ -75,13 +75,31 @@ impl AnnotationStore {
         })
     }
 
-    /// Highlights for one book, in insertion order.
+    /// Highlights for one book, in insertion order. `lib:` keys include stem
+    /// aliases (`书名-2` ≡ `书名`), matching [`crate::progress::ProgressStore`].
     pub fn list(&self, key: &str) -> Vec<Highlight> {
-        self.by_book.get(key).cloned().unwrap_or_default()
+        if !key.starts_with("lib:") {
+            return self.by_book.get(key).cloned().unwrap_or_default();
+        }
+        let mut keys: Vec<&String> = self
+            .by_book
+            .keys()
+            .filter(|k| same_book(k, key))
+            .collect();
+        keys.sort();
+        let mut out = Vec::new();
+        for k in keys {
+            if let Some(list) = self.by_book.get(k) {
+                out.extend(list.iter().cloned());
+            }
+        }
+        out
     }
 
-    /// Insert or replace (same id) one highlight. Order is preserved.
+    /// Insert or replace (same id) one highlight. `lib:` writes fold alias
+    /// lists into `key` so a numbered copy and the plain name stay one book.
     pub fn add(&mut self, key: String, highlight: Highlight) -> Result<(), CoreError> {
+        self.fold_lib_aliases_into(&key);
         let list = self.by_book.entry(key).or_default();
         if let Some(slot) = list.iter_mut().find(|h| h.id == highlight.id) {
             *slot = highlight;
@@ -91,18 +109,72 @@ impl AnnotationStore {
         self.persist()
     }
 
-    /// Remove one highlight; returns whether anything was removed.
+    /// Remove one highlight; `lib:` looks across stem aliases.
     pub fn remove(&mut self, key: &str, id: &str) -> Result<bool, CoreError> {
-        let Some(list) = self.by_book.get_mut(key) else {
+        let keys: Vec<String> = if key.starts_with("lib:") {
+            self.by_book
+                .keys()
+                .filter(|k| same_book(k, key))
+                .cloned()
+                .collect()
+        } else if self.by_book.contains_key(key) {
+            vec![key.to_string()]
+        } else {
             return Ok(false);
         };
-        let before = list.len();
-        list.retain(|h| h.id != id);
-        let removed = list.len() != before;
+        if keys.is_empty() {
+            return Ok(false);
+        }
+        let mut removed = false;
+        for k in keys {
+            let Some(list) = self.by_book.get_mut(&k) else {
+                continue;
+            };
+            let before = list.len();
+            list.retain(|h| h.id != id);
+            if list.len() != before {
+                removed = true;
+            }
+            if list.is_empty() {
+                self.by_book.remove(&k);
+            }
+        }
         if removed {
             self.persist()?;
         }
         Ok(removed)
+    }
+
+    fn fold_lib_aliases_into(&mut self, canonical: &str) {
+        if !canonical.starts_with("lib:") {
+            return;
+        }
+        let mut extras: Vec<String> = self
+            .by_book
+            .keys()
+            .filter(|k| same_book(k, canonical) && *k != canonical)
+            .cloned()
+            .collect();
+        if extras.is_empty() {
+            return;
+        }
+        extras.sort();
+        let mut merged: Vec<Highlight> = Vec::new();
+        for k in extras {
+            if let Some(list) = self.by_book.remove(&k) {
+                merged.extend(list);
+            }
+        }
+        if merged.is_empty() {
+            return;
+        }
+        let list = self.by_book.entry(canonical.to_string()).or_default();
+        for h in merged {
+            if list.iter().any(|x| x.id == h.id) {
+                continue;
+            }
+            list.push(h);
+        }
     }
 
     /// Re-key one book's highlights after its file was renamed in the
@@ -269,6 +341,23 @@ mod tests {
         assert!(store.remove_book("id:a").unwrap());
         assert!(store.list("id:a").is_empty());
         assert_eq!(store.list("id:b").len(), 1);
+    }
+
+    #[test]
+    fn lib_aliases_share_list_add_and_remove() {
+        let mut store = AnnotationStore::in_memory();
+        store.add("lib:foo-2.epub".into(), hl("a", 0, 0)).unwrap();
+        let listed = store.list("lib:foo.epub");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "a");
+        store.add("lib:foo.epub".into(), hl("b", 1, 0)).unwrap();
+        let listed = store.list("lib:foo-2.epub");
+        let mut ids: Vec<_> = listed.iter().map(|h| h.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["a", "b"]);
+        assert!(store.remove("lib:foo.epub", "a").unwrap());
+        assert_eq!(store.list("lib:foo-2.epub").len(), 1);
+        assert_eq!(store.list("lib:foo-2.epub")[0].id, "b");
     }
 
     #[test]

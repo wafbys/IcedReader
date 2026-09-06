@@ -3,7 +3,8 @@
 mod footnotes;
 mod html;
 
-use footnotes::expand_word_notes;
+pub use footnotes::expand_word_notes;
+pub use html::{href_file_key, slice_chapter, split_href};
 
 use std::path::Path;
 
@@ -15,7 +16,7 @@ use rbook::epub::rewrite::{EpubRewriteOptions, PathRewrite};
 use rbook::epub::toc::EpubTocEntry;
 use rbook::epub::Epub;
 
-use html::{href_file_key, rewrite_html_paths, slice_chapter, split_href};
+use html::rewrite_html_paths;
 
 pub struct EpubOpener;
 

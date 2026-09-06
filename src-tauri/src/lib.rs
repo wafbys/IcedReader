@@ -98,7 +98,11 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
     if !file_name.is_empty() {
         let need = book_signals::read_all()
             .get(&file_name)
-            .map(|s| s.rev != rev || s.chapter_chars.is_empty())
+            .map(|s| {
+                s.rev != rev
+                    || s.chapter_chars.is_empty()
+                    || s.chapter_chars_kind != book_signals::CHAPTER_CHARS_PER_SPINE
+            })
             .unwrap_or(true);
         if need {
             let images = iced_reader_epub::image_stats(&imported).unwrap_or((0, 0, false));
@@ -293,12 +297,6 @@ fn delete_annotation(
     id: String,
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
-    state
-        .annotations
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(&key, &id)
-        .map_err(|e| e.to_string())?;
     let text = read_notes_text(&file_name);
     if !text.is_empty() {
         let now = unix_now();
@@ -307,6 +305,12 @@ fn delete_annotation(
             write_notes_text(&file_name, &updated)?;
         }
     }
+    state
+        .annotations
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&key, &id)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -528,7 +532,10 @@ fn clear_font(slot: String, state: tauri::State<AppState>) -> Result<FontSetting
 #[tauri::command]
 fn list_library(state: tauri::State<AppState>) -> Result<Vec<library::LibraryEntry>, String> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
-    let progress = state.progress.lock().map_err(|e| e.to_string())?;
+    let progress = {
+        let store = state.progress.lock().map_err(|e| e.to_string())?;
+        store.snapshot()
+    };
     let mut cache = state.library_meta.lock().map_err(|e| e.to_string())?;
     Ok(library::list_library_cached(&dir, &progress, &mut cache))
 }
@@ -627,12 +634,18 @@ fn set_book_meta(
         original_title: None,
     };
     let display_title = resolved_title(Some(&staged), &profile.title);
-    let old_stem = file_name.strip_suffix(".epub").unwrap_or(&file_name);
+    let old_stem = library::epub_stem(&file_name);
     let desired_stem = library::clean_file_stem(&display_title);
-    let needs_rename = !old_stem.eq_ignore_ascii_case(&desired_stem);
+    let md_name = format!("{old_stem}.md");
+    let notes_name = format!("{old_stem}.notes.md");
+    let target_stem = library::unique_stem_ignoring(
+        &dir,
+        &desired_stem,
+        &[file_name.as_str(), md_name.as_str(), notes_name.as_str()],
+    );
+    let needs_rename = !old_stem.eq_ignore_ascii_case(&target_stem);
 
     let (final_file_name, final_md_path) = if needs_rename {
-        let target_stem = library::unique_stem(&dir, &desired_stem);
         let new_name = library::rename_book_files(&dir, &file_name, &target_stem)?;
         // `id:` / `path:` progress keys survive a rename untouched; only the
         // `lib:` key (which embeds the file name) must be carried over, along

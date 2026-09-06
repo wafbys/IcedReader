@@ -1406,6 +1406,9 @@ body {
   overflow: auto;
   white-space: pre-wrap;
 }
+.note-tip.hl.visible {
+  pointer-events: auto;
+}
 
 /* 浅色卡内的通用 paint/danger 按钮（hl-note-card / jump-pop 等）。 */
 .btn.paint {

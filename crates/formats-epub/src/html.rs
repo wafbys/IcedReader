@@ -53,11 +53,10 @@ pub fn rewrite_html_paths(html: &str, resource_base: &str, chapter_file: &str) -
             i = end;
             continue;
         }
-        let Some(rel) = html[i + 1..].find('>') else {
+        let Some(tag_end) = tag_close(html, i) else {
             out.push_str(&html[i..]);
             break;
         };
-        let tag_end = i + 1 + rel + 1;
         out.push_str(&rewrite_tag(&html[i..tag_end], resource_base, chapter_file));
         i = tag_end;
     }
@@ -335,6 +334,17 @@ fn find_element_start(html: &str, id: &str) -> Option<usize> {
     if id.is_empty() {
         return None;
     }
+    find_element_start_exact(html, id).or_else(|| {
+        let decoded = percent_decode(id);
+        if decoded != id && !decoded.is_empty() {
+            find_element_start_exact(html, &decoded)
+        } else {
+            None
+        }
+    })
+}
+
+fn find_element_start_exact(html: &str, id: &str) -> Option<usize> {
     let mut search = 0;
     while let Some(rel) = html[search..].find(id) {
         let at = search + rel;
@@ -342,6 +352,56 @@ fn find_element_start(html: &str, id: &str) -> Option<usize> {
             return html[..at].rfind('<');
         }
         search = at + id.len();
+    }
+    None
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(a), Some(b)) = (from_hex(bytes[i + 1]), from_hex(bytes[i + 2])) {
+                out.push((a << 4) | b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn from_hex(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Index just past the matching `>` of the tag that starts at `from` (`<`).
+/// Quote-aware so `>` inside attribute values does not end the tag.
+fn tag_close(html: &str, from: usize) -> Option<usize> {
+    let bytes = html.as_bytes();
+    let mut i = from;
+    let mut quote: u8 = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => {
+                if quote == 0 {
+                    quote = bytes[i];
+                } else if quote == bytes[i] {
+                    quote = 0;
+                }
+            }
+            b'>' if quote == 0 => return Some(i + 1),
+            _ => {}
+        }
+        i += 1;
     }
     None
 }
@@ -401,7 +461,7 @@ fn find_body_open_end(html: &str) -> usize {
         if bytes[i] == b'<' && html[i..i + 5].eq_ignore_ascii_case("<body") {
             let next = bytes.get(i + 5).copied().unwrap_or(0);
             if next == b'>' || is_space(next) || next == b'/' {
-                return html[i..].find('>').map(|rel| i + rel + 1).unwrap_or(0);
+                return tag_close(html, i).unwrap_or(0);
             }
         }
         i += 1;
@@ -442,23 +502,14 @@ fn unclosed_opening_tags(html: &str) -> Vec<String> {
             {
                 stack.truncate(idx);
             }
-            i = html[i..]
-                .find('>')
-                .map(|rel| i + rel + 1)
-                .unwrap_or(html.len());
+            i = tag_close(html, i).unwrap_or(html.len());
             continue;
         }
         if html[i..].starts_with("<!") || html[i..].starts_with("<?") {
-            i = html[i..]
-                .find('>')
-                .map(|rel| i + rel + 1)
-                .unwrap_or(html.len());
+            i = tag_close(html, i).unwrap_or(html.len());
             continue;
         }
-        let tag_end = html[i..]
-            .find('>')
-            .map(|rel| i + rel + 1)
-            .unwrap_or(html.len());
+        let tag_end = tag_close(html, i).unwrap_or(html.len());
         let tag = &html[i..tag_end];
         let name = start_tag_name(tag).to_ascii_lowercase();
         let self_close = tag.trim_end().ends_with("/>") || VOID_TAGS.contains(&name.as_str());
@@ -534,6 +585,17 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_ignores_gt_inside_quoted_attr() {
+        let html = r#"<img alt="n > 0" src="pic.png">"#;
+        let out = rewrite_html_paths(html, "http://icedreader.localhost/book/t/", "/OPS/ch.html");
+        assert!(
+            out.contains("http://icedreader.localhost/book/t/OPS/pic.png"),
+            "{out}"
+        );
+        assert!(out.contains("alt=\"n > 0\""), "{out}");
+    }
+
+    #[test]
     fn slice_between_ids() {
         let html = r#"<html><head><title>t</title></head>
 <body class="b"><div class="wrap">
@@ -563,5 +625,17 @@ mod tests {
         let out = slice_chapter(html, None, Some("c1"));
         assert!(out.contains("front"), "{out}");
         assert!(!out.contains("One"), "{out}");
+    }
+
+    #[test]
+    fn slice_matches_percent_encoded_fragment() {
+        let html = r#"<html><body><h1 id="英租界">英</h1><p>aaa</p><h1 id="下">下</h1><p>bbb</p></body></html>"#;
+        let encoded = percent_decode("%E8%8B%B1%E7%A7%9F%E7%95%8C");
+        assert_eq!(encoded, "英租界");
+        let a = slice_chapter(html, Some("%E8%8B%B1%E7%A7%9F%E7%95%8C"), Some("%E4%B8%8B"));
+        assert!(a.contains("英"), "{a}");
+        assert!(a.contains("aaa"), "{a}");
+        assert!(!a.contains(">下<"), "{a}");
+        assert!(!a.contains("bbb"), "{a}");
     }
 }

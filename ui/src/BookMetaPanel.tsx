@@ -24,11 +24,14 @@ export function joinPreview(f: {
   let head = title;
   const subtitle = f.subtitle.trim();
   if (subtitle) head += " _ " + subtitle;
+  const foldPeople = (s: string) =>
+    s.replace(/\u3001/g, ", ").replace(/\s+/g, " ").trim();
   const parts = [head];
-  for (const v of [f.volume.trim(), f.author.trim()]) {
-    if (v) parts.push(v);
-  }
-  const translator = f.translator.trim();
+  const volume = f.volume.trim();
+  if (volume) parts.push(volume);
+  const author = foldPeople(f.author);
+  if (author) parts.push(author);
+  const translator = foldPeople(f.translator);
   if (translator) parts.push(/^译者/.test(translator) ? translator : `译者 ${translator}`);
   for (const v of [f.year.trim(), f.publisher.trim()]) {
     if (v) parts.push(v);

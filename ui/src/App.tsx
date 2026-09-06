@@ -83,6 +83,7 @@ export default function App() {
   const [pendingHighlight, setPendingHighlight] = useState<HighlightRecord | null>(
     null,
   );
+  const [pendingFragment, setPendingFragment] = useState<string | null>(null);
   const [pageInfo, setPageInfo] = useState<PageInfo>({
     page: 0,
     pages: 1,
@@ -230,15 +231,19 @@ export default function App() {
   }, []);
 
   /** 读回 notes.md 的备注（打开书后调用；书外改过的备注在此刷新）。 */
+  const notesGen = useRef(0);
   const loadNotes = useCallback(async (fileName: string) => {
+    const gen = ++notesGen.current;
     try {
       const list = await invoke<{ id: string; note: string }[]>("read_notes", {
         fileName,
       });
+      if (gen !== notesGen.current) return;
       const map: Record<string, string> = {};
       for (const x of list) map[x.id] = x.note;
       setNotesById(map);
     } catch {
+      if (gen !== notesGen.current) return;
       setNotesById({});
     }
   }, []);
@@ -351,7 +356,12 @@ export default function App() {
         }
       })
       .catch((err) => {
-        if (!cancelled) setError(String(err));
+        if (!cancelled) {
+          setChapterHtml("");
+          setPublisherFonts(null);
+          setUsedFonts(null);
+          setError(String(err));
+        }
       });
     return () => {
       cancelled = true;
@@ -584,6 +594,9 @@ export default function App() {
       void persistReadingPosition().then(() => {
         lastFraction.current = fraction;
         setRestoreFraction(fraction);
+        setChapterHtml("");
+        setPublisherFonts(null);
+        setUsedFonts(null);
         setIndex(next);
       });
     },
@@ -604,15 +617,26 @@ export default function App() {
       const items = bookRef.current?.spine ?? [];
       const i = chapterIndex(items, href);
       if (i < 0) return;
+      const hashAt = href.indexOf("#");
+      const frag =
+        hashAt >= 0 ? href.slice(hashAt + 1).split("?")[0] : "";
+      setPendingFragment(frag || null);
       if (i === indexRef.current) {
-        lastFraction.current = 0;
-        setRestoreFraction(0);
-        frameRef.current?.goToPage(0);
+        if (frag) {
+          frameRef.current?.goToFragment(frag);
+        } else {
+          lastFraction.current = 0;
+          setRestoreFraction(0);
+          frameRef.current?.goToPage(0);
+        }
         return;
       }
       flushProgress();
       lastFraction.current = 0;
       setRestoreFraction(0);
+      setChapterHtml("");
+      setPublisherFonts(null);
+      setUsedFonts(null);
       setIndex(i);
     },
     [flushProgress],
@@ -745,15 +769,13 @@ export default function App() {
       // 焦点在可编辑控件（编辑元数据等模态输入框）时不劫持方向键——
       // 左右键用于移动光标而非翻页。F11/Esc 不在此列，保持全局语义。
       const t = e.target as HTMLElement | null;
-      if (
+      const editing = !!(
         t &&
         (t.tagName === "INPUT" ||
           t.tagName === "TEXTAREA" ||
           t.tagName === "SELECT" ||
           t.isContentEditable)
-      ) {
-        return;
-      }
+      );
       if (e.code === "F11" || e.key === "F11") {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -761,7 +783,8 @@ export default function App() {
         return;
       }
       if (e.key === "Escape") {
-        // Layered close: the overflow menu first, then 划线 / 目录, then
+        if (editing) return;
+        // Layered close: the overflow menu first, then 划线 / 字体 / 目录, then
         // fullscreen (AGENTS: Esc 先关浮层/目录再退出全屏).
         if (topMenuOpenRef.current) {
           setTopMenuOpen(false);
@@ -769,6 +792,10 @@ export default function App() {
         }
         if (highlightsOpenRef.current) {
           setHighlightsOpen(false);
+          return;
+        }
+        if (fontOpenRef.current) {
+          setFontOpen(false);
           return;
         }
         if (tocOpenRef.current) {
@@ -784,6 +811,8 @@ export default function App() {
         }
         return;
       }
+      if (editing) return;
+      if (!bookRef.current) return;
       if (e.key === "ArrowRight" || e.key === "PageDown") {
         e.preventDefault();
         goPage(1);
@@ -1162,6 +1191,8 @@ export default function App() {
                 bookPos={bookPos}
                 pendingHighlight={pendingHighlight}
                 onHighlightLocated={onHighlightLocated}
+                pendingFragment={pendingFragment}
+                onFragmentLocated={() => setPendingFragment(null)}
                 onProgress={queueProgress}
                 onUsedFonts={setUsedFonts}
                 onPageInfo={setPageInfo}

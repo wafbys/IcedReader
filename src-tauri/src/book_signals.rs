@@ -10,9 +10,13 @@ use std::collections::HashMap;
 use std::fs;
 
 use iced_reader_core::Book;
+use iced_reader_epub::{expand_word_notes, href_file_key, slice_chapter, split_href};
 use serde::{Deserialize, Serialize};
 
 use crate::portable;
+
+/// [`BookSignals::chapter_chars`] counted per spine *slice* (TOC-as-chapters).
+pub const CHAPTER_CHARS_PER_SPINE: u8 = 1;
 
 /// How trustworthy the epub's own identifier is (best first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +96,10 @@ pub struct BookSignals {
     /// nodes). Whole-book position weights for notes.md 全书% and 按位置跳转.
     #[serde(default)]
     pub chapter_chars: Vec<u64>,
+    /// 1 = each spine unit is a reading slice (TOC fragment), not a reused
+    /// whole-file length. Missing/0 is the legacy cache and must be recomputed.
+    #[serde(default)]
+    pub chapter_chars_kind: u8,
     /// sha of the joined `chapter_shas` — cheap group key.
     pub fingerprint: String,
     /// Replacement character count (mojibake) across the spine text.
@@ -429,8 +437,9 @@ fn file_of_href(href: &str) -> String {
 }
 
 /// Compute signals for an opened book. `rev` is the file revision used as the
-/// cache key. Reading happens through the Book trait (no rendering, no
-/// word-note expansion) so first import of a huge book stays bounded.
+/// cache key. Quality stats (fingerprint, mojibake, …) are per unique XHTML
+/// file. `chapter_chars` is per spine *unit* (TOC slice + word-note expansion)
+/// so 全书% / 划线 pos match the reading list.
 pub fn analyze_book(
     book: &dyn Book,
     identifiers: &[String],
@@ -445,44 +454,54 @@ pub fn analyze_book(
         .max_by_key(|q| q.rank())
         .unwrap_or(IdQuality::None);
 
-    let mut shas: Vec<String> = Vec::with_capacity(spine.len());
-    let mut chapter_chars: Vec<u64> = Vec::with_capacity(spine.len());
+    let mut files: HashMap<String, String> = HashMap::new();
+    let mut shas: Vec<String> = Vec::new();
     let mut chars: u64 = 0;
     let mut mojibake = 0u64;
     let mut br_count = 0u64;
     let mut empty_p = 0u64;
     let mut img_count = 0u64;
     let mut headings: Vec<String> = Vec::new();
-    let mut text_cache: HashMap<String, (String, u64)> = HashMap::new();
 
     for item in &spine {
         let file = file_of_href(&item.href);
-        let (text, raw_len) = if let Some(t) = text_cache.get(&file) {
-            t.clone()
+        let key = href_file_key(&file);
+        if files.contains_key(&key) {
+            continue;
+        }
+        let raw = read_spine_html(book, &file)?;
+        let scan = scan_html(&raw);
+        mojibake += scan.mojibake;
+        br_count += scan.br;
+        empty_p += scan.empty_p;
+        img_count += scan.imgs;
+        let decoded = decode_entities(&scan.text);
+        let normed = norm_ws(&decoded);
+        chars += normed.chars().count() as u64;
+        shas.push(sha16(&normed));
+        if let Some(first_heading) = scan.headings.first() {
+            headings.push(norm_ws(first_heading));
         } else {
-            let res = book
-                .resource(&file)
-                .map_err(|e| format!("read {file}: {e}"))?;
-            let raw = String::from_utf8_lossy(&res.data);
-            let scan = scan_html(&raw);
-            mojibake += scan.mojibake;
-            br_count += scan.br;
-            empty_p += scan.empty_p;
-            img_count += scan.imgs;
-            let decoded = decode_entities(&scan.text);
-            let raw_len = decoded.chars().count() as u64;
-            let normed = norm_ws(&decoded);
-            if let Some(first_heading) = scan.headings.into_iter().next() {
-                headings.push(norm_ws(&first_heading));
-            } else {
-                headings.push(String::new());
-            }
-            text_cache.insert(file.clone(), (normed.clone(), raw_len));
-            (normed, raw_len)
+            headings.push(String::new());
+        }
+        let expanded = expand_word_notes(&raw, "http://icedreader.localhost/book/signals/");
+        files.insert(key, expanded);
+    }
+
+    let mut chapter_chars: Vec<u64> = Vec::with_capacity(spine.len());
+    for (i, item) in spine.iter().enumerate() {
+        let file = file_of_href(&item.href);
+        let key = href_file_key(&file);
+        let Some(expanded) = files.get(&key) else {
+            chapter_chars.push(0);
+            continue;
         };
-        chars += text.chars().count() as u64;
-        chapter_chars.push(raw_len);
-        shas.push(sha16(&text));
+        let frag = split_href(&item.href).1;
+        let until = next_fragment_in_spine(&spine, i);
+        let sliced = slice_chapter(expanded, frag, until.as_deref());
+        let slice_scan = scan_html(&sliced);
+        let decoded = decode_entities(&slice_scan.text);
+        chapter_chars.push(decoded.chars().count() as u64);
     }
 
     let fingerprint = sha16(&shas.join("|"));
@@ -491,6 +510,7 @@ pub fn analyze_book(
         chars,
         chapter_shas: shas,
         chapter_chars,
+        chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
         fingerprint,
         mojibake,
         br_count,
@@ -503,6 +523,30 @@ pub fn analyze_book(
         img_bytes: images.1,
         img_truncated: images.2,
     })
+}
+
+fn read_spine_html(book: &dyn Book, file: &str) -> Result<String, String> {
+    let trimmed = file.trim().trim_start_matches('/');
+    for candidate in [file.to_string(), format!("/{trimmed}"), trimmed.to_string()] {
+        if candidate.is_empty() {
+            continue;
+        }
+        if let Ok(res) = book.resource(&candidate) {
+            return Ok(String::from_utf8_lossy(&res.data).into_owned());
+        }
+    }
+    Err(format!("read {file}"))
+}
+
+fn next_fragment_in_spine(spine: &[iced_reader_core::SpineItem], index: usize) -> Option<String> {
+    let file = href_file_key(&spine[index].href);
+    for item in spine.iter().skip(index + 1) {
+        if href_file_key(&item.href) == file {
+            return split_href(&item.href).1.map(str::to_string);
+        }
+        return None;
+    }
+    None
 }
 
 /// Result of [`grade`]: the grade label plus what speaks for the book
@@ -723,6 +767,8 @@ mod tests {
             .expect("analyze");
         assert!(signals.chars > 0, "sample has readable text");
         assert!(!signals.chapter_shas.is_empty());
+        assert_eq!(signals.chapter_chars.len(), book.spine().len());
+        assert_eq!(signals.chapter_chars_kind, CHAPTER_CHARS_PER_SPINE);
         let g = grade(&signals);
         assert!(["优", "良", "中"].contains(&g.label), "{}", g.label);
         assert!(!g.plus.is_empty() || !g.minus.is_empty());
@@ -735,6 +781,7 @@ mod tests {
             chars: 500,
             chapter_shas: vec!["ab".into()],
             chapter_chars: vec![120],
+            chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
             fingerprint: "f".into(),
             mojibake: 0,
             br_count: 0,
@@ -768,6 +815,7 @@ mod tests {
             chars: 12,
             chapter_shas: vec!["ab".into()],
             chapter_chars: vec![30],
+            chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
             fingerprint: "f".into(),
             mojibake: 0,
             br_count: 1,
