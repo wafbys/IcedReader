@@ -39,31 +39,44 @@ pub struct EpubBook {
     inner: Epub,
 }
 
+/// Image inventory of one epub, used by the shelf quality grade.
+/// Scanning stops once the archive is clearly image-heavy.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ImageStats {
+    pub files: usize,
+    pub bytes: u64,
+    pub truncated: bool,
+    /// Files at least 20KB — covers and real plates, not 1KB dingbats.
+    pub substantial: usize,
+}
+
 /// Image inventory of one epub (entry count + decoded byte total), used by the
 /// shelf quality grade. Reading stops early once the archive is clearly a big
 /// image book, so first-import stays bounded.
-pub fn image_stats(path: &std::path::Path) -> Result<(usize, u64, bool), CoreError> {
+pub fn image_stats(path: &std::path::Path) -> Result<ImageStats, CoreError> {
     let epub = Epub::open(path).map_err(|e| CoreError::msg(e.to_string()))?;
-    let mut count = 0usize;
-    let mut bytes = 0u64;
-    let mut truncated = false;
+    let mut stats = ImageStats::default();
     const MAX_IMAGES: usize = 300;
     const MAX_BYTES: u64 = 48 * 1024 * 1024;
+    const SUBSTANTIAL: usize = 20 * 1024;
     for entry in epub.manifest().iter() {
         if !entry.kind().as_str().starts_with("image/") {
             continue;
         }
-        if count >= MAX_IMAGES || bytes >= MAX_BYTES {
-            truncated = true;
+        if stats.files >= MAX_IMAGES || stats.bytes >= MAX_BYTES {
+            stats.truncated = true;
             break;
         }
         let key = entry.resource().key().value().unwrap_or_default().to_string();
         if let Ok(data) = epub.read_resource_bytes(&key) {
-            count += 1;
-            bytes += data.len() as u64;
+            stats.files += 1;
+            stats.bytes += data.len() as u64;
+            if data.len() >= SUBSTANTIAL {
+                stats.substantial += 1;
+            }
         }
     }
-    Ok((count, bytes, truncated))
+    Ok(stats)
 }
 
 impl EpubBook {

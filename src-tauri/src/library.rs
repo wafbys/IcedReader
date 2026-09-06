@@ -36,6 +36,10 @@ pub struct LibraryEntry {
     pub quality_minus: Vec<String>,
     /// File names of other library books judged the same book (hint only).
     pub duplicates: Vec<String>,
+    /// Live OPF identifier class (not sent to the UI). Replaces a stale cached
+    /// `idQuality` so a 10-digit Kindle id no longer keeps a 优 badge.
+    #[serde(skip)]
+    pub id_quality: book_signals::IdQuality,
 }
 
 /// Un-cached shelf listing used by the in-crate tests below.
@@ -87,6 +91,7 @@ pub struct BookProfile {
     pub chapter_titles: Vec<Option<String>>,
     pub has_cover: bool,
     pub open_error: Option<String>,
+    pub id_quality: book_signals::IdQuality,
 }
 
 impl BookProfile {
@@ -140,7 +145,8 @@ fn quality_rank(quality: Option<&str>) -> u8 {
 /// recently read first, then grade, then title.
 fn enrich_and_sort(mut entries: Vec<LibraryEntry>) -> Vec<LibraryEntry> {
     let all = book_signals::read_all();
-    for e in &mut entries {
+    let mut overlays: HashMap<usize, book_signals::BookSignals> = HashMap::new();
+    for (i, e) in entries.iter_mut().enumerate() {
         if e.open_error.is_some() {
             continue;
         }
@@ -150,10 +156,15 @@ fn enrich_and_sort(mut entries: Vec<LibraryEntry>) -> Vec<LibraryEntry> {
         if sig.rev != e.cover_rev {
             continue; // file changed since the cached analysis; keep unknown
         }
-        let g = book_signals::grade(sig);
+        // Re-classify from the live OPF so an old cache that stored a 10-digit
+        // Kindle id as Isbn does not keep granting 优 until the book is reopened.
+        let mut sig = sig.clone();
+        sig.id_quality = e.id_quality;
+        let g = book_signals::grade(&sig).with_filename_isbn(sig.id_quality, &e.file_name);
         e.quality = Some(g.label.to_string());
         e.quality_plus = g.plus;
         e.quality_minus = g.minus;
+        overlays.insert(i, sig);
     }
 
     // Same-typesetting groups (equal chapter-text fingerprint).
@@ -222,6 +233,34 @@ fn enrich_and_sort(mut entries: Vec<LibraryEntry>) -> Vec<LibraryEntry> {
             }
         }
         e.duplicates = seen;
+    }
+
+    // Same-work copies: say which edition is stronger. Does not change 优/良/中.
+    let name_at: HashMap<String, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.file_name.clone(), i))
+        .collect();
+    for i in 0..entries.len() {
+        if entries[i].duplicates.is_empty() {
+            continue;
+        }
+        let peer_idxs: Vec<usize> = entries[i]
+            .duplicates
+            .iter()
+            .filter_map(|name| name_at.get(name).copied())
+            .collect();
+        let Some(this) = overlays.get(&i) else {
+            continue;
+        };
+        let peers: Vec<&book_signals::BookSignals> =
+            peer_idxs.iter().filter_map(|j| overlays.get(j)).collect();
+        if peers.is_empty() {
+            continue;
+        }
+        let (p, m) = book_signals::edition_vs_peers(this, &peers);
+        entries[i].quality_plus.extend(p);
+        entries[i].quality_minus.extend(m);
     }
 
     entries.sort_by(|a, b| {
@@ -560,6 +599,7 @@ fn profile_book(path: &Path, library: &Path) -> BookProfile {
             chapter_titles: Vec::new(),
             has_cover: false,
             open_error: Some("不是 EPUB".into()),
+            id_quality: book_signals::IdQuality::None,
         };
     }
 
@@ -582,6 +622,7 @@ fn profile_book(path: &Path, library: &Path) -> BookProfile {
                 chapter_titles: spine.iter().map(|s| s.title.clone()).collect(),
                 has_cover: meta.cover_href.is_some(),
                 open_error: None,
+                id_quality: book_signals::best_id_quality(&meta.identifiers),
             }
         }
         Err(err) => {
@@ -600,6 +641,7 @@ fn profile_book(path: &Path, library: &Path) -> BookProfile {
                 chapter_titles: Vec::new(),
                 has_cover: false,
                 open_error: Some(err.to_string()),
+                id_quality: book_signals::IdQuality::None,
             }
         }
     }
@@ -634,6 +676,7 @@ fn entry_from(path: &Path, profile: &BookProfile, progress: &ProgressStore) -> L
         quality_plus: Vec::new(),
         quality_minus: Vec::new(),
         duplicates: Vec::new(),
+        id_quality: profile.id_quality,
     }
 }
 

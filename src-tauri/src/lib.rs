@@ -102,10 +102,11 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
                 s.rev != rev
                     || s.chapter_chars.is_empty()
                     || s.chapter_chars_kind != book_signals::CHAPTER_CHARS_PER_SPINE
+                    || s.analysis_kind != book_signals::ANALYSIS_KIND
             })
             .unwrap_or(true);
         if need {
-            let images = iced_reader_epub::image_stats(&imported).unwrap_or((0, 0, false));
+            let images = iced_reader_epub::image_stats(&imported).unwrap_or_default();
             if let Ok(signals) = book_signals::analyze_book(
                 book.as_ref(),
                 &metadata.identifiers,

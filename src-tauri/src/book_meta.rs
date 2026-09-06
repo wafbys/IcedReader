@@ -149,9 +149,25 @@ pub fn extract_isbn(identifiers: &[String]) -> String {
         .iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .find(|s| book_signals::classify_identifier(s) == IdQuality::Isbn)
+        .find(|s| looks_like_isbn_field(s))
         .map(normalize_isbn)
         .unwrap_or_default()
+}
+
+/// Panel prefill: accept a 978/979-prefixed value even if it is truncated or
+/// the checksum is wrong. Grade uses the stricter [`classify_identifier`].
+fn looks_like_isbn_field(s: &str) -> bool {
+    if book_signals::classify_identifier(s) == IdQuality::Isbn {
+        return true;
+    }
+    let lower = s.trim().to_ascii_lowercase();
+    let rest = lower
+        .trim_start_matches("urn:isbn:")
+        .trim_start_matches("isbn:")
+        .trim_start_matches("isbn-13:")
+        .trim_start_matches("isbn-10:");
+    let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+    digits.starts_with("978") || digits.starts_with("979")
 }
 
 /// Cut everything before the first ASCII digit (`urn:isbn:` / `isbn:` /
@@ -177,6 +193,7 @@ mod tests {
             chapter_titles: Vec::new(),
             has_cover: false,
             open_error: None,
+            id_quality: crate::book_signals::IdQuality::None,
         }
     }
 
