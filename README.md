@@ -47,7 +47,7 @@ Windows 桌面电子书阅读器。产品名沿用 IcedReader，技术栈是 **T
 - Visual Studio 2022 Build Tools，勾选「使用 C++ 的桌面开发」
 - Node.js LTS
 
-若本机开着 Smart App Control（强制），会拦住 Cargo 的未签名 build script，也会拦住本地编出来的 `iced-reader.exe`。开发前请先关闭。
+若本机开着 Smart App Control（强制），会拦住 Cargo 的未签名 build script，也会拦住本地编出来的 `IcedReader.exe`。开发前请先关闭。
 
 ## 开发
 
@@ -72,7 +72,7 @@ $env:ICED_READER_OPEN = "$PWD\fixtures\sample.epub"
 便携数据（相对 exe 所在目录）：
 
 ```
-iced-reader.exe
+IcedReader.exe
 data/
   library/          导入的书；划线+备注档案 <书名>.notes.md 也在这（删除留痕）
   fonts/            字体面板写入的 serif/sans/mono/cjk 文件
@@ -94,10 +94,10 @@ data/
 npm run tauri -- build --no-bundle
 ```
 
-产物为 `target/release/iced-reader.exe`。编完后必须再拷一份**独立文件**（不要改名硬链接），供分发和 Everything 检索：
+产物为 `target/release/IcedReader.exe`。编完后必须再拷一份**独立文件**（不要改名硬链接），供分发和 Everything 检索：
 
 ```powershell
-Copy-Item target\release\iced-reader.exe target\release\IcedReader-0.10.0-windows-x64.exe
+Copy-Item target\release\IcedReader.exe target\release\IcedReader-0.10.0-windows-x64.exe
 ```
 
 文件名：`IcedReader-{version}-windows-x64.exe`，版本号与 `src-tauri/tauri.conf.json` 的 `version` 一致。
@@ -105,7 +105,7 @@ Copy-Item target\release\iced-reader.exe target\release\IcedReader-0.10.0-window
 | 产物 | 路径 |
 | --- | --- |
 | 分发用绿色 exe | `target/release/IcedReader-{version}-windows-x64.exe` |
-| Cargo 原始 exe | `target/release/iced-reader.exe`（可留给工具链，不要当发布文件） |
+| Cargo 原始 exe | `target/release/IcedReader.exe`（可留给工具链，不要当发布文件） |
 
 GitHub Release 上传那份 `IcedReader-…-windows-x64.exe`。拷到任意可写目录再运行，同级生成 `data/`。不要装进 Program Files，否则可能写不进 `data/`。系统仍需 WebView2（Win11 自带）。
 

@@ -44,7 +44,7 @@ npx tsc --noEmit
 
 自动打开样书：`$env:ICED_READER_OPEN = "$PWD\fixtures\sample.epub"`。Windows 编译需要 MSVC；`scripts/dev.ps1` 会载入 vsvars，打 release 前同样要载入。
 
-用户说 build release 时：`npm run tauri -- build --no-bundle`，再用 `Copy-Item`（禁止 Rename-Item / 硬链接）拷到 `target/release/IcedReader-{version}-windows-x64.exe`，`{version}` 取 `src-tauri/tauri.conf.json`。告诉用户这份路径，GitHub Release 上传它。不要把 `iced-reader.exe` 或 `deps/iced_reader.exe` 当发布文件。只构建绿色版（`--no-bundle`），不要跑不带该旗标的 `build`。不要用 `--offline` 除非依赖已在本地。
+用户说 build release 时：`npm run tauri -- build --no-bundle`，再用 `Copy-Item`（禁止 Rename-Item / 硬链接）拷到 `target/release/IcedReader-{version}-windows-x64.exe`，`{version}` 取 `src-tauri/tauri.conf.json`。告诉用户这份路径，GitHub Release 上传它。不要把 Cargo 原始产物 `target/release/IcedReader.exe`（或 `deps/` 下中间 exe）当发布文件。只构建绿色版（`--no-bundle`），不要跑不带该旗标的 `build`。不要用 `--offline` 除非依赖已在本地。
 
 ## Tauri 命令
 
