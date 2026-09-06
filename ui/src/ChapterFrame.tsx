@@ -278,6 +278,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   /** 备注编辑（浮条内联展开）：正在编辑的划线 id 与草稿。 */
   const [noteEditorId, setNoteEditorId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const noteEditorIdRef = useRef(noteEditorId);
+  noteEditorIdRef.current = noteEditorId;
   /** 备注保存重入锁（双击/连点只落一次写，防 notes.md 重复插块）。 */
   const committingNote = useRef(false);
 
@@ -360,6 +362,11 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     hlCheckRaf.current = requestAnimationFrame(() => {
       hlCheckRaf.current = null;
       if (noteTipTargetRef.current) return; // word note owns the bubble
+      if (noteEditorIdRef.current) {
+        // 正在编辑备注：正文上不再浮现该备注浮窗（与编辑卡重复）。
+        if (hlHoverRef.current) hideNoteTip();
+        return;
+      }
       const doc = iframeRef.current?.contentDocument ?? null;
       if (!doc || !doc.body) return;
       const char = charAtPoint(doc, e.clientX, e.clientY);
@@ -664,6 +671,9 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     const parentY = iframeRect.top + e.clientY;
     const sel = doc.getSelection();
     const text = sel ? sel.toString() : "";
+    // 浮条半宽以内不可能贴左缘；钳到视口内（transform 用 translateX(-50%)）。
+    const vw = window.innerWidth;
+    const clampX = (x: number) => Math.min(Math.max(x, 96), vw - 96);
 
     if (sel && !sel.isCollapsed && text.trim()) {
       if (!highlightSupported(doc)) return;
@@ -672,7 +682,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       if (!anchor) return;
       const info = anchorOverlapInfo(doc, highlightsRef.current, anchor);
       const rect = range.getBoundingClientRect();
-      const x = iframeRect.left + rect.left + rect.width / 2;
+      const x = clampX(iframeRect.left + rect.left + rect.width / 2);
       const y = iframeRect.top + rect.top;
       setToolbar({
         kind: "create",
@@ -691,9 +701,15 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     const span = char !== null ? spanAtChar(appliedRef.current, char) : null;
     if (span) {
       swallowDocClick.current = true;
-      setToolbar({ kind: "delete", x: parentX, y: parentY, id: span.id });
+      setToolbar({
+        kind: "delete",
+        x: clampX(parentX),
+        y: parentY,
+        id: span.id,
+      });
     } else {
       setToolbar(null);
+      closeNoteEditor();
     }
   };
 
@@ -741,6 +757,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
 
   /** Open the note editor for one highlight (draft = its current note). */
   const openNoteEditor = (id: string) => {
+    hideNoteTip();
     setNoteDraft(notesByIdRef.current[id] ?? "");
     setNoteEditorId(id);
   };
@@ -1061,8 +1078,14 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       {noteEditorId && toolbar?.kind === "delete" && (
         <div
           className="hl-note-card"
-          style={{ left: toolbar.x, top: toolbar.y + 46 }}
+          style={{ left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}
           onMouseDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              closeNoteEditor();
+            }
+          }}
         >
           <textarea
             autoFocus
@@ -1088,19 +1111,6 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             >
               取消
             </button>
-            {noteDraft.trim() !== "" && (
-              <button
-                type="button"
-                className="btn small ghost danger"
-                disabled={toolbarBusy}
-                onClick={() => {
-                  setNoteDraft("");
-                  void commitNoteEditor();
-                }}
-              >
-                清除备注
-              </button>
-            )}
           </div>
           <p className="hl-note-hint">
             备注与划线一起存入 notes.md，可在外部 md 软件继续编辑；划线删除后备注仍保留在档案里。

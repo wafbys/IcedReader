@@ -1332,6 +1332,8 @@ body {
   position: fixed;
   z-index: 40;
   width: min(430px, calc(100vw - 32px));
+  max-height: min(430px, calc(100vh - 32px));
+  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
