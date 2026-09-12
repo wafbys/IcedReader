@@ -355,13 +355,19 @@ fn write_style_attr(html: &str, out: &mut String, from: usize, attr_at: usize) -
     j
 }
 
+/// 下面几个扫描器是逐字节推进的，`i` 可能落在多字节字符内部，
+/// 所以关键字一律按字节比较：禁止 `&lower[i..]` 切片，否则中文 CSS 直接 panic。
+fn keyword_at(bytes: &[u8], i: usize, needle: &[u8]) -> bool {
+    i + needle.len() <= bytes.len() && &bytes[i..i + needle.len()] == needle
+}
+
 fn is_at_font_face(lower: &str, i: usize) -> bool {
     const NEEDLE: &str = "@font-face";
-    if i + NEEDLE.len() > lower.len() || !lower[i..].starts_with(NEEDLE) {
+    let bytes = lower.as_bytes();
+    if !keyword_at(bytes, i, NEEDLE.as_bytes()) {
         return false;
     }
     let after = i + NEEDLE.len();
-    let bytes = lower.as_bytes();
     after >= bytes.len() || !is_ident_char(bytes[after])
 }
 
@@ -405,10 +411,10 @@ fn skip_brace_block(bytes: &[u8], mut i: usize) -> usize {
 
 fn is_font_family_at(lower: &str, i: usize) -> bool {
     const NEEDLE: &str = "font-family";
-    if i + NEEDLE.len() > lower.len() || !lower[i..].starts_with(NEEDLE) {
+    let bytes = lower.as_bytes();
+    if !keyword_at(bytes, i, NEEDLE.as_bytes()) {
         return false;
     }
-    let bytes = lower.as_bytes();
     if i > 0 && is_ident_char(bytes[i - 1]) {
         return false;
     }
@@ -420,10 +426,10 @@ fn is_font_family_at(lower: &str, i: usize) -> bool {
 }
 
 fn is_font_shorthand_at(lower: &str, i: usize) -> bool {
-    if i + 4 > lower.len() || &lower[i..i + 4] != "font" {
+    let bytes = lower.as_bytes();
+    if !keyword_at(bytes, i, b"font") {
         return false;
     }
-    let bytes = lower.as_bytes();
     if i > 0 && is_ident_char(bytes[i - 1]) {
         return false;
     }
@@ -747,6 +753,18 @@ body { font-family: "MyEmb", serif; }
         let out = rewrite_css_font_families(css);
         assert!(out.contains("@font-face { font-family: \"MyEmb\"; src: url(x.ttf); }"), "{out}");
         assert!(out.contains("body { font-family: \"IcedReaderSerif\"; }"), "{out}");
+    }
+
+    #[test]
+    fn rewrite_keeps_multibyte_css_intact() {
+        // 书里会出未加引号的中文（选择器、字体名）。逐字节扫描时
+        // 关键字探测不能切在多字节字符中间（史记曾在此 panic）。
+        let css = "正文 { font-family: 宋体, serif; }\np { font: 12px 宋体, serif; }\n";
+        let out = rewrite_css_font_families(css);
+        assert!(out.contains("正文 { font-family: \"IcedReaderSerif\"; }"), "{out}");
+        assert!(out.contains("font: 12px \"IcedReaderSerif\""), "{out}");
+        let html = format!("<html><head><style>{css}</style></head><body>正文</body></html>");
+        assert!(rewrite_html_fonts(&html).contains("IcedReaderSerif"));
     }
 
     #[test]
