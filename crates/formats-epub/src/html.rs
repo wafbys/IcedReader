@@ -456,10 +456,13 @@ fn id_attr_at(html: &str, value_start: usize, len: usize) -> bool {
 
 fn find_body_open_end(html: &str) -> usize {
     let bytes = html.as_bytes();
+    let needle: &[u8] = b"<body";
     let mut i = 0;
-    while i + 5 <= bytes.len() {
-        if bytes[i] == b'<' && html[i..i + 5].eq_ignore_ascii_case("<body") {
-            let next = bytes.get(i + 5).copied().unwrap_or(0);
+    while i + needle.len() <= bytes.len() {
+        // 字节扫描：i + needle.len() 可能落在中文字符内部，只能按字节比较，
+        // 不能切 &str（`<p>中` 这类文档曾在此 panic）。
+        if bytes[i] == b'<' && bytes[i..i + needle.len()].eq_ignore_ascii_case(needle) {
+            let next = bytes.get(i + needle.len()).copied().unwrap_or(0);
             if next == b'>' || is_space(next) || next == b'/' {
                 return tag_close(html, i).unwrap_or(0);
             }
@@ -625,6 +628,31 @@ mod tests {
         let out = slice_chapter(html, None, Some("c1"));
         assert!(out.contains("front"), "{out}");
         assert!(!out.contains("One"), "{out}");
+    }
+
+    #[test]
+    fn slice_survives_cjk_right_after_a_tag() {
+        // `<body` 探测是逐字节扫描，窗口右端可能落在中文字符内部（曾 panic）。
+        // 片段里没有 <body>，所以整个串都会被扫到。
+        let html = r#"<p>中<i id="x">y</i></p><p id="z">尾</p>"#;
+        let head = slice_chapter(html, None, Some("x"));
+        assert!(head.contains("中"), "{head}");
+        assert!(!head.contains(">y<"), "{head}");
+        let tail = slice_chapter(html, Some("x"), None);
+        assert!(tail.contains(">y<"), "{tail}");
+        assert!(tail.contains("尾"), "{tail}");
+        assert_eq!(find_body_open_end("<p>中<i>x</i></p>"), 0);
+    }
+
+    #[test]
+    fn body_probe_finds_body_after_cjk() {
+        // find_body_open_end 返回 <body ...> 之后的位置。
+        let html = "<p>中文</p><body class=\"c\"><p>x</p></body>";
+        let at = find_body_open_end(html);
+        assert!(html[..at].ends_with("<body class=\"c\">"), "{at} {html}");
+        assert_eq!(find_body_open_end("<html><body>"), 12);
+        assert_eq!(find_body_open_end("<html><BODY>"), 12);
+        assert_eq!(find_body_open_end("<bodyguard>"), 0);
     }
 
     #[test]
