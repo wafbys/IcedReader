@@ -97,7 +97,7 @@ npm run tauri -- build --no-bundle
 产物为 `target/release/IcedReader.exe`。编完后必须再拷一份**独立文件**（不要改名硬链接），供分发和 Everything 检索：
 
 ```powershell
-Copy-Item target\release\IcedReader.exe target\release\IcedReader-0.10.0-windows-x64.exe
+Copy-Item target\release\IcedReader.exe target\release\IcedReader-0.10.1-windows-x64.exe
 ```
 
 文件名：`IcedReader-{version}-windows-x64.exe`，版本号与 `src-tauri/tauri.conf.json` 的 `version` 一致。
