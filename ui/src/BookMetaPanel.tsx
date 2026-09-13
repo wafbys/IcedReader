@@ -261,7 +261,6 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
                 className="meta-input"
                 value={volume}
                 onChange={(e) => setVolume(e.target.value)}
-                placeholder="如 第二部、上"
               />
             </div>
 
@@ -272,9 +271,8 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
                 className="meta-input"
                 value={author}
                 onChange={(e) => setAuthor(e.target.value)}
-                placeholder="预填原书作者，可改可清空"
               />
-              <p className="meta-note">已预填原书作者（多名用半角逗号连接，中文标点不进入书名）；清空则不拼入标题。</p>
+              <p className="meta-note">原书有作者则已预填（多名用半角逗号连接，中文标点不进入书名）；没读到就留空，清空则不拼入标题。</p>
             </div>
 
             <div className="meta-field">
@@ -284,7 +282,6 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
                 className="meta-input"
                 value={translator}
                 onChange={(e) => setTranslator(e.target.value)}
-                placeholder="如 阳曦"
               />
               <p className="meta-note">
                 填姓名即可；拼入标题时自动补「译者 」标签（已写「译者」开头则保留原样），留空不拼入。
@@ -298,7 +295,6 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
                 className="meta-input"
                 value={year}
                 onChange={(e) => setYear(e.target.value)}
-                placeholder="如 2008"
               />
             </div>
 
@@ -319,7 +315,6 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
                 className="meta-input"
                 value={isbn}
                 onChange={(e) => setIsbn(e.target.value)}
-                placeholder="如 978-7-5366-9293-0"
               />
               <p className="meta-note">
                 填号码即可；拼入标题时自动补 ASCII「ISBN 」前缀（你已写 ISBN 开头则保留原样）。
