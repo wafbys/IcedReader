@@ -233,6 +233,12 @@ pub struct BookSignals {
     /// 1 = grade inputs above are filled; missing/0 recomputes on next open.
     #[serde(default)]
     pub analysis_kind: u8,
+    /// PDF-only quality signals, stored as measured by
+    /// `crates/formats-pdf/src/quality.rs`. EPUB entries leave this empty and
+    /// PDF entries leave the EPUB-only fields at their defaults: the two
+    /// formats are graded by different questions.
+    #[serde(default)]
+    pub pdf: Option<iced_reader_pdf::PdfQuality>,
 }
 
 /// Collection-time raw stats of one spine document.
@@ -731,7 +737,195 @@ pub fn analyze_book(
         missing_chars,
         sup_count,
         analysis_kind: ANALYSIS_KIND,
+        pdf: None,
     })
+}
+
+/// First-import signals for a **PDF**: measured facts about what the reader can
+/// do with it (text layer, font embedding, outline, metadata) plus a
+/// fingerprint that groups identical files for the 同书 hint.
+///
+/// The EPUB-only fields stay at their defaults — [`grade`] must not be used on
+/// these; the shelf calls [`grade_pdf`] instead.
+/// Compute a book's signals **on a worker thread** and cache them.
+///
+/// Opening a book must not wait for a whole-document analysis: a 952-page PDF
+/// spends ~1 s on it even with optimized dependencies, and an unoptimised
+/// (dev-profile) build used to spend far longer — the reader showed a blank
+/// window for that whole time. The analysis re-opens the file by path (a second
+/// parse, but on a background thread) and writes into `book-signals.json`; the
+/// shelf shows the grade from its next listing, and the reader's `warnings` are
+/// read from that cache.
+pub fn analyze_in_background(
+    path: std::path::PathBuf,
+    file_name: String,
+    rev: String,
+    identifiers: Vec<String>,
+    has_creator: bool,
+) {
+    std::thread::spawn(move || {
+        let signals = match crate::openers::opener_for(&path) {
+            Some(opener) if opener.format_id() == iced_reader_core::PDF_FORMAT => {
+                analyze_pdf(&path, &rev).ok()
+            }
+            Some(opener) => match opener.open(&path) {
+                Ok(book) => {
+                    let images = iced_reader_epub::image_stats(&path).unwrap_or_default();
+                    analyze_book(book.as_ref(), &identifiers, has_creator, &rev, images).ok()
+                }
+                Err(_) => None,
+            },
+            None => None,
+        };
+        if let Some(signals) = signals {
+            write_one(&file_name, &signals);
+        }
+    });
+}
+
+pub fn analyze_pdf(path: &std::path::Path, rev: &str) -> Result<BookSignals, String> {
+    let doc = iced_reader_pdf::PdfDoc::open(path).map_err(|e| e.to_string())?;
+    let quality = iced_reader_pdf::analyze_quality(&doc);
+    let info = doc.info();
+    // Same file re-downloaded ⇒ same page count, title, outline labels and
+    // producer. Deliberately coarse: the shelf only *hints* at duplicates.
+    let outline_labels = flatten_toc_labels(&doc.outline());
+    let fingerprint = sha16(&format!(
+        "pdf|{}|{}|{}|{}",
+        quality.pages,
+        info.title.as_deref().unwrap_or(""),
+        outline_labels.join("/"),
+        info.producer.as_deref().unwrap_or("")
+    ));
+    Ok(BookSignals {
+        rev: rev.to_string(),
+        chars: 0,
+        chapter_shas: Vec::new(),
+        chapter_chars: Vec::new(),
+        chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
+        fingerprint,
+        mojibake: 0,
+        br_count: 0,
+        empty_p: 0,
+        img_count: 0,
+        headings: Vec::new(),
+        id_quality: IdQuality::None,
+        has_creator: quality.has_author,
+        img_files: 0,
+        img_bytes: 0,
+        img_truncated: false,
+        img_substantial: 0,
+        word_notes: 0,
+        missing_chars: 0,
+        sup_count: 0,
+        analysis_kind: ANALYSIS_KIND,
+        pdf: Some(quality),
+    })
+}
+
+fn flatten_toc_labels(nodes: &[iced_reader_pdf::OutlineNode]) -> Vec<String> {
+    let mut out = Vec::new();
+    for node in nodes {
+        if !node.title.trim().is_empty() {
+            out.push(node.title.clone());
+        }
+        out.extend(flatten_toc_labels(&node.children));
+    }
+    out
+}
+
+/// Grade a PDF by **what the reader can do with it** (decided 2026-09-15):
+/// 优 = real text, fully embedded fonts and a usable outline; 良 = a text layer
+/// (real or OCR) but something missing; 中 = a plain scan with no text at all.
+pub fn grade_pdf(s: &BookSignals) -> Grade {
+    use iced_reader_pdf::TextLayer;
+
+    let Some(pdf) = &s.pdf else {
+        return Grade {
+            label: "中",
+            plus: Vec::new(),
+            minus: vec!["缺少 PDF 信号（请重新打开一次）".into()],
+        };
+    };
+    let mut plus: Vec<String> = Vec::new();
+    let mut minus: Vec<String> = Vec::new();
+    // The three strengths the 优 rule is built on (用户 2026-09-15 口径).
+    let mut core = 0u8;
+    // Anything that should keep a book off 优 without being a defect.
+    let mut caveats = 0u8;
+
+    plus.push(format!("{} 页", pdf.pages));
+
+    match pdf.text_layer {
+        TextLayer::MachineReadable => {
+            core += 1;
+            plus.push("正文可提取文字（可搜索）".into());
+        }
+        TextLayer::OcrLayer => {
+            minus.push("扫描版 + OCR 文字层：可搜索，但版面是扫描图".into());
+        }
+        TextLayer::ScanOnly => {
+            minus.push("扫描版，无可提取文字（不能搜索/划线）".into());
+        }
+        TextLayer::Mixed => {
+            core += 1;
+            plus.push("部分页有文字层（图文混排或后附扫描）".into());
+        }
+    }
+
+    if pdf.fonts > 0 {
+        if pdf.embedded_fonts >= pdf.fonts {
+            core += 1;
+            plus.push(format!("{} 个字体全部嵌入", pdf.fonts));
+        } else {
+            caveats += 1;
+            minus.push(format!(
+                "{} 个字体中有 {} 个未嵌入",
+                pdf.fonts,
+                pdf.fonts - pdf.embedded_fonts
+            ));
+        }
+    }
+    if pdf.outline_entries > 0 {
+        core += 1;
+        plus.push(format!("含书签目录（{} 条）", pdf.outline_entries));
+    } else {
+        caveats += 1;
+        minus.push("无书签目录".into());
+    }
+    if !pdf.has_title {
+        caveats += 1;
+        minus.push("原书无书名（用文件名兜底）".into());
+    }
+    if !pdf.has_author {
+        caveats += 1;
+        minus.push("原书无作者".into());
+    }
+    // The one real defect: visible text whose font the renderer cannot supply.
+    let unrenderable = !pdf.unresolved_visible_fonts.is_empty();
+    if unrenderable {
+        minus.push(format!(
+            "正文用未嵌入字体（{}），这些页可能显示不全",
+            pdf.unresolved_visible_fonts.join("、")
+        ));
+    }
+
+    let label = match pdf.text_layer {
+        // A plain scan is 中 by definition: nothing about it can be searched.
+        TextLayer::ScanOnly => "中",
+        // Scanning with an OCR layer is 良: readable and searchable.
+        TextLayer::OcrLayer => "良",
+        TextLayer::MachineReadable | TextLayer::Mixed => {
+            if core == 3 && caveats == 0 && !unrenderable {
+                "优"
+            } else if core >= 2 {
+                "良"
+            } else {
+                "中"
+            }
+        }
+    };
+    Grade { label, plus, minus }
 }
 
 fn read_spine_html(book: &dyn Book, file: &str) -> Result<String, String> {
@@ -1200,6 +1394,7 @@ mod tests {
             missing_chars: 0,
             sup_count: 0,
             analysis_kind: ANALYSIS_KIND,
+            pdf: None,
         };
         let g = grade(&sig);
         // Clean but anonymous text lands on 中, and the reasons spell out
@@ -1239,6 +1434,7 @@ mod tests {
             missing_chars: 0,
             sup_count: 0,
             analysis_kind: ANALYSIS_KIND,
+            pdf: None,
         };
         let mut all = std::collections::HashMap::new();
         all.insert("a.epub".to_string(), sig.clone());
@@ -1247,8 +1443,137 @@ mod tests {
         assert_eq!(back.get("a.epub").unwrap().fingerprint, "f");
     }
 
-    fn sig(id: IdQuality, creator: bool, files: u64, substantial: u64, truncated: bool) -> BookSignals {
-        BookSignals {
+    /// PDF grades answer "what can the reader do with this file?" (用户口径
+    /// 2026-09-15): real text + embedded fonts + outline = 优; a scan with an
+    /// OCR layer = 良; a plain scan = 中.
+    #[test]
+    fn pdf_grades_follow_the_text_layer() {
+        use iced_reader_pdf::{PdfQuality, TextLayer};
+
+        let pdf = |text_layer, fonts, embedded, outline, title, author, unresolved: Vec<String>| {
+            BookSignals {
+                rev: "r".into(),
+                chars: 0,
+                chapter_shas: Vec::new(),
+                chapter_chars: Vec::new(),
+                chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
+                fingerprint: "pdf-fp".into(),
+                mojibake: 0,
+                br_count: 0,
+                empty_p: 0,
+                img_count: 0,
+                headings: Vec::new(),
+                id_quality: IdQuality::None,
+                has_creator: author,
+                img_files: 0,
+                img_bytes: 0,
+                img_truncated: false,
+                img_substantial: 0,
+                word_notes: 0,
+                missing_chars: 0,
+                sup_count: 0,
+                analysis_kind: ANALYSIS_KIND,
+                pdf: Some(PdfQuality {
+                    pages: 400,
+                    outline_entries: outline,
+                    text_layer,
+                    sampled_pages: 24,
+                    text_pages: 24,
+                    fonts,
+                    embedded_fonts: embedded,
+                    unresolved_visible_fonts: unresolved,
+                    has_title: title,
+                    has_author: author,
+                    encrypted: false,
+                }),
+            }
+        };
+
+        let best = pdf(TextLayer::MachineReadable, 6, 6, 148, true, true, vec![]);
+        assert_eq!(grade_pdf(&best).label, "优");
+        assert!(grade_pdf(&best)
+            .plus
+            .iter()
+            .any(|r| r.contains("正文可提取文字")));
+
+        // Missing the outline keeps it off 优 but it is still good to read.
+        let no_outline = pdf(TextLayer::MachineReadable, 6, 6, 0, true, true, vec![]);
+        assert_eq!(grade_pdf(&no_outline).label, "良");
+
+        // Fonts not embedded is only a caveat, unless they are needed for
+        // visible text (then the page itself is broken).
+        let unembedded = pdf(TextLayer::MachineReadable, 6, 0, 148, true, true, vec![]);
+        assert_eq!(grade_pdf(&unembedded).label, "良");
+        let broken = pdf(
+            TextLayer::MachineReadable,
+            6,
+            0,
+            148,
+            true,
+            true,
+            vec!["SimSun".into()],
+        );
+        let broken_grade = grade_pdf(&broken);
+        assert_ne!(broken_grade.label, "优");
+        assert!(broken_grade.minus.iter().any(|r| r.contains("SimSun")));
+
+        // Scan with OCR = 良; plain scan = 中 regardless of metadata.
+        let ocr = pdf(TextLayer::OcrLayer, 17, 0, 0, true, false, vec![]);
+        assert_eq!(grade_pdf(&ocr).label, "良");
+        assert!(grade_pdf(&ocr)
+            .minus
+            .iter()
+            .any(|r| r.contains("OCR")));
+        let scan = pdf(TextLayer::ScanOnly, 0, 0, 71, true, true, vec![]);
+        assert_eq!(grade_pdf(&scan).label, "中");
+        assert!(grade_pdf(&scan)
+            .minus
+            .iter()
+            .any(|r| r.contains("无可提取文字")));
+    }
+
+    /// Prints the grades of the real sample PDFs when they are present.
+    /// `cargo test -p iced-reader --lib -- --ignored --nocapture pdf_sample_grades`
+    #[test]
+    #[ignore = "reads the real sample PDFs next to the repo"]
+    fn pdf_sample_grades() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        // Whatever PDFs sit next to the repository (they are gitignored, and
+        // their names are the user's business — do not hard-code them).
+        let Ok(read) = std::fs::read_dir(&repo_root) else {
+            return;
+        };
+        let mut paths: Vec<std::path::PathBuf> = read
+            .filter_map(|item| item.ok())
+            .map(|item| item.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+            })
+            .collect();
+        paths.sort();
+        for path in paths {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            match analyze_pdf(&path, "rev") {
+                Ok(signals) => {
+                    let grade = grade_pdf(&signals);
+                    println!(
+                        "{name}\n  {}  +{:?}\n      -{:?}",
+                        grade.label, grade.plus, grade.minus
+                    );
+                }
+                Err(err) => println!("{name}\n  打不开: {err}"),
+            }
+        }
+    }
+
+    fn sig(id: IdQuality, creator: bool, files: u64, substantial: u64, truncated: bool) -> BookSignals {        BookSignals {
             rev: "r".into(),
             chars: 50_000,
             chapter_shas: vec!["a".into()],
@@ -1270,6 +1595,7 @@ mod tests {
             missing_chars: 0,
             sup_count: 0,
             analysis_kind: ANALYSIS_KIND,
+            pdf: None,
         }
     }
 

@@ -63,14 +63,36 @@ function ShelfStats({ entries }: { entries: LibraryEntry[] }) {
   return <p className="lib-stats">{parts.join(" · ")}</p>;
 }
 
-function coverUrl(origin: string, fileName: string, coverRev: string): string {
+function coverUrl(
+  origin: string,
+  fileName: string,
+  coverRev: string,
+  retry = 0,
+): string {
   const base = `${origin.replace(/\/$/, "")}/library-cover/${encodeURIComponent(fileName)}`;
-  return coverRev ? `${base}?r=${encodeURIComponent(coverRev)}` : base;
+  const rev = coverRev ? `r=${encodeURIComponent(coverRev)}` : "";
+  const suffix = [rev, retry > 0 ? `n=${retry}` : ""].filter(Boolean).join("&");
+  return suffix ? `${base}?${suffix}` : base;
 }
+
+/** The protocol answers a cover it has not rendered yet with a 2×2 placeholder
+ *  (rendering inside a request would freeze the shelf — a PDF cover costs up to
+ *  seconds). Recognise it by its size and retry a couple of times while the
+ *  background render finishes, instead of showing a blank cover forever. */
+const PLACEHOLDER_MAX_PX = 2;
+const COVER_RETRIES = 3;
+const COVER_RETRY_MS = 700;
 
 function Cover({ entry, origin }: { entry: LibraryEntry; origin: string }) {
   const [broken, setBroken] = useState(false);
+  const [retry, setRetry] = useState(0);
   const mark = (entry.title.trim().charAt(0) || "书").toUpperCase();
+  const timer = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    };
+  }, []);
   if (!entry.hasCover || !origin || broken) {
     return (
       <div className="lib-cover lib-cover-fallback" aria-hidden>
@@ -81,9 +103,18 @@ function Cover({ entry, origin }: { entry: LibraryEntry; origin: string }) {
   return (
     <img
       className="lib-cover"
-      src={coverUrl(origin, entry.fileName, entry.coverRev)}
+      src={coverUrl(origin, entry.fileName, entry.coverRev, retry)}
       alt=""
       onError={() => setBroken(true)}
+      onLoad={(event) => {
+        const img = event.currentTarget;
+        if (img.naturalWidth > PLACEHOLDER_MAX_PX || retry >= COVER_RETRIES) return;
+        if (timer.current !== null) window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(
+          () => setRetry((n) => n + 1),
+          COVER_RETRY_MS,
+        );
+      }}
     />
   );
 }
@@ -172,9 +203,9 @@ export default function Library({
     return (
       <div className="empty">
         <p>书库还是空的。</p>
-        <p className="hint">打开一本 EPUB，会复制进程序目录下的 data/library/。</p>
+        <p className="hint">打开一本 EPUB / PDF，会复制进程序目录下的 data/library/。</p>
         <button type="button" className="btn" onClick={onImport} disabled={busy}>
-          {busy ? "打开中…" : "打开 EPUB"}
+          {busy ? "打开中…" : "打开电子书"}
         </button>
       </div>
     );

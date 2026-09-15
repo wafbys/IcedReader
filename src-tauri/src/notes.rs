@@ -353,7 +353,7 @@ pub fn notes_of(text: &str) -> Vec<(String, String)> {
     out
 }
 
-/// notes 文件完整路径（库内 `<stem>.epub` → `<stem>.notes.md`）。
+/// notes 文件完整路径（库内 `<stem>.epub` / `<stem>.pdf` → `<stem>.notes.md`）。
 pub fn notes_path_for(
     dir: &std::path::Path,
     file_name: &str,

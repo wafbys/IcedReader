@@ -36,6 +36,35 @@ pub use settings::{
 };
 
 pub const EPUB_FORMAT: &str = "epub";
+pub const PDF_FORMAT: &str = "pdf";
+
+/// Extensions the reader can open, lowercase and without the dot — one source
+/// of truth for the library scanner, the metadata renamer, the importer's
+/// fallback name and the `lib:` progress key.
+pub const BOOK_EXTENSIONS: [&str; 2] = [EPUB_FORMAT, PDF_FORMAT];
+
+/// Strip a known book extension (`三体.EPUB` → `三体`). Names that are not a
+/// book file come back unchanged, so a stray `.txt` keeps its full name.
+pub fn book_stem(file_name: &str) -> &str {
+    let stem = book_stem_len(file_name);
+    &file_name[..stem]
+}
+
+/// Lowercase extension of a book file, or `None` for anything else.
+pub fn book_extension(file_name: &str) -> Option<&'static str> {
+    let (_, ext) = file_name.rsplit_once('.')?;
+    BOOK_EXTENSIONS
+        .iter()
+        .copied()
+        .find(|known| ext.eq_ignore_ascii_case(known))
+}
+
+fn book_stem_len(file_name: &str) -> usize {
+    match file_name.rsplit_once('.') {
+        Some((stem, _)) if book_extension(file_name).is_some() => stem.len(),
+        _ => file_name.len(),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -116,6 +145,17 @@ pub trait Book: Send + Sync {
     fn chapter_html(&self, href: &str, resource_base: &str) -> Result<String, CoreError>;
 
     fn resource(&self, href: &str) -> Result<Resource, CoreError>;
+
+    /// Size of each spine unit in the format's own units, when the format has a
+    /// **fixed layout** (PDF). The shell needs it to lay out a continuous page
+    /// view — every page's placeholder must be the right shape before its bytes
+    /// arrive, or the scrollbar length and page jumps would be wrong.
+    ///
+    /// Reflowable formats (EPUB) have no such notion and return an empty list;
+    /// callers must treat an empty list as "no hints", never as "zero-sized".
+    fn page_sizes(&self) -> Vec<(f32, f32)> {
+        Vec::new()
+    }
 }
 
 pub trait BookOpener: Send + Sync {
@@ -128,4 +168,31 @@ pub fn extension_is(path: &Path, ext: &str) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn book_stem_strips_only_known_book_extensions() {
+        assert_eq!(book_stem("三体.epub"), "三体");
+        assert_eq!(book_stem("三体.EPUB"), "三体");
+        assert_eq!(book_stem("三体.pdf"), "三体");
+        assert_eq!(book_stem("经济漩涡.PdF"), "经济漩涡");
+        // Not a book file: keep the name intact so nothing is silently cut.
+        assert_eq!(book_stem("notes.txt"), "notes.txt");
+        assert_eq!(book_stem("no-extension"), "no-extension");
+        // Dots inside the title are fine (last dot decides).
+        assert_eq!(book_stem("第 1 卷. 上.pdf"), "第 1 卷. 上");
+        assert_eq!(book_stem(".hidden.epub"), ".hidden");
+    }
+
+    #[test]
+    fn book_extension_reports_the_canonical_lowercase_form() {
+        assert_eq!(book_extension("三体.epub"), Some("epub"));
+        assert_eq!(book_extension("三体.PDF"), Some("pdf"));
+        assert_eq!(book_extension("三体.txt"), None);
+        assert_eq!(book_extension("三体"), None);
+    }
 }

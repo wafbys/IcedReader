@@ -11,6 +11,10 @@ type Props = {
   currentIndex: number;
   onSelect: (href: string) => void;
   onClose: () => void;
+  /** 没有 toc 时是否退回 spine 标题（EPUB 常态）。PDF 关掉：它的 spine 是
+   *  一页一条，退回等于给几百上千行的页序列表，而约定是「无 outline 就不给
+   *  目录」（AGENTS「PDF（第一期：只读）」）。 */
+  spineFallback?: boolean;
 };
 
 function spineAsToc(spine: SpineItem[]): TocNode[] {
@@ -39,10 +43,11 @@ export default function TocPanel({
   currentIndex,
   onSelect,
   onClose,
+  spineFallback = true,
 }: Props) {
   const tree = useMemo(
-    () => (toc.length ? toc : spineAsToc(spine)),
-    [toc, spine],
+    () => (toc.length ? toc : spineFallback ? spineAsToc(spine) : []),
+    [toc, spine, spineFallback],
   );
   const [open, setOpen] = useState(() => allOpenIds(tree));
   const currentRef = useRef<HTMLButtonElement>(null);

@@ -114,6 +114,7 @@ export type BookMetaFields = {
 
 export type OpenedBook = {
   id: string;
+  /** `"epub"` | `"pdf"` — the reading shell branches on this (AGENTS「改 UI 时」). */
   format: string;
   path: string;
   progressKey: string;
@@ -124,6 +125,12 @@ export type OpenedBook = {
   /** Per-chapter raw visible-text char counts (spine order). Whole-book
    *  position weights for notes.md 全书% and 按位置跳转. */
   chapterChars: number[];
+  /** 打开时的格式特有提示（中文，可直接显示）。EPUB 恒为空数组；PDF 正文若用了
+   *  未嵌入的非标准字体，这里有一条「可能缺字」提示。 */
+  warnings: string[];
+  /** 每页 `[宽, 高]`（PDF 单位，只用比例）。PDF 连续纸带靠它从第一帧就铺出正确
+   *  占位（滚动条长度、跳页都准），不必等图片加载。EPUB 恒为空数组。 */
+  pageSizes: [number, number][];
 };
 
 export type FontSlotId = "serif" | "sans" | "mono" | "cjk";

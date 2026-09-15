@@ -1,16 +1,19 @@
 //! Reading progress: `Locator` (`href` + fraction 0..=1, `cfi` unused) keyed
 //! so a moved portable folder still finds the same book.
 //!
-//! Key order in [`progress_key`]: non-empty EPUB identifier → `id:{id}`; else
-//! a path relative to the portable library → `lib:{rel}`; else `path:` as
-//! last-resort fallback (absolute, breaks if the folder moves). Never use
-//! `path:` as the primary key when a library dir exists.
+//! Key order in [`progress_key`]: non-empty identifier (EPUB `dc:identifier`;
+//! PDFs carry none today) → `id:{id}`; else a path relative to the portable
+//! library → `lib:{rel}`; else `path:` as last-resort fallback (absolute,
+//! breaks if the folder moves). Never use `path:` as the primary key when a
+//! library dir exists.
 //!
 //! `lib:书名-N.epub` and `lib:书名.epub` are the same book ([`same_book`] /
 //! [`lib_book_stem`]): a trailing `-` + digits is a numbered copy, not part
 //! of the title (`三体3` stays distinct from `三体`; `1984-2` still matches
 //! `1984`). Import reuses an existing same-name file instead of writing
-//! `书名-2.epub`.
+//! `书名-2.epub`. The **extension stays part of the identity**, so an EPUB and
+//! a PDF of the same title are two different books (a rename or a delete of
+//! one must not touch the other's records).
 
 use std::collections::HashMap;
 use std::fs;
@@ -223,9 +226,12 @@ pub(crate) fn same_book(a: &str, b: &str) -> bool {
 /// trailing `-` followed by digits. A plain trailing digit is part of the
 /// title (`lib:三体3.epub` ≠ `lib:三体.epub`) and a fully numeric title
 /// (`lib:1984.epub`) must survive so its `1984-2` copy still matches.
+/// The extension is kept, so `.epub` and `.pdf` of one title stay distinct.
 fn lib_book_stem(key: &str) -> Option<String> {
     let rest = key.strip_prefix("lib:")?;
-    let mut stem = rest.strip_suffix(".epub").unwrap_or(rest);
+    let stem_end = crate::book_stem(rest).len();
+    let (stem, extension) = rest.split_at(stem_end);
+    let mut stem = stem;
     loop {
         let Some(hyph) = stem.rfind('-') else {
             break;
@@ -237,7 +243,9 @@ fn lib_book_stem(key: &str) -> Option<String> {
             break;
         }
     }
-    let normalized = stem.replace('\\', "/").to_lowercase();
+    let normalized = format!("{stem}{extension}")
+        .replace('\\', "/")
+        .to_lowercase();
     (!normalized.is_empty()).then_some(normalized)
 }
 
@@ -448,5 +456,52 @@ mod tests {
             0.9
         );
         assert_eq!(store.entries.len(), 1, "alias records merged");
+    }
+
+    #[test]
+    fn pdf_keys_alias_like_epub_keys_but_stay_a_separate_format() {
+        let loc = |f: f64| Locator {
+            href: "page/0007".into(),
+            fraction: f,
+            cfi: None,
+        };
+        // Numbered copies of a PDF are one book…
+        assert!(same_book("lib:书名.pdf", "lib:书名-2.pdf"));
+        assert!(same_book("lib:书名.PDF", "lib:书名.pdf"));
+        // …while the same title in the other format is a different book, so
+        // renaming or deleting one must not move the other's records.
+        assert!(!same_book("lib:书名.epub", "lib:书名.pdf"));
+        assert!(!same_book("lib:三体3.pdf", "lib:三体.pdf"));
+
+        let mut store = ProgressStore::in_memory();
+        store.set("lib:书名.epub".into(), loc(0.2)).unwrap();
+        store.set("lib:书名.pdf".into(), loc(0.8)).unwrap();
+        assert!(store.get("lib:书名.epub").is_some());
+        assert!(store.get("lib:书名.pdf").is_some());
+        store.remove("lib:书名.epub").unwrap();
+        assert!(
+            store.get("lib:书名.pdf").is_some(),
+            "the PDF record must survive deleting the EPUB record"
+        );
+        assert_eq!(store.entries.len(), 1);
+    }
+
+    #[test]
+    fn lib_book_stem_keeps_extension_and_strips_copy_suffix() {
+        assert_eq!(lib_book_stem("lib:书名.pdf").as_deref(), Some("书名.pdf"));
+        assert_eq!(
+            lib_book_stem("lib:书名-12.pdf").as_deref(),
+            Some("书名.pdf")
+        );
+        assert_eq!(
+            lib_book_stem("lib:书名.EPUB").as_deref(),
+            Some("书名.epub")
+        );
+        // Unknown extension: the whole name is the stem (no stripping).
+        assert_eq!(
+            lib_book_stem("lib:readme.txt").as_deref(),
+            Some("readme.txt")
+        );
+        assert_eq!(lib_book_stem("id:urn:isbn:1"), None);
     }
 }

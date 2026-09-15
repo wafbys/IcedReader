@@ -1,5 +1,5 @@
 //! View models + pure assembly for the 编辑元数据 panel. The companion md
-//! lives next to the epub in `data/library/`; the file format, parsing and the
+//! lives next to the book file in `data/library/`; the format, parsing and the
 //! display-title resolution rules live in `iced_reader_core::book_meta`.
 
 use iced_reader_core::{clean_person_list, clean_title, join_title, resolved_title, BookMeta};

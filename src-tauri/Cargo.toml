@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 iced-reader-core = { path = "../crates/core" }
 iced-reader-epub = { path = "../crates/formats-epub" }
+iced-reader-pdf = { path = "../crates/formats-pdf" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { workspace = true }

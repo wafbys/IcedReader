@@ -35,10 +35,18 @@ target
 /tmp
 *.epub.bak
 fixtures/verify-*.png
+# PDF spike harness output (rendered sample pages for eyeballing)
+*.spike/
+# Transient write directories left by editor/agent tooling (a file being
+# rewritten lands here first, then gets renamed into place). Never commit them;
+# a stale one also makes Vite's watcher throw EBUSY.
+*.tmpdir/
 
 # Local test books next to the repo (keep fixtures/sample.epub)
 *.epub
 !fixtures/*.epub
+*.pdf
+!fixtures/*.pdf
 
 # Codewhale agent runtime state
 .codewhale/

@@ -3,21 +3,21 @@ mod book_meta;
 mod book_signals;
 mod library;
 mod notes;
+mod openers;
 mod portable;
 mod protocol;
 mod window_state;
 
 use std::collections::HashMap;
 use std::fs;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use iced_reader_core::{
-    clean_person_list, clean_title, collect_publisher_fonts, progress_key, read_meta_file,
-    resolved_title, write_meta_file, AnnotationStore, Book, BookMeta, BookOpener, ChapterView,
-    FontSettingsView, FontSlot, Highlight, Locator, Metadata, ProgressStore, SettingsStore,
-    SpineItem, TocNode, COLOR_GREEN, COLOR_YELLOW,
+    book_extension, clean_person_list, clean_title, collect_publisher_fonts, progress_key,
+    read_meta_file, resolved_title, write_meta_file, AnnotationStore, Book, BookMeta,
+    ChapterView, FontSettingsView, FontSlot, Highlight, Locator, Metadata, ProgressStore,
+    SettingsStore, SpineItem, TocNode, COLOR_GREEN, COLOR_YELLOW, PDF_FORMAT,
 };
-use iced_reader_epub::EpubOpener;
 use serde::Serialize;
 use tauri::Manager;
 use uuid::Uuid;
@@ -37,14 +37,21 @@ fn window_title(base: &str) -> String {
 }
 
 pub struct AppState {
-    pub books: Mutex<HashMap<String, Box<dyn Book>>>,
+    /// Books sit behind an `Arc` so a command can take one **out of the map and
+    /// drop the lock** before doing slow work. That matters for PDF:
+    /// rasterising a page is synchronous and a heavy page can take 0.7–1.7 s,
+    /// and holding the map lock across it would stall every other book
+    /// operation.
+    pub books: Mutex<HashMap<String, Arc<dyn Book>>>,
     pub progress: Mutex<ProgressStore>,
     pub settings: Mutex<SettingsStore>,
     pub annotations: Mutex<AnnotationStore>,
     /// Per-file-revision shelf metadata (avoids re-opening big epubs on every shelf refresh).
     pub library_meta: Mutex<library::LibraryMetaCache>,
-    /// Per-file-revision cover bytes (avoids re-opening the archive per cover request).
-    pub covers: Mutex<library::CoverCache>,
+    /// Per-file-revision cover bytes (avoids re-opening the archive per cover
+    /// request). Behind an `Arc` so a cover miss can warm it on a worker thread
+    /// while the protocol request answers with a placeholder immediately.
+    pub covers: Arc<Mutex<library::CoverCache>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,17 +67,27 @@ pub struct OpenedBook {
     pub spine: Vec<SpineItem>,
     /// Per-chapter raw visible-text char counts (spine order) + implicit total.
     /// Whole-book position weights for notes.md 全书% and 按位置跳转.
+    /// PDFs weigh every page equally (`1` per page) — a page is the unit.
     #[serde(rename = "chapterChars")]
     pub chapter_chars: Vec<u64>,
+    /// Format-specific notices for the reader. PDFs whose **visible** text uses
+    /// fonts the renderer cannot supply land here (see
+    /// `iced_reader_pdf::PdfDoc::visible_text_risk`); empty for EPUB.
+    pub warnings: Vec<String>,
+    /// Per-spine-unit size in the format's own units, for **fixed-layout**
+    /// formats (PDF): the shell builds one continuous strip of page
+    /// placeholders from it, so scroll length and page jumps are right before
+    /// any image arrives. Empty for reflowable formats (EPUB).
+    #[serde(rename = "pageSizes")]
+    pub page_sizes: Vec<(f32, f32)>,
 }
 
 #[tauri::command]
-fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, String> {
-    let opener = EpubOpener;
+async fn open_book(path: String, state: tauri::State<'_, AppState>) -> Result<OpenedBook, String> {
     let source = std::path::Path::new(&path);
-    if !opener.can_open(source) {
-        return Err(format!("unsupported file: {path}"));
-    }
+    let opener = openers::opener_for(source)
+        .ok_or_else(|| format!("unsupported file: {path}"))?;
+    let is_pdf = opener.format_id() == PDF_FORMAT;
     let imported = portable::import_book(source).map_err(|e| e.to_string())?;
     let book = opener.open(&imported).map_err(|e| e.to_string())?;
     let mut metadata = book.metadata();
@@ -87,35 +104,35 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
         .and_then(|store| store.get(&key).map(|r| r.locator.clone()));
 
     // First-import book signals (fingerprint + quality), cached by file rev.
-    // Only computed when the cache is missing/stale; list_library never
-    // recomputes. UI shows a busy state while this runs (AGENTS: 导入时计算
-    // 且要有界面反馈；同书只提示，质量分入书架排序与封面角标).
+    // Computed **in the background**: a whole-document analysis is not cheap
+    // (a 952-page PDF spends ~1 s even with optimized dependencies, and the
+    // reader would show a blank window for that long). The shelf picks the
+    // grade up from `book-signals.json` on its next listing; this open's
+    // `warnings` come from an already-cached analysis when there is one.
     let rev = library::file_rev(&imported);
     let file_name = imported
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let cached_signals = book_signals::read_all().get(&file_name).cloned();
     if !file_name.is_empty() {
-        let need = book_signals::read_all()
-            .get(&file_name)
-            .map(|s| {
+        let need = match &cached_signals {
+            None => true,
+            Some(s) => {
                 s.rev != rev
-                    || s.chapter_chars.is_empty()
-                    || s.chapter_chars_kind != book_signals::CHAPTER_CHARS_PER_SPINE
                     || s.analysis_kind != book_signals::ANALYSIS_KIND
-            })
-            .unwrap_or(true);
-        if need {
-            let images = iced_reader_epub::image_stats(&imported).unwrap_or_default();
-            if let Ok(signals) = book_signals::analyze_book(
-                book.as_ref(),
-                &metadata.identifiers,
-                !metadata.authors.is_empty(),
-                &rev,
-                images,
-            ) {
-                book_signals::write_one(&file_name, &signals);
+                    || (is_pdf && s.pdf.is_none())
+                    || (!is_pdf && (s.chapter_chars.is_empty() || s.chapter_chars_kind != book_signals::CHAPTER_CHARS_PER_SPINE))
             }
+        };
+        if need {
+            book_signals::analyze_in_background(
+                imported.clone(),
+                file_name.clone(),
+                rev.clone(),
+                metadata.identifiers.clone(),
+                !metadata.authors.is_empty(),
+            );
         }
     }
 
@@ -130,6 +147,23 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
         }
     }
 
+    let spine = book.spine();
+    // PDFs: one page is one spine unit, so every page weighs the same and the
+    // whole-book % / 按位置跳转 work on page numbers without any text metrics.
+    let chapter_chars = if is_pdf {
+        vec![1u64; spine.len()]
+    } else {
+        book_signals::read_all()
+            .get(&file_name)
+            .map(|s| s.chapter_chars.clone())
+            .unwrap_or_default()
+    };
+    let warnings = if is_pdf {
+        pdf_warnings(&file_name, &rev, cached_signals.as_ref())
+    } else {
+        Vec::new()
+    };
+
     let opened = OpenedBook {
         id: Uuid::new_v4().to_string(),
         format: book.format_id().to_string(),
@@ -138,20 +172,46 @@ fn open_book(path: String, state: tauri::State<AppState>) -> Result<OpenedBook, 
         progress,
         metadata,
         toc: book.toc(),
-        spine: book.spine(),
-        chapter_chars: book_signals::read_all()
-            .get(&file_name)
-            .map(|s| s.chapter_chars.clone())
-            .unwrap_or_default(),
+        spine,
+        chapter_chars,
+        warnings,
+        page_sizes: book.page_sizes(),
     };
     state
         .books
         .lock()
         .map_err(|e| e.to_string())?
-        .insert(opened.id.clone(), book);
+        .insert(opened.id.clone(), Arc::from(book));
     Ok(opened)
 }
 
+/// Notices for a PDF the renderer cannot draw completely: visible text whose
+/// font is neither embedded nor one of the standard 14. Scanned books (with or
+/// without an invisible OCR layer) are **not** affected, which is why the check
+/// looks at text rendering modes instead of just at the font list.
+///
+/// Reads the **cached** analysis instead of opening the document again: the
+/// census costs ~1 s on a big book, and opening a book must not wait for it
+/// (the background analysis fills the cache; the next open shows the banner).
+fn pdf_warnings(
+    file_name: &str,
+    rev: &str,
+    cached: Option<&book_signals::BookSignals>,
+) -> Vec<String> {
+    let fonts = cached
+        .filter(|s| s.rev == rev)
+        .and_then(|s| s.pdf.as_ref())
+        .map(|pdf| pdf.unresolved_visible_fonts.clone())
+        .unwrap_or_default();
+    if fonts.is_empty() {
+        return Vec::new();
+    }
+    let _ = file_name;
+    vec![format!(
+        "此 PDF 的正文使用了未嵌入的字体（{}），这些页可能显示不全。",
+        fonts.join("、")
+    )]
+}
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -241,7 +301,7 @@ struct NoteView {
 }
 
 #[tauri::command]
-fn list_annotations(key: String, state: tauri::State<AppState>) -> Result<Vec<Highlight>, String> {
+fn list_annotations(key: String, state: tauri::State<'_, AppState>) -> Result<Vec<Highlight>, String> {
     state
         .annotations
         .lock()
@@ -260,7 +320,7 @@ fn add_annotation(
     text: String,
     color: String,
     pos: f64,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Highlight, String> {
     // 颜色规范化：只认 yellow/green，其余归默认黄（存储 key 即 ::highlight 名）。
     let color = if color == COLOR_GREEN {
@@ -296,7 +356,7 @@ fn delete_annotation(
     file_name: String,
     key: String,
     id: String,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let text = read_notes_text(&file_name);
     if !text.is_empty() {
@@ -324,7 +384,7 @@ fn save_note(
     key: String,
     id: String,
     note: String,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     // 划线必须在当前书里；章归属需要打开的书（spine 标题）。
     let rec = state
@@ -336,8 +396,15 @@ fn save_note(
         .find(|h| h.id == id)
         .ok_or_else(|| "划线不存在".to_string())?;
     let (section_title, created_iso, excerpt) = {
-        let books = state.books.lock().map_err(|e| e.to_string())?;
-        let book = books.get(&book_id).ok_or_else(|| "book not open".to_string())?;
+        // Clone the `Arc` out and drop the map lock before asking the book for
+        // its spine (an EPUB spine read touches the archive).
+        let book = {
+            let books = state.books.lock().map_err(|e| e.to_string())?;
+            books
+                .get(&book_id)
+                .ok_or_else(|| "book not open".to_string())?
+                .clone()
+        };
         let spine = book.spine();
         let idx = spine_index_for(&spine, &rec.href).ok_or_else(|| "无法定位划线章节".to_string())?;
         let total = spine.len();
@@ -405,19 +472,34 @@ fn read_notes(file_name: String) -> Result<Vec<NoteView>, String> {
 }
 
 #[tauri::command]
-fn get_chapter(id: String, href: String, state: tauri::State<AppState>) -> Result<ChapterView, String> {
-    let (html, publisher_fonts) = {
+async fn get_chapter(id: String, href: String, state: tauri::State<'_, AppState>) -> Result<ChapterView, String> {
+    // Take the book out of the map and drop the lock before laying out: for a
+    // PDF this call rasterises a page (up to ~1.7 s on a heavy first page).
+    let book = {
         let books = state.books.lock().map_err(|e| e.to_string())?;
-        let book = books.get(&id).ok_or_else(|| "book not open".to_string())?;
-        let base = protocol::resource_base(&id);
-        let html = book
-            .chapter_html(&href, &base)
-            .map_err(|e| e.to_string())?;
-        let publisher_fonts = collect_publisher_fonts(&html, &base, &href, |res_href| {
-            load_book_text(book.as_ref(), res_href)
-        });
-        (html, publisher_fonts)
+        books
+            .get(&id)
+            .ok_or_else(|| "book not open".to_string())?
+            .clone()
     };
+    let is_pdf = book.format_id() == PDF_FORMAT;
+    let base = protocol::resource_base(&id);
+    let html = book
+        .chapter_html(&href, &base)
+        .map_err(|e| e.to_string())?;
+    // A PDF page document is our own and carries no CSS, so the publisher
+    // font report comes back empty either way.
+    let publisher_fonts = collect_publisher_fonts(&html, &base, &href, |res_href| {
+        load_book_text(book.as_ref(), res_href)
+    });
+    // Custom reader fonts never touch a PDF page: the glyphs are already
+    // rasterised into the image.
+    if is_pdf {
+        return Ok(ChapterView {
+            html,
+            publisher_fonts,
+        });
+    }
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
     Ok(ChapterView {
         html: fonts::apply_html_if_active(html, &settings),
@@ -450,7 +532,7 @@ fn save_progress(
     key: String,
     href: String,
     fraction: f64,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     state
         .progress
@@ -473,7 +555,7 @@ fn resource_origin() -> String {
 }
 
 #[tauri::command]
-fn get_font_settings(state: tauri::State<AppState>) -> Result<FontSettingsView, String> {
+fn get_font_settings(state: tauri::State<'_, AppState>) -> Result<FontSettingsView, String> {
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
     Ok(settings.view())
 }
@@ -481,7 +563,7 @@ fn get_font_settings(state: tauri::State<AppState>) -> Result<FontSettingsView, 
 #[tauri::command]
 fn set_use_original_fonts(
     use_original_fonts: bool,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<FontSettingsView, String> {
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
     settings
@@ -493,7 +575,7 @@ fn set_use_original_fonts(
 #[tauri::command]
 fn set_font_scale(
     font_scale: u32,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<FontSettingsView, String> {
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
     settings
@@ -506,7 +588,7 @@ fn set_font_scale(
 fn install_font(
     slot: String,
     path: String,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<FontSettingsView, String> {
     let slot = FontSlot::parse(&slot).ok_or_else(|| "未知字体槽位".to_string())?;
     let file = fonts::copy_into_slot(slot, std::path::Path::new(&path))?;
@@ -516,7 +598,7 @@ fn install_font(
 }
 
 #[tauri::command]
-fn clear_font(slot: String, state: tauri::State<AppState>) -> Result<FontSettingsView, String> {
+fn clear_font(slot: String, state: tauri::State<'_, AppState>) -> Result<FontSettingsView, String> {
     let slot = FontSlot::parse(&slot).ok_or_else(|| "未知字体槽位".to_string())?;
     let view = {
         let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
@@ -531,14 +613,31 @@ fn clear_font(slot: String, state: tauri::State<AppState>) -> Result<FontSetting
 /// (the expensive open + flattened TOC happens once per changed file); only
 /// the progress fields come from the live store.
 #[tauri::command]
-fn list_library(state: tauri::State<AppState>) -> Result<Vec<library::LibraryEntry>, String> {
+async fn list_library(state: tauri::State<'_, AppState>) -> Result<Vec<library::LibraryEntry>, String> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     let progress = {
         let store = state.progress.lock().map_err(|e| e.to_string())?;
         store.snapshot()
     };
     let mut cache = state.library_meta.lock().map_err(|e| e.to_string())?;
-    Ok(library::list_library_cached(&dir, &progress, &mut cache))
+    // Read the signals cache once per listing (never recomputed here).
+    let signals = book_signals::read_all();
+    let entries = library::list_library_cached(&dir, &progress, &mut cache, &signals);
+    drop(cache);
+    // Warm covers for this shelf **off** the listing path: a PDF cover costs
+    // real CPU, and a protocol request must never do it (see
+    // `serve_library_cover`). With this the first cover request usually hits and
+    // the shelf shows real covers instead of the placeholder.
+    for entry in &entries {
+        if entry.has_cover {
+            library::warm_cover_in_background(
+                dir.join(&entry.file_name),
+                entry.file_name.clone(),
+                std::sync::Arc::clone(&state.covers),
+            );
+        }
+    }
+    Ok(entries)
 }
 
 /// Open one book's editable metadata (the companion md) for the 编辑元数据
@@ -546,7 +645,7 @@ fn list_library(state: tauri::State<AppState>) -> Result<Vec<library::LibraryEnt
 #[tauri::command]
 fn get_book_meta(
     file_name: String,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<book_meta::BookMetaView, String> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     let md_path = library::meta_path_for(&dir, &file_name)?;
@@ -562,13 +661,13 @@ fn get_book_meta(
     Ok(book_meta::view_for(&profile, overlay.as_ref()))
 }
 
-/// Re-read the epub's own metadata and rebuild the 编辑元数据 form from it
+/// Re-read the book's own metadata and rebuild the 编辑元数据 form from it
 /// (清空手填、填充原书字段)。The panel only fills the form with the result —
 /// saving stays an explicit separate action by the user.
 #[tauri::command]
-fn reread_book_meta(
+async fn reread_book_meta(
     file_name: String,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<book_meta::BookMetaView, String> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     let md_path = library::meta_path_for(&dir, &file_name)?;
@@ -584,7 +683,7 @@ fn reread_book_meta(
     let original_title = existing
         .and_then(|m| m.original_title)
         .unwrap_or_else(|| profile.title.clone());
-    let book = EpubOpener.open(&path).map_err(|e| e.to_string())?;
+    let book = openers::open_any(&path).map_err(|e| e.to_string())?;
     let metadata = book.metadata();
     Ok(book_meta::reread_view_for(&profile, &original_title, &metadata))
 }
@@ -593,10 +692,10 @@ fn reread_book_meta(
 /// (freezing bookFile / originalTitle), overwrites it afterwards. The md is
 /// program-maintained — the UI panel is the only editing surface.
 #[tauri::command]
-fn set_book_meta(
+async fn set_book_meta(
     file_name: String,
     fields: book_meta::BookMetaFields,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     let md_path = library::meta_path_for(&dir, &file_name)?;
@@ -652,7 +751,10 @@ fn set_book_meta(
         // `lib:` key (which embeds the file name) must be carried over, along
         // with the highlights and cached quality signals under the old name.
         if profile.progress_key.starts_with("lib:") {
-            let new_lib_key = format!("lib:{}.epub", target_stem.to_lowercase());
+            // The key embeds the file name *and its format*: renaming a PDF
+            // must not carry the EPUB of the same title along.
+            let extension = book_extension(&file_name).unwrap_or("epub");
+            let new_lib_key = format!("lib:{}.{}", target_stem.to_lowercase(), extension);
             state
                 .progress
                 .lock()
@@ -700,13 +802,13 @@ fn set_book_meta(
     write_meta_file(&final_md_path, &meta).map_err(|e| e.to_string())
 }
 
-/// Remove a library book: its epub file first, then the progress and
+/// Remove a library book: its file first, then the progress and
 /// annotation records keyed to it. Callers must confirm with the user first.
 #[tauri::command]
 fn delete_book(
     file_name: String,
     progress_key: String,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     library::delete_book_from(&dir, &file_name)?;
@@ -740,7 +842,7 @@ fn pending_book() -> Option<String> {
 }
 
 #[tauri::command]
-fn close_book(id: String, state: tauri::State<AppState>) -> Result<(), String> {
+fn close_book(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     state
         .books
         .lock()
@@ -774,7 +876,7 @@ pub fn run() {
             settings: Mutex::new(SettingsStore::in_memory(std::path::PathBuf::from("fonts"))),
             annotations: Mutex::new(AnnotationStore::in_memory()),
             library_meta: Mutex::new(library::LibraryMetaCache::default()),
-            covers: Mutex::new(library::CoverCache::default()),
+            covers: Arc::new(Mutex::new(library::CoverCache::default())),
         })
         .setup(|app| {
             portable::ensure_layout().map_err(|e| e.to_string())?;

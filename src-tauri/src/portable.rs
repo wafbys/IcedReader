@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! data/
-//!   library/          *.epub, <stem>.md, <stem>.notes.md
+//!   library/          *.epub / *.pdf, <stem>.md, <stem>.notes.md
 //!   fonts/            serif/sans/mono/cjk + sniffed extension
 //!   settings.json     阅读设置（含四槽登记）
 //!   window.json       位置 / 大小 / 最大化（不含全屏）
@@ -16,6 +16,11 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+/// Fallback extension when a source file name cannot be used verbatim. The
+/// real extension always survives `safe_filename`; this is only for the
+/// degenerate "no name at all" case.
+const DEFAULT_BOOK_EXTENSION: &str = "epub";
 
 pub fn exe_dir() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
@@ -99,7 +104,7 @@ pub fn import_book_to(src: &Path, library: &Path) -> io::Result<PathBuf> {
         .file_name()
         .map(|n| safe_filename(&n.to_string_lossy()))
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "book.epub".into());
+        .unwrap_or_else(|| format!("book.{DEFAULT_BOOK_EXTENSION}"));
     let dest = lib_n.join(&name);
     if dest.exists() {
         return Ok(dest);
@@ -119,7 +124,7 @@ fn safe_filename(name: &str) -> String {
         })
         .collect();
     if mapped.is_empty() {
-        "book.epub".into()
+        format!("book.{DEFAULT_BOOK_EXTENSION}")
     } else {
         mapped
     }

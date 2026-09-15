@@ -141,7 +141,7 @@ body {
   white-space: nowrap;
 }
 
-/* 窗口窄时，阅读视图把低频按钮（打开 EPUB / 目录 / 划线 / 字体 / 全屏）收进
+/* 窗口窄时，阅读视图把低频按钮（打开电子书 / 目录 / 划线 / 字体 / 全屏）收进
    「⋯」菜单——上一章/下一章、字号、书名保持常显。 */
 @media (max-width: 1180px) {
   .reading .chrome .chrome-more {
@@ -224,6 +224,21 @@ body {
   font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: #c8bfb4;
+}
+
+/* PDF 缩放（替代 A−/A+ 的位置，常显不收纳）。 */
+.zoom-mode {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.zoom-mode .btn.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .btn {
@@ -553,6 +568,20 @@ body {
   background: #f4d7cc;
   color: #6a2a16;
   font-size: 13px;
+}
+
+/* 格式提示（PDF 缺字风险等）：浅纸色、可关闭，不是错误也不是主题色。 */
+.banner.notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f6efe0;
+  color: #5d5245;
+  border-bottom: 1px solid #e4d9c4;
+}
+
+.banner.notice .btn {
+  margin-left: auto;
 }
 
 .stage {
@@ -945,6 +974,52 @@ body {
 
 .flow-host.portrait {
   --flow-max-columns: 1;
+}
+
+/* ---- PDF：连续纸带（SumatraPDF 式）----------------------------------------
+   PDF 不走 .flow-host / 分栏分页器，也没有 iframe：`.pdf-scroll` 就是父页里的一个
+   普通纵向滚动容器，里面是整条纸带。所以这里既没有列宽上限（EPUB 的 720px 是文本
+   行长），也没有注入到章节文档里的样式。 */
+
+.pdf-scroll {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  /* 预留滚动条槽：否则第一张纸撑高后滚动条一出现，clientWidth 就变，纸宽跟着抖。 */
+  scrollbar-gutter: stable;
+  background: var(--paper);
+}
+
+.pdf-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* 纸的尺寸由组件写在行内：--pdf-sheet-w/h（比例特殊的纸自己写死 width/height）。 */
+}
+
+.pdf-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 24px; /* 与 pdfPaging.ts 的 SHEET_GAP 同值 */
+}
+
+.pdf-sheet {
+  flex: 0 0 auto;
+  width: var(--pdf-sheet-w);
+  height: var(--pdf-sheet-h);
+  background: #fff;
+}
+
+.pdf-sheet img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  -webkit-user-drag: none;
 }
 
 .flow-container {

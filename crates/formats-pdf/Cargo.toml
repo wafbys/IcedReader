@@ -1,0 +1,29 @@
+[package]
+name = "iced-reader-pdf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PDF adapter for iced-reader-core (spike: raster + font audit)"
+
+# Spike stage: no `Book`/`BookOpener` implementation yet (see docs/ideas/pdf.md).
+# The point of this crate right now is to answer three questions on real files:
+#   1. does hayro compile on MSVC and render (quality),
+#   2. how many fonts are embedded vs. relied upon from the system (R1),
+#   3. how long a page takes (R3).
+[dependencies]
+iced-reader-core = { path = "../core" }
+# `embed-fonts` supplies substitutes for the 14 PDF standard fonts that are
+# allowed to be non-embedded; without it Helvetica/Times pages render blank.
+hayro = { version = "0.7", features = ["embed-fonts"] }
+# `unsafe` enables SIMD/memchr/flate2 fast paths inside the PDF reader; scanned
+# pages spend most of their time decoding embedded image streams.
+hayro-syntax = "0.7"
+lopdf = "0.45"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+serde = { workspace = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+# Probe only (see examples/svg_probe.rs): can a text PDF be served as vector SVG
+# instead of a raster? Not part of the shipped reader path.
+hayro-svg = "0.7"

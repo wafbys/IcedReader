@@ -24,6 +24,8 @@ import {
 } from "./types";
 import { specifiedFamiliesFromReport } from "./usedFonts";
 import type { HighlightAnchor } from "./highlights";
+import PdfView, { type PdfViewHandle, type PdfViewState } from "./PdfView";
+import type { PdfSpread } from "./pdfPaging";
 import {
   isAppFullscreen,
   setAppFullscreen,
@@ -95,6 +97,7 @@ export default function App() {
   bookRef.current = book;
   const indexRef = useRef(index);
   indexRef.current = index;
+  const isPdfRef = useRef(false);
   const pending = useRef<{ key: string; href: string; fraction: number } | null>(
     null,
   );
@@ -103,7 +106,40 @@ export default function App() {
 
   const spine = book?.spine ?? [];
   const current = spine[index];
+  /** PDF：一页 = 一个 spine 单元。字号/字体/划线对 PDF 无意义，改由缩放接管。 */
+  const isPdf = book?.format === "pdf";
+  /** PDF 缩放：适应页面（纸高＝阅读区高）/ 适应宽度（纸宽＝阅读区宽）。 */
+  const [pdfFit, setPdfFit] = useState<"page" | "width">("page");
+  /** 适应页面时的张数：自动（默认，按真实页面宽高比判）/ 单页 / 双页。 */
+  const [pdfSpread, setPdfSpread] = useState<PdfSpread>("auto");
+  /** PDF 纸带上报的当前状态：页码、实际张数、是否到头（顶栏禁用态与进度都靠它）。 */
+  const [pdfState, setPdfState] = useState<PdfViewState | null>(null);
+  /** 打开时的格式提示条（PDF 缺字风险）是否已被关掉。 */
+  const [warnDismissed, setWarnDismissed] = useState(false);
+  useEffect(() => {
+    setWarnDismissed(false);
+    // 换书时旧纸带的上报作废（新 PdfView 会立刻重新上报），否则顶栏禁用态会短暂用旧值。
+    setPdfState(null);
+  }, [book?.id]);
 
+  isPdfRef.current = !!isPdf;
+  /** 连续纸带视图的把手（上一页/下一页、跳页、滚一屏）。 */
+  const pdfRef = useRef<PdfViewHandle>(null);
+  /** 帧（EPUB）与纸带（PDF）各自上报的页码；换书时都作废。 */
+  const onPdfState = useCallback(
+    (state: PdfViewState) => {
+      setPdfState(state);
+      const next = state.page - 1;
+      if (next >= 0 && next !== indexRef.current) setIndex(next);
+    },
+    [],
+  );
+  /** EPUB 的取文档 key（spine href）。PDF 不走 `get_chapter`——连续纸带直接拼图片
+   *  URL（见 PdfView.tsx），所以这里是空串、取文档 effect 会跳过。 */
+  const requestHref = useMemo(
+    () => (isPdf ? "" : current?.href ?? ""),
+    [isPdf, current?.href],
+  );
   /** 每章在全书的起始字符偏移（前缀和）+ 总字符；划线 pos 与「全书%」跳转共用。 */
   const bookCum = useMemo(() => {
     const chars = book?.chapterChars ?? [];
@@ -341,14 +377,18 @@ export default function App() {
   }, [book, current, restoreFraction, flushProgress]);
 
   useEffect(() => {
-    if (!book || !current) {
+    if (!book) {
       setChapterHtml("");
       setPublisherFonts(null);
       setUsedFonts(null);
       return;
     }
+    // 只有 `requestHref` 变了才重新取文档；EPUB 的它就是 spine href。
+    // PDF 的 `requestHref` 恒为空串 —— 连续纸带由 `PdfView` 直接拼图片 URL，
+    // 不走 `get_chapter`，所以滚到哪一页都不会触发文档请求。
+    if (!requestHref) return;
     let cancelled = false;
-    invoke<ChapterPayload>("get_chapter", { id: book.id, href: current.href })
+    invoke<ChapterPayload>("get_chapter", { id: book.id, href: requestHref })
       .then((chapter) => {
         if (!cancelled) {
           setChapterHtml(chapter.html);
@@ -366,7 +406,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [book, current, settingsRev]);
+  }, [book, requestHref, settingsRev]);
 
   const applyFonts = useCallback((next: FontSettings) => {
     setFonts(next);
@@ -561,10 +601,11 @@ export default function App() {
     [persistReadingPosition, loadLibrary, loadNotes],
   );
 
-  const openEpub = useCallback(async () => {
+  /** 导入一本外部电子书（EPUB / PDF 都走这一条，格式由 Rust 侧分派）。 */
+  const openBook = useCallback(async () => {
     const selected = await open({
       multiple: false,
-      filters: [{ name: "EPUB", extensions: ["epub"] }],
+      filters: [{ name: "电子书", extensions: ["epub", "pdf"] }],
     });
     if (!selected || Array.isArray(selected)) return;
     await openPath(selected);
@@ -603,15 +644,60 @@ export default function App() {
     [persistReadingPosition],
   );
 
-  const goPage = useCallback(
-    (delta: number) => {
-      const result = frameRef.current?.goPage(delta);
-      if (result === "after") goChapter(1, 0);
-      if (result === "before") goChapter(-1, 1);
+  /**
+   * PDF 跳页（目录 / 全书% / 翻页）：先让纸带把目标页滚到视口顶部，再更新 index。
+   *
+   * index 是**权威**：纸带上报的当前页只用来同步显示与进度，不会反过来驱动滚动——
+   * 所以「跳页」与「用户滚动」不会互相打架。进度只记页（fraction 恒 0），页内位置
+   * 是临时视图状态。
+   */
+  const pdfGoTo = useCallback(
+    (next: number, scrollFraction = 0) => {
+      const len = bookRef.current?.spine.length ?? 0;
+      const target = Math.min(len - 1, Math.max(0, next));
+      pdfRef.current?.goToPage(target + 1, scrollFraction);
+      if (target === indexRef.current) return;
+      void persistReadingPosition().then(() => {
+        lastFraction.current = 0;
+        setRestoreFraction(0);
+        setIndex(target);
+      });
+    },
+    [persistReadingPosition],
+  );
+
+  /** 章边界续翻（EPUB）：向回翻停在上一章末尾。PDF 由纸带自己按跨页步进。 */
+  const stepChapter = useCallback(
+    (delta: -1 | 1) => {
+      goChapter(delta, delta > 0 ? 0 : 1);
     },
     [goChapter],
   );
 
+  const goPage = useCallback(
+    (delta: number) => {
+      // PDF：纸带按「行」翻（双页就是跨页）。EPUB：分栏分页器，到边界续章。
+      if (isPdfRef.current) {
+        pdfRef.current?.goPage(delta < 0 ? -1 : 1);
+        return;
+      }
+      const result = frameRef.current?.goPage(delta);
+      if (result === "after") stepChapter(1);
+      if (result === "before") stepChapter(-1);
+    },
+    [stepChapter],
+  );
+
+  /** 上一页 / 下一页（PDF）：纸带按行（＝跨页）步进。 */
+  const pdfTurn = useCallback((delta: -1 | 1) => {
+    pdfRef.current?.goPage(delta);
+  }, []);
+
+  /** 到头的按钮要禁用：PDF 用纸带上报的 atStart/atEnd（双页步长不是 1）。 */
+  const prevDisabled = isPdf ? (pdfState?.atStart ?? true) : index <= 0;
+  const nextDisabled = isPdf
+    ? (pdfState?.atEnd ?? true)
+    : index >= spine.length - 1;
   const goToHref = useCallback(
     (href: string) => {
       const items = bookRef.current?.spine ?? [];
@@ -624,11 +710,18 @@ export default function App() {
       if (i === indexRef.current) {
         if (frag) {
           frameRef.current?.goToFragment(frag);
+        } else if (isPdfRef.current) {
+          // 同一页：把纸带挪到这一页顶部就行（PDF 没有页内锚点）。
+          pdfRef.current?.goToPage(i + 1, 0);
         } else {
           lastFraction.current = 0;
           setRestoreFraction(0);
           frameRef.current?.goToPage(0);
         }
+        return;
+      }
+      if (isPdfRef.current) {
+        pdfGoTo(i, 0);
         return;
       }
       flushProgress();
@@ -662,8 +755,18 @@ export default function App() {
       const len = chars[i] || 1;
       const frac = Math.min(0.9999, Math.max(0, (target - acc) / len));
       if (i === indexRef.current) {
+        if (isPdfRef.current) {
+          // PDF：chapterChars 每页 1，frac 就是页内比例 —— 把纸带滚到页内那个位置；
+          // 进度仍是「页 + fraction 0」（页内位置属于临时视图状态）。
+          pdfRef.current?.goToPage(i + 1, frac);
+          return;
+        }
         lastFraction.current = frac;
         frameRef.current?.goToFraction(frac);
+        return;
+      }
+      if (isPdfRef.current) {
+        pdfGoTo(i, frac);
         return;
       }
       void persistReadingPosition().then(() => {
@@ -672,7 +775,7 @@ export default function App() {
         setIndex(i);
       });
     },
-    [persistReadingPosition],
+    [persistReadingPosition, pdfGoTo],
   );
 
   const confirmJump = () => {
@@ -813,6 +916,43 @@ export default function App() {
       }
       if (editing) return;
       if (!bookRef.current) return;
+      // PDF：滚动就是滚动 —— 左右键翻页（双页按跨页），PageDown/Space 滚一屏，
+      // Home/End 到首/末页。EPUB 的按键语义一字未改（下面那两条老规矩）。
+      if (isPdfRef.current) {
+        const pageCount = bookRef.current.spine.length;
+        const key = e.key;
+        if (key === "ArrowRight") {
+          e.preventDefault();
+          pdfRef.current?.goPage(1);
+          return;
+        }
+        if (key === "ArrowLeft") {
+          e.preventDefault();
+          pdfRef.current?.goPage(-1);
+          return;
+        }
+        if (key === "PageDown" || (key === " " && !e.shiftKey)) {
+          e.preventDefault();
+          pdfRef.current?.scrollScreen(1);
+          return;
+        }
+        if (key === "PageUp" || (key === " " && e.shiftKey)) {
+          e.preventDefault();
+          pdfRef.current?.scrollScreen(-1);
+          return;
+        }
+        if (key === "Home") {
+          e.preventDefault();
+          pdfRef.current?.goToPage(1);
+          return;
+        }
+        if (key === "End") {
+          e.preventDefault();
+          pdfRef.current?.goToPage(pageCount);
+          return;
+        }
+        return;
+      }
       if (e.key === "ArrowRight" || e.key === "PageDown") {
         e.preventDefault();
         goPage(1);
@@ -861,10 +1001,10 @@ export default function App() {
         <button
           type="button"
           className="btn chrome-more"
-          onClick={openEpub}
+          onClick={openBook}
           disabled={busy}
         >
-          {busy ? "打开中…" : "打开 EPUB"}
+          {busy ? "打开中…" : "打开电子书"}
         </button>
         <button
           type="button"
@@ -877,45 +1017,109 @@ export default function App() {
         >
           目录
         </button>
-        <button
-          type="button"
-          className="btn ghost chrome-more"
-          onClick={() => {
-            setHighlightsOpen((openNow) => !openNow);
-            setTocOpen(false);
-          }}
-          disabled={!book}
-        >
-          划线
-        </button>
-        <button
-          type="button"
-          className="btn ghost chrome-more"
-          onClick={() => setFontOpen((openNow) => !openNow)}
-        >
-          字体
-        </button>
-        <div className="type-size">
+        {!isPdf && (
           <button
             type="button"
-            className="btn ghost small"
-            disabled={!fonts || (fonts.fontScale ?? 100) <= 80}
-            onClick={() => void bumpFontScale(-10)}
-            title="缩小字号"
+            className="btn ghost chrome-more"
+            onClick={() => {
+              setHighlightsOpen((openNow) => !openNow);
+              setTocOpen(false);
+            }}
+            disabled={!book}
           >
-            A−
+            划线
           </button>
-          <span>{fonts?.fontScale ?? 100}%</span>
+        )}
+        {!isPdf && (
           <button
             type="button"
-            className="btn ghost small"
-            disabled={!fonts || (fonts.fontScale ?? 100) >= 160}
-            onClick={() => void bumpFontScale(10)}
-            title="放大字号"
+            className="btn ghost chrome-more"
+            onClick={() => setFontOpen((openNow) => !openNow)}
           >
-            A+
+            字体
           </button>
-        </div>
+        )}
+        {isPdf ? (
+          <>
+            <div className="zoom-mode" role="group" aria-label="PDF 缩放">
+              <button
+                type="button"
+                className={`btn ghost small${pdfFit === "page" ? " on" : ""}`}
+                aria-pressed={pdfFit === "page"}
+                title="整页落在窗口里"
+                onClick={() => setPdfFit("page")}
+              >
+                适应页面
+              </button>
+              <button
+                type="button"
+                className={`btn ghost small${pdfFit === "width" ? " on" : ""}`}
+                aria-pressed={pdfFit === "width"}
+                title="页宽铺满窗口，连续滚动"
+                onClick={() => setPdfFit("width")}
+              >
+                适应宽度
+              </button>
+            </div>
+            {/* 张数只在「适应页面」下露出：适应宽度就是「纸宽贴合窗口、一次一张」
+                （并排阅读用「适应页面 + 双页」，等价且意图明确）。所以适应宽度时
+                给纸带的 spread 恒为 single——不然在适应页面选了双页、再切过来，
+                会得到控制项看不见却已经并排的两张纸。 */}
+            {pdfFit === "page" && (
+              <div className="zoom-mode" role="group" aria-label="PDF 张数">
+                <button
+                  type="button"
+                  className={`btn ghost small${pdfSpread === "auto" ? " on" : ""}`}
+                  aria-pressed={pdfSpread === "auto"}
+                  title="按页面比例自动：横向空间够就并排两页"
+                  onClick={() => setPdfSpread("auto")}
+                >
+                  自动
+                </button>
+                <button
+                  type="button"
+                  className={`btn ghost small${pdfSpread === "single" ? " on" : ""}`}
+                  aria-pressed={pdfSpread === "single"}
+                  title="一次一张纸"
+                  onClick={() => setPdfSpread("single")}
+                >
+                  单页
+                </button>
+                <button
+                  type="button"
+                  className={`btn ghost small${pdfSpread === "double" ? " on" : ""}`}
+                  aria-pressed={pdfSpread === "double"}
+                  title="书式跨页：封面单独，之后 2-3、4-5 成对"
+                  onClick={() => setPdfSpread("double")}
+                >
+                  双页
+                </button>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="type-size">
+            <button
+              type="button"
+              className="btn ghost small"
+              disabled={!fonts || (fonts.fontScale ?? 100) <= 80}
+              onClick={() => void bumpFontScale(-10)}
+              title="缩小字号"
+            >
+              A−
+            </button>
+            <span>{fonts?.fontScale ?? 100}%</span>
+            <button
+              type="button"
+              className="btn ghost small"
+              disabled={!fonts || (fonts.fontScale ?? 100) >= 160}
+              onClick={() => void bumpFontScale(10)}
+              title="放大字号"
+            >
+              A+
+            </button>
+          </div>
+        )}
         <button
           type="button"
           className="btn ghost chrome-more"
@@ -949,10 +1153,10 @@ export default function App() {
                   disabled={busy}
                   onClick={() => {
                     setTopMenuOpen(false);
-                    void openEpub();
+                    void openBook();
                   }}
                 >
-                  打开 EPUB
+                  打开电子书
                 </button>
                 <button
                   type="button"
@@ -965,27 +1169,31 @@ export default function App() {
                 >
                   目录
                 </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setTopMenuOpen(false);
-                    setHighlightsOpen((openNow) => !openNow);
-                    setTocOpen(false);
-                  }}
-                >
-                  划线
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setTopMenuOpen(false);
-                    setFontOpen((openNow) => !openNow);
-                  }}
-                >
-                  字体
-                </button>
+                {!isPdf && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setTopMenuOpen(false);
+                      setHighlightsOpen((openNow) => !openNow);
+                      setTocOpen(false);
+                    }}
+                  >
+                    划线
+                  </button>
+                )}
+                {!isPdf && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setTopMenuOpen(false);
+                      setFontOpen((openNow) => !openNow);
+                    }}
+                  >
+                    字体
+                  </button>
+                )}
                 <button
                   type="button"
                   role="menuitem"
@@ -1014,19 +1222,27 @@ export default function App() {
               <button
                 type="button"
                 className="btn ghost"
-                onClick={() => goChapter(-1, 0)}
-                disabled={index <= 0}
+                onClick={() => (isPdf ? pdfTurn(-1) : goChapter(-1, 0))}
+                disabled={prevDisabled}
               >
-                上一章
+                {isPdf ? "上一页" : "上一章"}
               </button>
               <span
                 className="pos"
                 title={current?.title ?? current?.href ?? ""}
               >
                 {current?.title ? `${current.title} · ` : ""}
-                {spine.length ? `${index + 1}/${spine.length}章` : "0章"}
-                {` · ${pageInfo.page + 1}/${pageInfo.pages}页`}
-                {pageInfo.columns === 2 ? " · 双栏" : ""}
+                {isPdf
+                  ? spine.length
+                    ? `第 ${index + 1} / ${spine.length} 页${
+                        pdfState?.spread === "double" ? " · 跨页" : ""
+                      }`
+                    : "0 页"
+                  : `${spine.length ? `${index + 1}/${spine.length}章` : "0章"} · ${
+                      pageInfo.page + 1
+                    }/${pageInfo.pages}页${
+                      pageInfo.columns === 2 ? " · 双栏" : ""
+                    }`}
                 {bookPercent !== null && (
                   <button
                     type="button"
@@ -1044,17 +1260,17 @@ export default function App() {
               <button
                 type="button"
                 className="btn ghost"
-                onClick={() => goChapter(1, 0)}
-                disabled={index >= spine.length - 1}
+                onClick={() => (isPdf ? pdfTurn(1) : goChapter(1, 0))}
+                disabled={nextDisabled}
               >
-                下一章
+                {isPdf ? "下一页" : "下一章"}
               </button>
             </div>
           </>
         )}
       </header>
 
-      {fontOpen && fonts && (
+      {fontOpen && fonts && !isPdf && (
         <FontPanel
           settings={fonts}
           publisherFonts={publisherFonts}
@@ -1107,8 +1323,22 @@ export default function App() {
       )}
 
       {error && <div className="banner">{error}</div>}
-      {book && fonts && !fonts.useOriginalFonts && !fonts.customFontsActive && (
+      {book && fonts && !isPdf && !fonts.useOriginalFonts && !fonts.customFontsActive && (
         <div className="banner">自定义字体未齐，当前仍按原书 CSS。</div>
+      )}
+      {/* 打开时的格式提示（PDF 正文用了未嵌入的非标准字体 → 可能缺字）。浅色
+          纸条 + 可关闭，不抢正文。 */}
+      {book && book.warnings.length > 0 && !warnDismissed && (
+        <div className="banner notice" role="status">
+          <span>{book.warnings.join("；")}</span>
+          <button
+            type="button"
+            className="btn ghost small"
+            onClick={() => setWarnDismissed(true)}
+          >
+            关闭
+          </button>
+        </div>
       )}
       {metaEntry && (
         <BookMetaPanel
@@ -1136,10 +1366,11 @@ export default function App() {
               currentIndex={index}
               onSelect={goToHref}
               onClose={() => setTocOpen(false)}
+              spineFallback={!isPdf}
             />
           </>
         )}
-        {highlightsOpen && book && (
+        {highlightsOpen && book && !isPdf && (
           <>
             <button
               type="button"
@@ -1165,12 +1396,31 @@ export default function App() {
               origin={resourceOrigin}
               busy={busy}
               onOpen={(path) => void openPath(path)}
-              onImport={() => void openEpub()}
+              onImport={() => void openBook()}
               onDelete={(entry) => void deleteBook(entry)}
               onEditMeta={(entry) => setMetaEntry(entry)}
             />
           )}
-          {book && chapterHtml && (
+          {/* PDF：独立的连续纸带视图（SumatraPDF 式），不走 iframe / 分栏分页器，
+              也不走 get_chapter（图片 URL 由 PdfView 直接拼）。 */}
+          {book && isPdf && (
+            <div className="page">
+              <PdfView
+                key={book.id}
+                ref={pdfRef}
+                bookId={book.id}
+                resourceOrigin={resourceOrigin}
+                pageCount={spine.length}
+                pageSizes={book.pageSizes}
+                fit={pdfFit}
+                spread={pdfFit === "page" ? pdfSpread : "single"}
+                initialPage={index + 1}
+                onState={onPdfState}
+              />
+            </div>
+          )}
+          {/* EPUB：一字未变的分栏分页器路径。 */}
+          {book && !isPdf && chapterHtml && (
             <div className="page">
               <ChapterFrame
                 ref={frameRef}
@@ -1196,7 +1446,10 @@ export default function App() {
                 onProgress={queueProgress}
                 onUsedFonts={setUsedFonts}
                 onPageInfo={setPageInfo}
-                onNeedChapter={(delta) => goChapter(delta, delta < 0 ? 1 : 0)}
+                onNeedChapter={(delta) =>
+                  // 章边界续翻：向回翻要停在上一章末尾。
+                  stepChapter(delta)
+                }
                 onFollowBookHref={goToHref}
               />
             </div>

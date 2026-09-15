@@ -1,5 +1,5 @@
 [workspace]
-members = ["src-tauri", "crates/core", "crates/formats-epub"]
+members = ["src-tauri", "crates/core", "crates/formats-epub", "crates/formats-pdf"]
 resolver = "2"
 
 [workspace.package]
@@ -13,3 +13,22 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+
+# PDF rasterising is dominated by dependency code (hayro / image / vello_cpu), and
+# an unoptimised build is unusable for it: measured on the sample books in a
+# plain dev profile, one 1440px page took **1.9 s** (raster 1.0 s + encode 0.9 s)
+# and one 400px PDF cover took **8.8 s**, against 21 ms / 452 ms in release.
+# `scripts/dev.ps1` runs a dev build, so the whole reader felt broken (blank
+# shelf covers, a white page that never resolves) even though the code was fine.
+# Optimising dependencies keeps our own crates at opt-level 0 for breakpoints
+# and fast rebuilds while making the PDF path usable in development.
+[profile.dev.package."*"]
+opt-level = 2
+
+# The PDF crate owns the hot generic instantiations (raster → encoder → buffer),
+# which a plain dev profile would compile unoptimised even though the encoder's
+# own crate is optimised above. One more measurement: with only the wildcard
+# rule, a 1440px page still cost 184 ms (encode 137 ms of it) against 21 ms in
+# release; optimising this crate too closes most of the rest.
+[profile.dev.package.iced-reader-pdf]
+opt-level = 2

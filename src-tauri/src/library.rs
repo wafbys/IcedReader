@@ -3,12 +3,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use iced_reader_core::{
-    clean_title, progress_key, read_meta_file, resolved_title, BookOpener, Locator, ProgressStore,
+    book_extension, book_stem, clean_title, progress_key, read_meta_file, resolved_title,
+    Locator, ProgressStore, PDF_FORMAT,
 };
-use iced_reader_epub::EpubOpener;
 use serde::Serialize;
 
 use crate::book_signals;
+use crate::openers;
 use crate::portable;
 
 #[derive(Debug, Clone, Serialize)]
@@ -46,10 +47,22 @@ pub struct LibraryEntry {
 #[cfg(test)]
 pub fn list_library_in(dir: &Path, progress: &ProgressStore) -> Vec<LibraryEntry> {
     let mut cache = LibraryMetaCache::default();
-    list_library_cached(dir, progress, &mut cache)
+    list_library_cached(dir, progress, &mut cache, &book_signals::read_all())
 }
 
-/// Book-shelf listing without re-opening every epub: file-bound metadata
+/// Shelf listing with a caller-supplied signals cache (tests: grading glue
+/// without writing into the real portable `data/` directory).
+#[cfg(test)]
+pub fn list_library_with_signals(
+    dir: &Path,
+    progress: &ProgressStore,
+    signals: &HashMap<String, book_signals::BookSignals>,
+) -> Vec<LibraryEntry> {
+    let mut cache = LibraryMetaCache::default();
+    list_library_cached(dir, progress, &mut cache, signals)
+}
+
+/// Book-shelf listing without re-opening every book: file-bound metadata
 /// (title/authors/spine…) is cached per file revision, so only the progress
 /// fields are re-read from the (in-memory) store on each call. Opening and
 /// flattening the TOC of a big book (资治通鉴: ~1.4 s) then only happens once
@@ -104,8 +117,9 @@ pub fn list_library_cached(
     dir: &Path,
     progress: &ProgressStore,
     cache: &mut LibraryMetaCache,
+    signals: &HashMap<String, book_signals::BookSignals>,
 ) -> Vec<LibraryEntry> {
-    let entries: Vec<LibraryEntry> = read_epub_paths(dir)
+    let entries: Vec<LibraryEntry> = read_book_paths(dir)
         .into_iter()
         .map(|path| {
             let mut entry = entry_from(&path, &cache.profile(&path, dir), progress);
@@ -128,7 +142,7 @@ pub fn list_library_cached(
             entry
         })
         .collect();
-    enrich_and_sort(entries)
+    enrich_and_sort(entries, signals)
 }
 
 fn quality_rank(quality: Option<&str>) -> u8 {
@@ -143,8 +157,13 @@ fn quality_rank(quality: Option<&str>) -> u8 {
 /// Attach cached quality grades (rev-valid only), hint duplicate books
 /// (same-typesetting repack, or a same-edition different repack), then sort:
 /// recently read first, then grade, then title.
-fn enrich_and_sort(mut entries: Vec<LibraryEntry>) -> Vec<LibraryEntry> {
-    let all = book_signals::read_all();
+///
+/// The signals cache is passed in (read once per listing by the caller) so
+/// grading is testable without touching the real portable `data/` directory.
+fn enrich_and_sort(
+    mut entries: Vec<LibraryEntry>,
+    all: &HashMap<String, book_signals::BookSignals>,
+) -> Vec<LibraryEntry> {
     let mut overlays: HashMap<usize, book_signals::BookSignals> = HashMap::new();
     for (i, e) in entries.iter_mut().enumerate() {
         if e.open_error.is_some() {
@@ -160,20 +179,29 @@ fn enrich_and_sort(mut entries: Vec<LibraryEntry>) -> Vec<LibraryEntry> {
         // Kindle id as Isbn does not keep granting 优 until the book is reopened.
         let mut sig = sig.clone();
         sig.id_quality = e.id_quality;
-        let g = book_signals::grade(&sig).with_filename_isbn(sig.id_quality, &e.file_name);
+        // Two formats, two questions: an EPUB is graded on text cleanliness and
+        // apparatus, a PDF on what the reader can do with it (text layer, font
+        // embedding, outline) — see `book_signals::grade_pdf`.
+        let g = if sig.pdf.is_some() {
+            book_signals::grade_pdf(&sig)
+        } else {
+            book_signals::grade(&sig).with_filename_isbn(sig.id_quality, &e.file_name)
+        };
         e.quality = Some(g.label.to_string());
         e.quality_plus = g.plus;
         e.quality_minus = g.minus;
         overlays.insert(i, sig);
     }
 
-    // Same-typesetting groups (equal chapter-text fingerprint).
+    // Same-typesetting groups (equal chapter-text fingerprint). An empty
+    // fingerprint means "not computed" (or a PDF, whose signals carry their own
+    // coarse one) and must never group unrelated books together.
     let valid: Vec<(usize, &book_signals::BookSignals)> = entries
         .iter()
         .enumerate()
         .filter_map(|(i, e)| {
             let s = all.get(&e.file_name)?;
-            (s.rev == e.cover_rev).then_some((i, s))
+            (s.rev == e.cover_rev && !s.fingerprint.is_empty()).then_some((i, s))
         })
         .collect();
     let mut by_fp: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -253,6 +281,11 @@ fn enrich_and_sort(mut entries: Vec<LibraryEntry>) -> Vec<LibraryEntry> {
         let Some(this) = overlays.get(&i) else {
             continue;
         };
+        // `edition_vs_peers` compares EPUB apparatus (notes, plates, text
+        // length); for a PDF it would only emit nonsense about 0 characters.
+        if this.pdf.is_some() {
+            continue;
+        }
         let peers: Vec<&book_signals::BookSignals> =
             peer_idxs.iter().filter_map(|j| overlays.get(j)).collect();
         if peers.is_empty() {
@@ -315,10 +348,54 @@ impl CoverCache {
     }
 }
 
+/// Cover bytes for one library book: EPUBs hand over their declared cover
+/// resource, PDFs render page 1 (a PDF has no cover image to point at).
+/// A 2×2 paper-coloured PNG served **instead of rendering** a cover inside a
+/// protocol request.
+///
+/// Rendering a PDF cover costs real CPU — 450 ms in release and ~9 s in an
+/// unoptimised dev build (measured on the sample books) — and a protocol
+/// request is a synchronous callback: doing that work there made the whole
+/// shelf crawl (the pre-PDF shelf only copied bytes out of a zip). A miss
+/// therefore answers with this placeholder and warms the cache on a worker
+/// thread; the shelf notices it by `naturalWidth <= 2` and retries.
+pub const COVER_PLACEHOLDER_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xb6, 0x0d,
+    0x24, 0x00, 0x00, 0x00, 0x01, 0x73, 0x52, 0x47, 0x42, 0x00, 0xae, 0xce, 0x1c, 0xe9, 0x00, 0x00,
+    0x00, 0x04, 0x67, 0x41, 0x4d, 0x41, 0x00, 0x00, 0xb1, 0x8f, 0x0b, 0xfc, 0x61, 0x05, 0x00, 0x00,
+    0x00, 0x09, 0x70, 0x48, 0x59, 0x73, 0x00, 0x00, 0x0e, 0xc3, 0x00, 0x00, 0x0e, 0xc3, 0x01, 0xc7,
+    0x6f, 0xa8, 0x64, 0x00, 0x00, 0x00, 0x11, 0x49, 0x44, 0x41, 0x54, 0x18, 0x57, 0x63, 0xf8, 0xf6,
+    0xf1, 0xf9, 0x7f, 0x10, 0x66, 0x80, 0x31, 0x00, 0x88, 0xc4, 0x0f, 0x35, 0xbe, 0xd8, 0x5b, 0xf0,
+    0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+/// Warm one book's cover **on a worker thread**. Called by the shelf scan (so
+/// the first cover request usually hits) and by a request that missed. Cheap to
+/// call repeatedly: it skips anything already cached for the file revision.
+pub fn warm_cover_in_background(
+    path: PathBuf,
+    file_name: String,
+    cache: std::sync::Arc<std::sync::Mutex<CoverCache>>,
+) {
+    std::thread::spawn(move || {
+        let rev = file_rev(&path);
+        let Ok(mut cache) = cache.lock() else {
+            return;
+        };
+        if cache.get(&file_name, &rev).is_some() {
+            return;
+        }
+        let _ = cover_bytes_cached(&path, &file_name, &mut cache);
+    });
+}
+
 pub fn cover_bytes(path: &Path) -> Result<(String, Vec<u8>), String> {
-    let book = EpubOpener
-        .open(path)
-        .map_err(|e| e.to_string())?;
+    let opener = openers::opener_for(path).ok_or_else(|| "不支持的格式".to_string())?;
+    if opener.format_id() == PDF_FORMAT {
+        return iced_reader_pdf::cover(path, PDF_COVER_WIDTH).map_err(|e| e.to_string());
+    }
+    let book = opener.open(path).map_err(|e| e.to_string())?;
     let href = book
         .metadata()
         .cover_href
@@ -329,6 +406,10 @@ pub fn cover_bytes(path: &Path) -> Result<(String, Vec<u8>), String> {
     }
     Ok((res.media_type, res.data))
 }
+
+/// Shelf cover width for PDFs; the shelf shows ~200 px thumbnails and the
+/// in-process cover cache keys on the file revision, so one render per book.
+const PDF_COVER_WIDTH: u32 = 400;
 
 /// Cover bytes for one request, served from the in-process cache whenever the
 /// file revision is unchanged.
@@ -361,7 +442,7 @@ pub fn library_cover_path(file_name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Companion metadata path for a library epub (`三体.epub` → `三体.md`). Only
+/// Companion metadata path for a library book (`三体.epub` → `三体.md`). Only
 /// a plain file name inside `dir` is accepted (no separators / `..`), mirroring
 /// [`delete_book_from`] and [`library_cover_path`].
 pub fn meta_path_for(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
@@ -439,7 +520,7 @@ pub fn unique_stem_ignoring(dir: &Path, preferred: &str, ignore: &[&str]) -> Str
         .filter(|item| item.path().is_file())
         .filter_map(|item| item.file_name().to_str().map(|n| n.to_lowercase()))
         .filter(|name| !ignore_lower.contains(name))
-        .filter(|name| name.ends_with(".epub") || name.ends_with(".md"))
+        .filter(|name| name.ends_with(".md") || book_extension(name).is_some())
         .collect();
     if !stem_taken(&taken, preferred) {
         return preferred.to_string();
@@ -454,29 +535,30 @@ pub fn unique_stem_ignoring(dir: &Path, preferred: &str, ignore: &[&str]) -> Str
     }
 }
 
+/// A stem counts as taken when any format's book file, companion md or notes
+/// archive already uses it.
 fn stem_taken(taken: &std::collections::HashSet<String>, stem: &str) -> bool {
     let s = stem.to_lowercase();
-    taken.contains(&format!("{s}.epub"))
-        || taken.contains(&format!("{s}.md"))
+    taken.contains(&format!("{s}.md"))
         || taken.contains(&format!("{s}.notes.md"))
+        || iced_reader_core::BOOK_EXTENSIONS
+            .iter()
+            .any(|ext| taken.contains(&format!("{s}.{ext}")))
 }
 
-/// File stem of a library epub name (`Foo.EPUB` → `Foo`).
+/// File stem of a library book name (`Foo.EPUB` → `Foo`, `Foo.pdf` → `Foo`).
 pub fn epub_stem(file_name: &str) -> &str {
-    if file_name.len() >= 5 && file_name[file_name.len() - 5..].eq_ignore_ascii_case(".epub") {
-        &file_name[..file_name.len() - 5]
-    } else {
-        file_name
-    }
+    book_stem(file_name)
 }
 
-/// Rename a library book's epub to `new_stem` (already clean + unique) and
-/// drop its old companion md — the caller writes the md under the new name
-/// right after, so moving the old md first would only add a second failing
-/// rename point. Returns the new file name. Missing old md is fine; unrelated
-/// files are untouched. A rename that fails after the epub moved leaves a
-/// half-renamed state (epub new name, no md) — extremely unlikely, reported
-/// as an error so the shelf reload reflects reality.
+/// Rename a library book's file to `new_stem` (already clean + unique), keeping
+/// the format's extension, and drop its old companion md — the caller writes
+/// the md under the new name right after, so moving the old md first would only
+/// add a second failing rename point. Returns the new file name. Missing old md
+/// is fine; unrelated files are untouched. A rename that fails after the book
+/// file moved leaves a half-renamed state (book under the new name, no md) —
+/// extremely unlikely, reported as an error so the shelf reload reflects
+/// reality.
 pub fn rename_book_files(
     dir: &Path,
     old_file_name: &str,
@@ -488,19 +570,21 @@ pub fn rename_book_files(
     {
         return Err("invalid book file name".into());
     }
-    let epub_old = dir.join(old_file_name);
-    if !epub_old.is_file() {
+    let book_old = dir.join(old_file_name);
+    if !book_old.is_file() {
         return Err("book not in library".into());
     }
-    let new_name = format!("{new_stem}.epub");
+    // Keep the format: renaming `三体.pdf` yields `新名.pdf`, never `.epub`.
+    let extension = book_extension(old_file_name).unwrap_or("epub");
+    let new_name = format!("{new_stem}.{extension}");
     if old_file_name.eq_ignore_ascii_case(&new_name) {
         return Ok(old_file_name.to_string());
     }
-    let epub_new = dir.join(&new_name);
-    if epub_new.is_file() {
-        return Err(format!("target already exists: {new_stem}.epub"));
+    let book_new = dir.join(&new_name);
+    if book_new.is_file() {
+        return Err(format!("target already exists: {new_name}"));
     }
-    fs::rename(&epub_old, &epub_new).map_err(|e| e.to_string())?;
+    fs::rename(&book_old, &book_new).map_err(|e| e.to_string())?;
     let md_old = meta_path_for(dir, old_file_name)?;
     if md_old.is_file() {
         // Best-effort: the new md is written right after this returns.
@@ -510,7 +594,7 @@ pub fn rename_book_files(
     // the user's notes). Best-effort like the md above.
     let notes_old = notes_path_for(dir, old_file_name)?;
     if notes_old.is_file() {
-        if let Ok(notes_new) = notes_path_for(dir, &format!("{new_stem}.epub")) {
+        if let Ok(notes_new) = notes_path_for(dir, &new_name) {
             let _ = fs::rename(&notes_old, &notes_new);
         }
     }
@@ -539,20 +623,16 @@ pub fn delete_book_from(dir: &Path, file_name: &str) -> Result<PathBuf, String> 
     Ok(path)
 }
 
-fn read_epub_paths(dir: &Path) -> Vec<PathBuf> {
+/// Book files in the shelf directory (`*.epub`, `*.pdf`), sorted by name.
+/// One level only: the shelf never walks sub-directories.
+fn read_book_paths(dir: &Path) -> Vec<PathBuf> {
     let Ok(read) = fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut paths: Vec<PathBuf> = read
         .filter_map(|item| item.ok())
         .map(|item| item.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
-        })
+        .filter(|path| path.is_file() && openers::is_supported(path))
         .collect();
     paths.sort();
     paths
@@ -571,24 +651,21 @@ pub(crate) fn file_rev(path: &Path) -> String {
     format!("{}-{}", meta.len(), mtime)
 }
 
-/// Slow path: open the epub once and extract everything bound to the file
+/// Slow path: open the book once and extract everything bound to the file
 /// content (no progress). Route calls through [`LibraryMetaCache`] so that
-/// unchanged books are not re-opened on every shelf refresh.
+/// unchanged books are not re-opened on every shelf refresh. Works for every
+/// format the opener registry knows.
 fn profile_book(path: &Path, library: &Path) -> BookProfile {
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "book.epub".into());
-    let fallback_title = file_name
-        .strip_suffix(".epub")
-        .or_else(|| file_name.strip_suffix(".EPUB"))
-        .unwrap_or(&file_name)
-        .to_string();
+        .unwrap_or_else(|| "book".into());
+    let fallback_title = book_stem(&file_name).to_string();
 
-    let opener = EpubOpener;
-    if !opener.can_open(path) {
-        // Defensive: readers only list *.epub, but keep the same fallback-key
-        // rule so any unreadable entry still maps to its `lib:` records.
+    let Some(opener) = openers::opener_for(path) else {
+        // Defensive: the shelf only lists supported files, but keep the same
+        // fallback-key rule so any unreadable entry still maps to its `lib:`
+        // records.
         let key = progress_key(path, &[], Some(library));
         return BookProfile {
             file_name: file_name.clone(),
@@ -598,10 +675,11 @@ fn profile_book(path: &Path, library: &Path) -> BookProfile {
             chapter_hrefs: Vec::new(),
             chapter_titles: Vec::new(),
             has_cover: false,
-            open_error: Some("不是 EPUB".into()),
+            open_error: Some("不支持的格式".into()),
             id_quality: book_signals::IdQuality::None,
         };
-    }
+    };
+    let is_pdf = opener.format_id() == PDF_FORMAT;
 
     match opener.open(path) {
         Ok(book) => {
@@ -620,9 +698,17 @@ fn profile_book(path: &Path, library: &Path) -> BookProfile {
                 progress_key: key,
                 chapter_hrefs: spine.iter().map(|s| s.href.clone()).collect(),
                 chapter_titles: spine.iter().map(|s| s.title.clone()).collect(),
-                has_cover: meta.cover_href.is_some(),
+                // A PDF has no cover resource; page 1 stands in for it, so it
+                // always has one as long as it opened at all.
+                has_cover: is_pdf || meta.cover_href.is_some(),
                 open_error: None,
-                id_quality: book_signals::best_id_quality(&meta.identifiers),
+                // Quality signals are EPUB semantics (chapter text, headings,
+                // embedded images); a PDF simply has none yet.
+                id_quality: if is_pdf {
+                    book_signals::IdQuality::None
+                } else {
+                    book_signals::best_id_quality(&meta.identifiers)
+                },
             }
         }
         Err(err) => {
@@ -772,6 +858,186 @@ mod tests {
     }
 
     #[test]
+    fn lists_a_pdf_with_page_units_and_a_lib_key() {
+        let root = std::env::temp_dir().join("icedreader-library-pdf");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_tiny_pdf(&root.join("經濟漩渦.pdf"));
+
+        let entries = list_library_in(&root, &ProgressStore::in_memory());
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        let entry = &entries[0];
+        assert_eq!(entry.file_name, "經濟漩渦.pdf");
+        assert_eq!(entry.title, "经济漩涡：一个样本");
+        // One page = one spine unit, so the shelf counts pages.
+        assert_eq!(entry.chapter_count, Some(1));
+        assert_eq!(entry.progress_key, "lib:經濟漩渦.pdf");
+        assert!(entry.open_error.is_none());
+        // No cover resource inside a PDF; page 1 stands in, so it has one.
+        assert!(entry.has_cover);
+        // The badge comes from the cached PDF signals; this test lists a temp
+        // directory without populating that cache, so it stays ungraded here
+        // (grading itself is covered by `book_signals::pdf_grades_follow_the_text_layer`).
+        assert!(entry.quality.is_none());
+    }
+
+    #[test]
+    fn a_pdf_and_an_epub_of_one_title_are_two_books() {
+        let root = std::env::temp_dir().join("icedreader-library-two-formats");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_tiny_pdf(&root.join("同名书.pdf"));
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub"),
+            root.join("同名书.epub"),
+        )
+        .unwrap();
+
+        let entries = list_library_in(&root, &ProgressStore::in_memory());
+        assert_eq!(entries.len(), 2);
+        let keys: Vec<&str> = entries.iter().map(|e| e.progress_key.as_str()).collect();
+        assert!(keys.contains(&"lib:同名书.pdf"), "{keys:?}");
+        // The EPUB keeps its own key (an `id:` one when it has an identifier),
+        // never the PDF's `lib:` key.
+        assert!(
+            keys.iter().any(|k| !k.ends_with("同名书.pdf")),
+            "{keys:?}"
+        );
+    }
+
+    #[test]
+    fn shelf_badges_a_pdf_from_its_signals() {
+        use iced_reader_pdf::{PdfQuality, TextLayer};
+
+        /// An all-defaults signal set (the struct has no `Default` impl).
+        fn empty(rev: String) -> book_signals::BookSignals {
+            book_signals::BookSignals {
+                rev,
+                chars: 0,
+                chapter_shas: Vec::new(),
+                chapter_chars: Vec::new(),
+                chapter_chars_kind: book_signals::CHAPTER_CHARS_PER_SPINE,
+                fingerprint: "pdf-fp".into(),
+                mojibake: 0,
+                br_count: 0,
+                empty_p: 0,
+                img_count: 0,
+                headings: Vec::new(),
+                id_quality: book_signals::IdQuality::None,
+                has_creator: false,
+                img_files: 0,
+                img_bytes: 0,
+                img_truncated: false,
+                img_substantial: 0,
+                word_notes: 0,
+                missing_chars: 0,
+                sup_count: 0,
+                analysis_kind: book_signals::ANALYSIS_KIND,
+                pdf: None,
+            }
+        }
+
+        let root = std::env::temp_dir().join("icedreader-library-pdf-badge");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("带角标的书.pdf");
+        write_tiny_pdf(&path);
+        let rev = file_rev(&path);
+
+        // A born-digital file: text + embedded fonts + outline.
+        let mut signals = HashMap::new();
+        signals.insert(
+            "带角标的书.pdf".to_string(),
+            book_signals::BookSignals {
+                pdf: Some(PdfQuality {
+                    pages: 300,
+                    outline_entries: 42,
+                    text_layer: TextLayer::MachineReadable,
+                    sampled_pages: 24,
+                    text_pages: 24,
+                    fonts: 4,
+                    embedded_fonts: 4,
+                    unresolved_visible_fonts: Vec::new(),
+                    has_title: true,
+                    has_author: true,
+                    encrypted: false,
+                }),
+                ..empty(rev.clone())
+            },
+        );
+
+        let entries = list_library_with_signals(&root, &ProgressStore::in_memory(), &signals);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].quality.as_deref(), Some("优"));
+        assert!(entries[0]
+            .quality_plus
+            .iter()
+            .any(|r| r.contains("正文可提取文字")));
+        assert!(entries[0]
+            .quality_plus
+            .iter()
+            .any(|r| r.contains("含书签目录（42 条）")));
+        assert!(entries[0].quality_minus.is_empty());
+
+        // A scan with an OCR layer is 良; a plain scan is 中.
+        for (layer, expected) in [
+            (TextLayer::OcrLayer, "良"),
+            (TextLayer::ScanOnly, "中"),
+        ] {
+            let mut scan_signals = signals.clone();
+            if let Some(sig) = scan_signals.get_mut("带角标的书.pdf") {
+                if let Some(pdf) = sig.pdf.as_mut() {
+                    pdf.text_layer = layer;
+                }
+            }
+            let listed =
+                list_library_with_signals(&root, &ProgressStore::in_memory(), &scan_signals);
+            assert_eq!(listed[0].quality.as_deref(), Some(expected), "{layer:?}");
+        }
+
+        // No cached signals at all ⇒ no badge (the shelf must not guess).
+        let ungraded = list_library_with_signals(
+            &root,
+            &ProgressStore::in_memory(),
+            &HashMap::new(),
+        );
+        assert!(ungraded[0].quality.is_none());
+    }
+
+    /// Minimal one-page PDF with a correct xref table (the shelf tests must not
+    /// depend on any committed binary sample).
+    fn write_tiny_pdf(path: &Path) {
+        let content = "BT /F1 24 Tf 20 100 Td (Hello) Tj ET";
+        let objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
+             /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+                .to_string(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content),
+            // UTF-16BE title: 经济漩涡：一个样本
+            "<< /Title <FEFF7ECF6D4E6F296DA1FF1A4E004E2A6837672C> >>".to_string(),
+        ];
+        let mut pdf = String::from("%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", index + 1, body));
+        }
+        let xref_at = pdf.len();
+        pdf.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+        for offset in &offsets {
+            pdf.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        pdf.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R /Info 6 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        fs::write(path, pdf.into_bytes()).unwrap();
+    }
+
+    #[test]
     fn rename_book_files_moves_epub_and_drops_old_md() {
         let root = std::env::temp_dir().join("icedreader-library-rename");
         let _ = fs::remove_dir_all(&root);
@@ -864,7 +1130,7 @@ mod tests {
         let dest = root.join("sample.epub");
         fs::copy(&sample, &dest).unwrap();
 
-        let book = EpubOpener.open(&dest).unwrap();
+        let book = openers::open_any(&dest).unwrap();
         let href = book.spine()[0].href.clone();
         let key = progress_key(&dest, &book.metadata().identifiers, Some(&root));
         let mut store = ProgressStore::in_memory();
@@ -897,17 +1163,17 @@ mod tests {
 
         let mut store = ProgressStore::in_memory();
         let mut cache = LibraryMetaCache::default();
-        let first = list_library_cached(&root, &store, &mut cache);
+        let first = list_library_cached(&root, &store, &mut cache, &HashMap::new());
         assert_eq!(first.len(), 1);
         assert!(first[0].updated_at.is_none());
 
         // Same file, second listing: cached profile, no re-open.
-        let again = list_library_cached(&root, &store, &mut cache);
+        let again = list_library_cached(&root, &store, &mut cache, &HashMap::new());
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].title, first[0].title);
 
         // Progress still shows through the cached profile.
-        let book = EpubOpener.open(&dest).unwrap();
+        let book = openers::open_any(&dest).unwrap();
         let href = book.spine()[0].href.clone();
         let key = progress_key(&dest, &book.metadata().identifiers, Some(&root));
         store
@@ -920,7 +1186,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let listed = list_library_cached(&root, &store, &mut cache);
+        let listed = list_library_cached(&root, &store, &mut cache, &HashMap::new());
         assert!((listed[0].fraction.unwrap() - 0.25).abs() < 1e-9);
     }
 

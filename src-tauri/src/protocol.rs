@@ -45,9 +45,18 @@ pub fn handle<R: tauri::Runtime>(
             b"invalid icedreader uri".to_vec(),
         );
     };
+    // `uri().path()` drops the query, but resource hrefs may carry one (a PDF
+    // page asks for its raster width as `page/0001.png?w=1600`), so put it back.
+    let href = match request.uri().query() {
+        Some(query) if !query.is_empty() => format!("{href}?{query}"),
+        _ => href,
+    };
 
     let state = ctx.app_handle().state::<AppState>();
-    let fetched = {
+    // Clone the book handle out and release the map lock: for a PDF the fetch
+    // below rasterises a page (tens of ms to ~1.7 s), and holding the lock
+    // across that would stall every other book operation.
+    let book = {
         let Ok(books) = state.books.lock() else {
             return cors(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -55,28 +64,31 @@ pub fn handle<R: tauri::Runtime>(
                 b"lock poisoned".to_vec(),
             );
         };
-        let Some(book) = books.get(&book_id) else {
-            return cors(
-                StatusCode::NOT_FOUND,
-                "text/plain; charset=utf-8",
-                b"book not open".to_vec(),
-            );
-        };
-
-        let media_guess = media_hint(&href);
-        if is_document(&media_guess, &href) {
-            book.chapter_html(&href, &resource_base(&book_id))
-                .map(Fetch::Html)
-                .map_err(|e| e.to_string())
-        } else {
-            book.resource(&href)
-                .map(|res| Fetch::Resource {
-                    media: res.media_type,
-                    data: res.data,
-                    href: href.clone(),
-                })
-                .map_err(|e| e.to_string())
+        match books.get(&book_id) {
+            Some(book) => std::sync::Arc::clone(book),
+            None => {
+                return cors(
+                    StatusCode::NOT_FOUND,
+                    "text/plain; charset=utf-8",
+                    b"book not open".to_vec(),
+                );
+            }
         }
+    };
+
+    let media_guess = media_hint(&href);
+    let fetched = if is_document(&media_guess, &href) {
+        book.chapter_html(&href, &resource_base(&book_id))
+            .map(Fetch::Html)
+            .map_err(|e| e.to_string())
+    } else {
+        book.resource(&href)
+            .map(|res| Fetch::Resource {
+                media: res.media_type,
+                data: res.data,
+                href: href.clone(),
+            })
+            .map_err(|e| e.to_string())
     };
 
     match fetched {
@@ -169,18 +181,14 @@ fn serve_library_cover(
             );
         }
     };
-    let fetched = match state.covers.lock() {
-        Ok(mut cache) => crate::library::cover_bytes_cached(&path, name, &mut cache),
-        Err(_) => {
-            return cors(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "text/plain; charset=utf-8",
-                b"lock poisoned".to_vec(),
-            );
-        }
+    let rev = crate::library::file_rev(&path);
+    // Cache hit: serve the bytes.
+    let cached = match state.covers.lock() {
+        Ok(cache) => cache.get(name, &rev).map(|(media, data)| (media.to_string(), data.to_vec())),
+        Err(_) => None,
     };
-    match fetched {
-        Ok((media, data)) => cors_cache(
+    if let Some((media, data)) = cached {
+        return cors_cache(
             StatusCode::OK,
             &media,
             data,
@@ -188,13 +196,23 @@ fn serve_library_cover(
             // semantics (AGENTS: never long-cache covers) — the in-process
             // CoverCache is what makes repeat shelf visits cheap.
             "private, max-age=0, must-revalidate",
-        ),
-        Err(err) => cors(
-            StatusCode::NOT_FOUND,
-            "text/plain; charset=utf-8",
-            err.into_bytes(),
-        ),
+        );
     }
+    // Miss: **never rasterise here.** A PDF cover costs 450 ms in release and
+    // ~9 s in an unoptimised dev build, and this callback is synchronous — the
+    // shelf used to crawl because of it. Answer with a 2×2 placeholder the
+    // shelf recognises (`naturalWidth <= 2`) and warm the cache off-thread; the
+    // shelf retries and gets the real cover.
+    crate::library::warm_cover_in_background(
+        path.clone(),
+        name.to_string(),
+        std::sync::Arc::clone(&state.covers),
+    );
+    cors(
+        StatusCode::OK,
+        "image/png",
+        crate::library::COVER_PLACEHOLDER_PNG.to_vec(),
+    )
 }
 
 fn parse_book_path(path: &str) -> Option<(String, String)> {
