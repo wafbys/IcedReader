@@ -109,6 +109,8 @@ PDF 样本自检（不入库，放哪都行）：`cargo run -p iced-reader-pdf -
 
 改哪测哪。没有桌面窗口时至少跑 `cargo test -p iced-reader-core`、`iced-reader-epub`、`iced-reader-pdf`、`iced-reader`。样书：`fixtures/sample.epub`；仓库根目录未提交的 `經濟漩渦.pdf` / `Windows Everywhere - Paul Thurrott.pdf` / `语文开窍(带目录)….pdf` 以及旧的 `资治通鉴.epub` / `五千年掌故.epub` / `新西游记++共两册.epub` 不要 git add。
 
+有桌面窗口时用 `scripts/ui-probe.ps1` 驱动真实窗口：启动绿色版、抢前台置顶、发真键鼠（SendKeys，方向键写 `{RIGHT}`）、把客户区截图。配 `scripts/crop.ps1`（放大局部看小字）、`scripts/imgdiff.ps1`（比两帧，判断「这一下到底画没画出来」）、`scripts/topbar.ps1`（量出顶栏控件的真实 x 坐标——**别猜坐标**，按钮会随标签长短移动）。几条踩过的坑：坐标是**物理客户区像素**（150% 缩放下 CSS px × 1.5，所以「1400px 宽」其实只有 919 CSS px，会触发窄窗折叠）；窗口会恢复 `window.json` 因而可能一起来就是最大化，改尺寸前先 restore；**验证要另起一份便携目录**（拷 exe + 自己的 `data/`），别把窗口大小、进度写进真实的 `target/release/data`。截图输出放 `target/` 下（已 gitignore）。
+
 - **阅读：** 无 `ICED_READER_OPEN` 进书架（看 **当前 exe 旁** 的 `data/library/`）。点封面能读、回书架进度还在。样书第一章中文、左右翻页、拉宽变双栏、关开后页大致还在。目录能跳、当前条高亮。F11 正文铺满，顶部热区能退出全屏，Esc 退出全屏。顶栏以下无空白条/灰底托窄白纸；窄窗顶栏仍约 52px。
 - **字体：** 默认原书 CSS；四槽不齐时关掉原书字体正文不变。A± 变字号并写入 `settings.json`。五千年掌故：未安装的指定字体不要标成雅黑。新西游记：`cnepub` 标书内无字体文件，实际为 `（系统 serif）`。
 - **封面：** 资治通鉴第一页整页背景图，横屏/最小窗口都整幅居中、不裁切（四周露纸色）；普通正文页不动。PDF 封面 = 第 1 页，与正文同样的居中留白。
