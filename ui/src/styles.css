@@ -125,14 +125,30 @@ body {
   flex: 1 1 12rem;
 }
 
+/* 顶栏进度区：只有章节标题那一段可以缩，页码与「全书 N%」永远留在视野里。
+   以前整条 .pos 都是 nowrap + overflow:hidden，长标题（PDF 的 outline 标题
+   动辄二三十字）会把页码截成「第 …」并把全书跳转按钮整个裁掉。 */
 .pos {
+  display: flex;
+  align-items: center;
   font-variant-numeric: tabular-nums;
   font-size: 13px;
   color: #c8bfb4;
   flex: 1 1 4rem;
   min-width: 0;
+  /* 兜底：窗口极窄时仍旧裁剪，不让页码压到「上一页/下一页」上。 */
+  overflow: hidden;
+}
+
+.pos-title {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pos-now {
+  flex: none;
   white-space: nowrap;
 }
 
@@ -1505,6 +1521,7 @@ body {
   font: inherit;
   padding: 0;
   margin-left: 2px;
+  flex: none;
   cursor: pointer;
   text-decoration: underline dotted;
   text-underline-offset: 2px;

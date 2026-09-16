@@ -1231,18 +1231,25 @@ export default function App() {
                 className="pos"
                 title={current?.title ?? current?.href ?? ""}
               >
-                {current?.title ? `${current.title} · ` : ""}
-                {isPdf
-                  ? spine.length
-                    ? `第 ${index + 1} / ${spine.length} 页${
-                        pdfState?.spread === "double" ? " · 跨页" : ""
-                      }`
-                    : "0 页"
-                  : `${spine.length ? `${index + 1}/${spine.length}章` : "0章"} · ${
-                      pageInfo.page + 1
-                    }/${pageInfo.pages}页${
-                      pageInfo.columns === 2 ? " · 双栏" : ""
-                    }`}
+                {/* 章/页标题只占「可以缩」的那一段：PDF 的 outline 标题很长，
+                    以前它会把页码和「全书 N%」整个挤出可视区（overflow 裁剪后
+                    连点都点不到）。 */}
+                {current?.title ? (
+                  <span className="pos-title">{`${current.title} · `}</span>
+                ) : null}
+                <span className="pos-now">
+                  {isPdf
+                    ? spine.length
+                      ? `第 ${index + 1} / ${spine.length} 页${
+                          pdfState?.paired ? " · 跨页" : ""
+                        }`
+                      : "0 页"
+                    : `${spine.length ? `${index + 1}/${spine.length}章` : "0章"} · ${
+                        pageInfo.page + 1
+                      }/${pageInfo.pages}页${
+                        pageInfo.columns === 2 ? " · 双栏" : ""
+                      }`}
+                </span>
                 {bookPercent !== null && (
                   <button
                     type="button"

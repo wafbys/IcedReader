@@ -18,7 +18,6 @@ import {
   sheetSize,
   sheetUrl,
   type PdfFit,
-  type PdfResolvedSpread,
   type PdfSpread,
 } from "./pdfPaging";
 
@@ -67,8 +66,12 @@ export type PdfViewHandle = {
 export type PdfViewState = {
   /** 视口里面积最大的那张纸（1-based）。 */
   page: number;
-  /** 实际张数（「自动」判定之后）。 */
-  spread: PdfResolvedSpread;
+  /**
+   * 当前这一「行」是否真的并排两张纸。书式配对下封面（第 1 页）单独一张、
+   * 末页落单时也只有一张——顶栏「· 跨页」看的是眼前这一行，不是「模式」
+   * （`resolveSpread()` 说 double 不等于这一行真有两张）。
+   */
+  paired: boolean;
   atStart: boolean;
   atEnd: boolean;
 };
@@ -349,7 +352,7 @@ const PdfView = forwardRef<PdfViewHandle, Props>(function PdfView(
     const index = rowIndexForPage(page);
     onStateRef.current?.({
       page,
-      spread: resolved,
+      paired: (layout.rows[index]?.length ?? 1) > 1,
       atStart: index <= 0,
       atEnd: index >= layout.rows.length - 1,
     });
