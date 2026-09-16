@@ -735,8 +735,26 @@ export default function App() {
     [flushProgress],
   );
 
-  /** 跳到「全书 N%」：按每章字符权重换算到章 + 章内比例；同章直接定位，
-   *  跨章先存当前进度再切章。跳转后按新位置保存进度（与翻章同语义）。 */
+  /**
+   * PDF 跳页：直接收**页号**（1-based，clamp 到 [1, 总页数]）。
+   *
+   * PDF 的页就是它的坐标：`chapterChars` 每页 1，页号与「第 N / M 页」、目录
+   * 条目、进度 `page/NNNN` 一一对应，让读者去算百分比没有意义。全书% 只留给
+   * EPUB（那里各章字符数不等，百分比才是跨越章节的通用坐标）。
+   */
+  const jumpToPdfPage = useCallback(
+    (page: number) => {
+      const len = bookRef.current?.spine.length ?? 0;
+      if (len === 0 || !Number.isFinite(page)) return;
+      setJumpOpen(false);
+      pdfGoTo(Math.min(len, Math.max(1, Math.round(page))) - 1);
+    },
+    [pdfGoTo],
+  );
+
+  /** 跳到「全书 N%」（EPUB）：按每章字符权重换算到章 + 章内比例；同章直接定位，
+   *  跨章先存当前进度再切章。跳转后按新位置保存进度（与翻章同语义）。
+   *  PDF 各页等重，走 `jumpToPdfPage`。 */
   const jumpToBookPercent = useCallback(
     (pct: number) => {
       const b = bookRef.current;
@@ -755,18 +773,8 @@ export default function App() {
       const len = chars[i] || 1;
       const frac = Math.min(0.9999, Math.max(0, (target - acc) / len));
       if (i === indexRef.current) {
-        if (isPdfRef.current) {
-          // PDF：chapterChars 每页 1，frac 就是页内比例 —— 把纸带滚到页内那个位置；
-          // 进度仍是「页 + fraction 0」（页内位置属于临时视图状态）。
-          pdfRef.current?.goToPage(i + 1, frac);
-          return;
-        }
         lastFraction.current = frac;
         frameRef.current?.goToFraction(frac);
-        return;
-      }
-      if (isPdfRef.current) {
-        pdfGoTo(i, frac);
         return;
       }
       void persistReadingPosition().then(() => {
@@ -775,12 +783,17 @@ export default function App() {
         setIndex(i);
       });
     },
-    [persistReadingPosition, pdfGoTo],
+    [persistReadingPosition],
   );
 
   const confirmJump = () => {
     const n = Number(jumpValue);
-    if (Number.isFinite(n)) jumpToBookPercent(Math.min(100, Math.max(0, n)));
+    if (!Number.isFinite(n)) return;
+    if (isPdfRef.current) {
+      jumpToPdfPage(n);
+      return;
+    }
+    jumpToBookPercent(Math.min(100, Math.max(0, n)));
   };
 
   const goToHighlight = useCallback(
@@ -1250,19 +1263,33 @@ export default function App() {
                         pageInfo.columns === 2 ? " · 双栏" : ""
                       }`}
                 </span>
-                {bookPercent !== null && (
-                  <button
-                    type="button"
-                    className="pos-jump"
-                    title="跳到全书位置（输入 0–100%）"
-                    onClick={() => {
-                      setJumpValue(String(bookPercent));
-                      setJumpOpen(true);
-                    }}
-                  >
-                    · 全书 {bookPercent}%
-                  </button>
-                )}
+                {isPdf
+                  ? spine.length > 0 && (
+                      <button
+                        type="button"
+                        className="pos-jump"
+                        title={`跳到第 N 页（1–${spine.length}）`}
+                        onClick={() => {
+                          setJumpValue(String(index + 1));
+                          setJumpOpen(true);
+                        }}
+                      >
+                        · 跳页
+                      </button>
+                    )
+                  : bookPercent !== null && (
+                      <button
+                        type="button"
+                        className="pos-jump"
+                        title="跳到全书位置（输入 0–100%）"
+                        onClick={() => {
+                          setJumpValue(String(bookPercent));
+                          setJumpOpen(true);
+                        }}
+                      >
+                        · 全书 {bookPercent}%
+                      </button>
+                    )}
               </span>
               <button
                 type="button"
@@ -1302,15 +1329,17 @@ export default function App() {
               if (e.key === "Escape") setJumpOpen(false);
             }}
           >
-            <span className="jump-label">跳到全书位置</span>
+            <span className="jump-label">
+              {isPdf ? "跳到第 N 页" : "跳到全书位置"}
+            </span>
             <input
               autoFocus
-              inputMode="decimal"
+              inputMode={isPdf ? "numeric" : "decimal"}
               value={jumpValue}
               onChange={(e) => setJumpValue(e.target.value)}
-              placeholder="0–100"
+              placeholder={isPdf ? `1–${spine.length}` : "0–100"}
             />
-            <span className="jump-unit">%</span>
+            <span className="jump-unit">{isPdf ? "页" : "%"}</span>
             <button
               type="button"
               className="btn small paint"
