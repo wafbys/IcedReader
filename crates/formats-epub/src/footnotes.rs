@@ -1,15 +1,31 @@
-//! Word-note expansion for EPUBs whose inline notes live in
-//! `data-wr-footernote` attributes on empty spans. This is the layout used by
-//! WeRead-exported Chinese classics (e.g. 《资治通鉴全本注译》, 179k notes):
-//! the note text sits in an attribute and the span itself is empty, so the
-//! notes are invisible unless the reader runs script — which we never do in
-//! chapter iframes. We expand them on the Rust side instead:
+//! Word-note expansion for EPUBs whose inline notes carry no visible text of
+//! their own, so the notes are invisible unless the reader runs script — which
+//! we never do in chapter iframes. Two layouts are recognised:
+//!
+//! 1. **WeRead** (`data-wr-footernote` on an empty span). The note text sits in
+//!    the attribute; the layout used by WeRead-exported Chinese classics
+//!    (e.g. 《资治通鉴全本注译》, 179k notes):
 //!
 //! ```html
 //! <p>…弃疑<span class="reader js_readerFooterNote" data-wr-footernote="弃疑：…"></span>，…</p>
 //! ```
-//! becomes (with `doc_base` = the rewritten absolute URL of this document,
-//! e.g. `http://icedreader.localhost/book/{id}/OEBPS/Text/x.xhtml`):
+//!
+//! 2. **duokan / 读客** (`zy-footnote` on the noteref `<img>`, note text in an
+//!    `<aside epub:type="footnote" id="footnote-N">` at the end of the file).
+//!    The inline icon is an 11px image, so a reader can neither read the note
+//!    nor tell how many notes a paragraph has:
+//!
+//! ```html
+//! <p>…同居<a epub:type="noteref" href="#footnote-3-53"><img src="…/image_001.png"
+//!    alt="伦敦时尚艺术区。——笔者注" zy-footnote="伦敦时尚艺术区。——笔者注"
+//!    class="epub-footnote"/></a>。</p>
+//! <aside epub:type="footnote" id="footnote-3-53"><ol class="duokan-footnote-content">
+//!    <li class="duokan-footnote-item">伦敦时尚艺术区。——笔者注</li></ol></aside>
+//! ```
+//!
+//! Both are rewritten into the same reading shape (with `doc_base` = the
+//! rewritten absolute URL of this document, e.g.
+//! `http://icedreader.localhost/book/{id}/OEBPS/Text/x.xhtml`):
 //! ```html
 //! <p>…弃疑<a id="wr-note-back-3" class="wr-note" data-label="1" data-note="弃疑：…" href="http://…/x.xhtml#wr-note-3"></a>，…</p>
 //! <div class="wr-notes"><p class="wr-note-item" id="wr-note-3"><a class="wr-note-back" href="http://…/x.xhtml#wr-note-back-3" title="返回正文">[1]</a>弃疑：…</p></div>
@@ -23,10 +39,11 @@
 //! tooltip); the parent page paints a dark hover bubble from it. Clicking
 //! jumps to the full note block, and the label at the start of each note
 //! (`[n]`) is itself the back link to its marker — the same `[n]`↔note shape
-//! as an ordinary annotated EPUB (东周列国志). Both links are absolute
+//! as an ordinary annotated EPUB (东周列国志). The links are absolute
 //! same-document URLs (`doc_base#…`) because the chapter is displayed via
-//! `srcDoc`, where bare `#fragment` hrefs cannot be routed by the reader; the
-//! pair lets the reader jump either way. Note items avoid column breaks
+//! `srcDoc`, where bare `#fragment` hrefs cannot be routed by the reader, so
+//! form 2's original `#footnote-N` marker hrefs are rewritten too; the pair
+//! lets the reader jump either way. Note items avoid column breaks
 //! (`break-inside: avoid`) so they stay whole like a printed footnote; an
 //! item too tall for one column still splits, and each item then carries a
 //! textless trailing back link (`a.wr-note-back.wr-note-back-tail`, visible
@@ -38,6 +55,12 @@
 /// notes; notes inside other containers are left untouched.
 const CONTAINER_TAGS: [&str; 7] = ["p", "h1", "h2", "h3", "h4", "h5", "h6"];
 const NOTE_ATTR: &str = "data-wr-footernote";
+/// Form 2 (duokan / 读客) marker: the note text rides on the noteref icon, and
+/// the readable copy lives in an `<aside epub:type="footnote" id="…">`.
+const DUOKAN_ATTR: &str = "zy-footnote";
+const DUOKAN_ASIDE: &str = "aside";
+const DUOKAN_ID_ATTR: &str = "id";
+const DUOKAN_HREF_ATTR: &str = "href";
 const MARKER_CLASS: &str = "wr-note";
 /// id on the in-text marker; the note block's 返回 link targets it.
 const MARKER_ID_PREFIX: &str = "wr-note-back-";
@@ -56,9 +79,12 @@ use std::fmt::Write as _;
 /// belongs to (`resource_base + file`); generated note links point into that
 /// same document so the front end can route them as same-file anchors.
 pub fn expand_word_notes(html: &str, doc_base: &str) -> String {
-    if !contains_ci(html, NOTE_ATTR) {
+    if !contains_ci(html, NOTE_ATTR) && !contains_ci(html, DUOKAN_ATTR) {
         return html.to_string();
     }
+    // Form 2's note text lives in `<aside>` blocks elsewhere in the file; read
+    // them first so each inline icon can re-emit its note right where it sits.
+    let mut footnotes = collect_duokan_footnotes(html);
     let mut out = String::with_capacity(html.len() + 512);
     let mut seq: u64 = 0;
     let mut pos = 0usize;
@@ -69,8 +95,9 @@ pub fn expand_word_notes(html: &str, doc_base: &str) -> String {
         let Some(open_end) = tag_end(html, open) else {
             break;
         };
-        // Copy everything before this container verbatim.
-        out.push_str(&html[pos..open]);
+        // Copy everything before this container verbatim, tracking where every
+        // aside lands in the output so consumed ones can be cut at the end.
+        push_tracked(&mut out, &html[pos..open], pos, &mut footnotes);
         if is_self_closing(html, open_end) {
             out.push_str(&html[open..open_end]);
             pos = open_end;
@@ -93,19 +120,224 @@ pub fn expand_word_notes(html: &str, doc_base: &str) -> String {
                 return out;
             }
         };
-        let body = &html[open_end..body_end];
-        let (converted, notes) = convert_paragraph(body, &mut seq, doc_base);
-        out.push_str(&converted);
+        let converted = convert_paragraph(
+            &html[open_end..body_end],
+            &mut seq,
+            doc_base,
+            // Note text: form 2's `<aside>` first (the icon's own copy can be
+            // truncated), then either layout's inline attribute.
+            &mut |note: &NoteMarker| {
+                note.key
+                    .as_deref()
+                    .and_then(|key| footnote_text(&mut footnotes, key))
+                    .or_else(|| note.attr_text.clone().filter(|t| !t.is_empty()))
+            },
+        );
+        out.push_str(&converted.text);
         if copy_close {
             out.push_str(&html[body_end..after]);
         }
-        if !notes.is_empty() {
-            out.push_str(&note_block(&notes, doc_base));
+        // Each note's block sits right after the paragraph carrying its marker.
+        for block in &converted.blocks {
+            out.push_str(block);
         }
         pos = after;
     }
+    let tail = html[pos..].to_string();
+    push_tracked(&mut out, &tail, pos, &mut footnotes);
+    // Drop the asides whose text was re-emitted beside their markers; an aside
+    // no marker ever pointed at stays where the book put it.
+    drop_used_asides(&out, &footnotes)
+}
+
+/// `html[start..start + slice.len()]` into `out`, keeping each aside's span
+/// pointed at the same bytes *in the output* so later edits cannot shift them.
+fn push_tracked(out: &mut String, slice: &str, start: usize, footnotes: &mut [DuokanNote]) {
+    let shift = out.len() as isize - start as isize;
+    for note in footnotes.iter_mut() {
+        if note.start >= start && note.start < start + slice.len() {
+            note.start = (note.start as isize + shift) as usize;
+            note.end = (note.end as isize + shift) as usize;
+        }
+    }
+    out.push_str(slice);
+}
+
+/// One note found inside a paragraph (either layout), in document order.
+struct NoteMarker {
+    /// In-text marker: `seq` is file-wide (and the `id` suffix), `label` is the
+    /// number shown in the paragraph.
+    seq: u64,
+    label: usize,
+    /// Form 2 only: fragment of the noteref href, decoded, pairing the icon
+    /// with its `<aside>` text.
+    key: Option<String>,
+    /// Form 1's note text, or form 2's icon attribute as a fallback when no
+    /// aside matches the key.
+    attr_text: Option<String>,
+    /// The `wr-notes` block emitted right after the paragraph, filled in once
+    /// the note text is resolved.
+    block: Option<String>,
+}
+
+struct Converted {
+    text: String,
+    /// Note blocks for this paragraph, in document order.
+    blocks: Vec<String>,
+}
+
+struct DuokanNote {
+    /// Decoded, lower-cased id, plus span so consumed asides can be dropped.
+    key: String,
+    text: String,
+    start: usize,
+    end: usize,
+    used: bool,
+}
+
+/// Every `<aside epub:type="footnote" id="…">` in the file, with the plain text
+/// of its body. Non-footnote asides are ignored.
+fn collect_duokan_footnotes(html: &str) -> Vec<DuokanNote> {
+    let mut notes = Vec::new();
+    let mut pos = 0usize;
+    while pos < html.len() {
+        let Some(open) = find_open_tag(html, pos, DUOKAN_ASIDE) else {
+            break;
+        };
+        let Some(open_end) = tag_end(html, open) else {
+            break;
+        };
+        let Some(close) = find_close_tag(html, open_end, DUOKAN_ASIDE) else {
+            break;
+        };
+        let close_end = tag_end(html, close).unwrap_or(close + DUOKAN_ASIDE.len() + 3);
+        if let Some((key, text)) = aside_note(&html[open..open_end], &html[open_end..close]) {
+            notes.push(DuokanNote {
+                key,
+                text,
+                start: open,
+                end: close_end,
+                used: false,
+            });
+        }
+        pos = close_end.max(open_end);
+    }
+    notes
+}
+
+/// `(id, note text)` of one `<aside>` opening tag + its inner HTML, or `None`
+/// when the element is not a footnote aside.
+fn aside_note(open_tag: &str, inner: &str) -> Option<(String, String)> {
+    let epub_type = attr_value(open_tag, "epub:type")?;
+    if !epub_type.eq_ignore_ascii_case("footnote") {
+        return None;
+    }
+    let id = attr_value(open_tag, DUOKAN_ID_ATTR)?;
+    let text = note_text(inner);
+    if text.is_empty() {
+        return None;
+    }
+    Some((normalize_note_id(&id), text))
+}
+
+/// The aside's text, marking it consumed so its original copy is dropped.
+fn footnote_text(footnotes: &mut [DuokanNote], key: &str) -> Option<String> {
+    let note = footnotes.iter_mut().find(|n| n.key == key)?;
+    note.used = true;
+    Some(note.text.clone())
+}
+
+/// Remove the asides whose text was re-emitted at their markers, given their
+/// spans in `html` (output coordinates). Rebuilt from scratch — removals only
+/// ever cut bytes out, so the recorded offsets stay valid.
+fn drop_used_asides(html: &str, footnotes: &[DuokanNote]) -> String {
+    let mut cuts: Vec<(usize, usize)> = footnotes
+        .iter()
+        .filter(|n| n.used)
+        .map(|n| (n.start, n.end))
+        .collect();
+    if cuts.is_empty() {
+        return html.to_string();
+    }
+    cuts.sort_unstable();
+    let mut out = String::with_capacity(html.len());
+    let mut pos = 0usize;
+    for (start, end) in cuts {
+        if start < pos {
+            continue;
+        }
+        out.push_str(&html[pos..start]);
+        pos = end;
+    }
     out.push_str(&html[pos..]);
     out
+}
+
+/// Plain note text out of an aside's inner HTML: tags dropped, entities
+/// decoded. `duokan-footnote-item` list decoration (a bullet/number the
+/// browser would draw) is stripped along with the tags.
+fn note_text(inner: &str) -> String {
+    let mut out = String::with_capacity(inner.len());
+    let mut pos = 0usize;
+    while pos < inner.len() {
+        match inner[pos..].find('<') {
+            Some(rel) => {
+                let at = pos + rel;
+                out.push_str(&inner[pos..at]);
+                let Some(end) = tag_end(inner, at) else {
+                    break;
+                };
+                pos = end;
+            }
+            None => {
+                out.push_str(&inner[pos..]);
+                break;
+            }
+        }
+    }
+    decode_entities(out.trim()).trim().to_string()
+}
+
+/// Percent-decoded, percent-encoding-insensitive note key: TOC hrefs and
+/// `id` attributes are written by different tools, so `#%E6%B3%A8-1` and
+/// `id="注-1"` must still pair up.
+fn normalize_note_id(id: &str) -> String {
+    percent_decode(id.trim()).to_lowercase()
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(a), Some(b)) = (from_hex(bytes[i + 1]), from_hex(bytes[i + 2])) {
+                out.push((a << 4) | b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn from_hex(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Fragment (`#…`) of a noteref href, decoded, or `None` for an href that
+/// points elsewhere.
+fn href_fragment(href: &str) -> Option<String> {
+    let hash = href.find('#')?;
+    let frag = &href[hash + 1..];
+    (!frag.is_empty()).then(|| normalize_note_id(frag))
 }
 
 /// Next note-hosting container opening tag at/after `from`.
@@ -160,99 +392,200 @@ fn find_byte(html: &str, from: usize, needle: u8) -> Option<usize> {
         .map(|r| from + r)
 }
 
-struct Note {
-    /// Numbering inside the paragraph, starting at 1.
-    label: usize,
-    /// File-wide counter; also the anchor id suffix.
-    seq: u64,
-    text: String,
-}
-
-/// Turn a paragraph body into marker-bearing text plus its collected notes.
-fn convert_paragraph(body: &str, seq: &mut u64, doc_base: &str) -> (String, Vec<Note>) {
+/// One paragraph body in, the same markup with note markers plus the notes
+/// found in it out. Both layouts are walked in a single document-order pass, so
+/// labels number the paragraph and `seq` numbers the file exactly as before.
+/// `resolve` supplies a note's text (form 2 looks it up in its `<aside>`).
+fn convert_paragraph(
+    body: &str,
+    seq: &mut u64,
+    doc_base: &str,
+    resolve: &mut dyn FnMut(&NoteMarker) -> Option<String>,
+) -> Converted {
     let mut out = String::with_capacity(body.len() + 64);
-    let mut notes: Vec<Note> = Vec::new();
+    let mut notes: Vec<NoteMarker> = Vec::new();
+    let mut cursor = 0usize;
     let mut pos = 0usize;
     while pos < body.len() {
-        let Some(start) = find_open_tag(body, pos, "span") else {
-            out.push_str(&body[pos..]);
+        let Some(at) = find_byte(body, pos, b'<') else {
             break;
         };
-        let Some(tag_end) = tag_end(body, start) else {
-            out.push_str(&body[pos..]);
-            break;
-        };
-        out.push_str(&body[pos..start]);
-        let tag = &body[start..tag_end];
-        if !contains_ci(tag, NOTE_ATTR) {
-            out.push_str(tag);
-            pos = tag_end;
+        if body[at..].starts_with("<!--") {
+            pos = body[at + 4..]
+                .find("-->")
+                .map(|r| at + 4 + r + 3)
+                .unwrap_or(body.len());
             continue;
         }
-        let Some(text) = attr_value(tag, NOTE_ATTR) else {
-            out.push_str(tag);
-            pos = tag_end;
-            continue;
+        let Some(end) = tag_end(body, at) else {
+            break;
         };
-        let (inner, span_end) = if is_self_closing(body, tag_end) {
-            ("", tag_end)
+        let is_close = body[at..].starts_with("</");
+        let name = if is_close {
+            tag_name(&body[at + 2..]).1
         } else {
-            match span_close(body, tag_end) {
-                Some((a, b)) => (&body[tag_end..a], b),
-                None => {
-                    out.push_str(tag);
-                    pos = tag_end;
+            tag_name(&body[at + 1..]).1
+        };
+        // Form 1: an empty span carrying the note text in an attribute.
+        if name == "span" && !is_close && contains_ci(&body[at..end], NOTE_ATTR) {
+            if let Some(text) = attr_value(&body[at..end], NOTE_ATTR) {
+                let span_end = if is_self_closing(body, end) {
+                    Some((end, end))
+                } else {
+                    span_close(body, end)
+                };
+                if let Some((inner_end, after)) = span_end {
+                    *seq += 1;
+                    let note = NoteMarker {
+                        seq: *seq,
+                        label: notes.len() + 1,
+                        key: None,
+                        attr_text: Some(text),
+                        block: None,
+                    };
+                    let mut marker = String::new();
+                    if emit_note(
+                        &mut marker,
+                        &mut notes,
+                        note,
+                        doc_base,
+                        // Whatever the original span held (normally nothing)
+                        // stays inside the marker.
+                        &body[end..inner_end],
+                        resolve,
+                    ) {
+                        out.push_str(&body[cursor..at]);
+                        out.push_str(&marker);
+                        cursor = after;
+                        pos = after;
+                    } else {
+                        // No readable note text: keep the span as it was.
+                        *seq -= 1;
+                        pos = at + 1;
+                    }
                     continue;
                 }
             }
-        };
-        let label = notes.len() + 1;
-        *seq += 1;
-        notes.push(Note {
-            label,
-            seq: *seq,
-            text,
-        });
-        let note_seq = notes.last().unwrap().seq;
-        let marker_id = format!("{MARKER_ID_PREFIX}{note_seq}");
-        let note_href = format!("{doc_base}#wr-note-{note_seq}");
-        let _ = write!(
-            out,
-            r##"<a id="{marker_id}" class="{MARKER_CLASS}" data-label="{label}" data-note="{}" href="{}">"##,
-            escape_attr(&notes.last().unwrap().text),
-            escape_attr(&note_href)
-        );
-        // Keep whatever the original span contained (normally nothing).
-        out.push_str(inner);
-        out.push_str("</a>");
-        pos = span_end;
+        }
+        // Form 2: the duokan note icon inside its noteref anchor.
+        if name == "a" && !is_close && contains_ci(&body[at..end], DUOKAN_HREF_ATTR) {
+            if let Some((icon, icon_end, key)) = duokan_icon(body, at, end) {
+                *seq += 1;
+                let note = NoteMarker {
+                    seq: *seq,
+                    label: notes.len() + 1,
+                    key: Some(key),
+                    attr_text: attr_value(&body[icon..icon_end], DUOKAN_ATTR)
+                        .filter(|t| !t.is_empty())
+                        .or_else(|| {
+                            attr_value(&body[icon..icon_end], "alt").filter(|t| !t.is_empty())
+                        }),
+                    block: None,
+                };
+                let mut marker = String::new();
+                if emit_note(&mut marker, &mut notes, note, doc_base, "", resolve) {
+                    // The marker replaces the icon inside the anchor, so it
+                    // keeps the icon's exact position in the sentence (the
+                    // anchor itself stays: its `#footnote-N` href never leaves
+                    // the document, and the reader routes it like any other
+                    // in-book anchor).
+                    out.push_str(&body[cursor..icon]);
+                    out.push_str(&marker);
+                    cursor = icon_end;
+                    pos = icon_end;
+                } else {
+                    // No readable text anywhere: keep the icon as it was, and
+                    // hand the sequence number back.
+                    *seq -= 1;
+                    pos = at + 1;
+                }
+                continue;
+            }
+        }
+        // Nothing to expand here: step over just this `<` and let the next
+        // iteration carry on copying from `cursor`.
+        pos = at + 1;
     }
-    (out, notes)
+    out.push_str(&body[cursor..]);
+    Converted {
+        text: out,
+        blocks: notes.iter().filter_map(|n| n.block.clone()).collect(),
+    }
 }
 
-/// Markup for the trailing note list of one paragraph. Each item carries two
-/// back links: the leading `[n]` label (always visible) and a textless
-/// trailing link that only shows when the item itself is split across a page
-/// break (see `TAIL_CLASS`). Both target the in-text marker.
-fn note_block(notes: &[Note], doc_base: &str) -> String {
-    let mut out = String::with_capacity(64 + notes.len() * 96);
-    out.push_str(r#"<div class="wr-notes">"#);
-    for note in notes {
-        let back_href = format!("{doc_base}#{MARKER_ID_PREFIX}{}", note.seq);
-        let _ = write!(
-            out,
-            r#"<p class="wr-note-item" id="wr-note-{}"><a class="{BACK_CLASS}" href="{}" title="返回正文">[{}]</a>{}"#,
-            note.seq,
-            escape_attr(&back_href),
-            note.label,
-            escape_text(&note.text)
-        );
-        let _ = write!(
-            out,
-            r#"<a class="{BACK_CLASS} {TAIL_CLASS}" href="{}"></a></p>"#,
-            escape_attr(&back_href)
-        );
+/// The duokan note icon inside the anchor starting at `anchor`: `(icon start,
+/// icon end, note key)`. The key is the decoded `#fragment` of the anchor's
+/// href, which pairs the icon with its `<aside>`.
+fn duokan_icon(body: &str, anchor: usize, anchor_end: usize) -> Option<(usize, usize, String)> {
+    let href = attr_value(&body[anchor..anchor_end], DUOKAN_HREF_ATTR)?;
+    let key = href_fragment(&href)?;
+    let mut pos = anchor_end;
+    while let Some(at) = find_open_tag(body, pos, "img") {
+        // An icon past the anchor's own `</a>` is not this anchor's icon.
+        if contains_ci(&body[anchor_end..at], "</a") {
+            return None;
+        }
+        let end = tag_end(body, at)?;
+        if contains_ci(&body[at..end], DUOKAN_ATTR) {
+            return Some((at, end, key));
+        }
+        pos = end;
     }
+    None
+}
+
+/// Write the in-text marker for one note — no text of its own (the number is
+/// drawn from `data-label` by CSS), the note text in `data-note` for the hover
+/// bubble — around `inner`, and queue its `wr-notes` block. Returns false, and
+/// writes nothing, when the note has no readable text anywhere.
+fn emit_note(
+    out: &mut String,
+    notes: &mut Vec<NoteMarker>,
+    mut note: NoteMarker,
+    doc_base: &str,
+    inner: &str,
+    resolve: &mut dyn FnMut(&NoteMarker) -> Option<String>,
+) -> bool {
+    let Some(text) = resolve(&note) else {
+        return false;
+    };
+    let href = format!("{doc_base}#wr-note-{}", note.seq);
+    let _ = write!(
+        out,
+        r##"<a id="{MARKER_ID_PREFIX}{}" class="{MARKER_CLASS}" data-label="{}" data-note="{}" href="{}">"##,
+        note.seq,
+        note.label,
+        escape_attr(&text),
+        escape_attr(&href)
+    );
+    out.push_str(inner);
+    out.push_str("</a>");
+    note.block = Some(note_block(&note, &text, doc_base));
+    notes.push(note);
+    true
+}
+
+/// Markup for the note list under the paragraph holding one marker. The item
+/// carries two back links: the leading `[n]` label (always visible) and a
+/// textless trailing link that only shows when a page break really split the
+/// item (see `TAIL_CLASS`). Both target the in-text marker.
+fn note_block(note: &NoteMarker, text: &str, doc_base: &str) -> String {
+    let back_href = format!("{doc_base}#{MARKER_ID_PREFIX}{}", note.seq);
+    let mut out = String::with_capacity(128 + text.len());
+    out.push_str(r#"<div class="wr-notes">"#);
+    let _ = write!(
+        out,
+        r#"<p class="wr-note-item" id="wr-note-{}"><a class="{BACK_CLASS}" href="{}" title="返回正文">[{}]</a>{}"#,
+        note.seq,
+        escape_attr(&back_href),
+        note.label,
+        escape_text(text)
+    );
+    let _ = write!(
+        out,
+        r#"<a class="{BACK_CLASS} {TAIL_CLASS}" href="{}"></a></p>"#,
+        escape_attr(&back_href)
+    );
     out.push_str("</div>");
     out
 }
@@ -560,7 +893,10 @@ mod tests {
             out.contains(r##"id="wr-note-3"><a class="wr-note-back" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-back-3" title="返回正文">[1]</a>n3"##),
             "{out}"
         );
-        assert_eq!(out.matches("<div class=\"wr-notes\">").count(), 2, "{out}");
+        // One `wr-notes` block per note, so [1] and [2] of the same paragraph
+        // do not share a block id.
+        assert_eq!(out.matches("<div class=\"wr-notes\">").count(), 3, "{out}");
+        assert_eq!(out.matches("id=\"wr-note-").count(), 6, "{out}");
     }
 
     #[test]
@@ -600,7 +936,7 @@ mod tests {
     fn keeps_inner_content_of_non_empty_span() {
         let html = r#"<p>语<span data-wr-footernote="释义">原文</span>尾</p>"#;
         let out = expand_word_notes(html, DOC_BASE);
-        assert!(out.contains(r#"<a id="wr-note-back-1" class="wr-note" data-label="1""#), "{out}");
+        assert!(out.contains(r##"<a id="wr-note-back-1" class="wr-note" data-label="1""##), "{out}");
         assert!(out.contains(">原文</a>"), "{out}");
         assert!(out.contains("释义"), "{out}");
     }
@@ -638,5 +974,127 @@ mod tests {
             out.contains(r##"<a id="wr-note-back-1" class="wr-note" data-label="1" data-note="注文" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-1"></a>"##),
             "{out}"
         );
+    }
+
+    /// One `<p>` + `<aside>` pair as 读客 / calibre books write it. The icon and
+    /// the aside carry the same text; only the aside's copy survives.
+    const DUOKAN_ONE_NOTE: &str = concat!(
+        r##"<p class="calibre7"><span class="calibre10">在梅利莎位于切尔西<a epub:type="noteref" href="#footnote-3-53"> <img src="http://x/EPUB/images/image_001.png" alt="伦敦时尚艺术区。——笔者注" zy-footnote="伦敦时尚艺术区。——笔者注" class="epub-footnote"/></a>的公寓里同居。</span></p>"##,
+        "\n\t",
+        r##"<aside epub:type="footnote" id="footnote-3-53"><ol class="duokan-footnote-content"><li class="duokan-footnote-item">伦敦时尚艺术区。——笔者注</li></ol></aside>"##,
+    );
+
+    #[test]
+    fn duokan_icon_becomes_a_word_note_marker() {
+        let out = expand_word_notes(DUOKAN_ONE_NOTE, DOC_BASE);
+        // Icon + its noteref anchor are gone; a textless marker sits in place.
+        assert!(
+            out.contains(r##"<a id="wr-note-back-1" class="wr-note" data-label="1" data-note="伦敦时尚艺术区。——笔者注" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-1"></a>"##),
+            "{out}"
+        );
+        assert!(!out.contains("zy-footnote"), "{out}");
+        assert!(!out.contains("<img"), "{out}");
+        // The note is readable, with the `[1]` label as its back link.
+        assert!(
+            out.contains(r##"<p class="wr-note-item" id="wr-note-1"><a class="wr-note-back" href="http://icedreader.localhost/book/t/OEBPS/Text/c.xhtml#wr-note-back-1" title="返回正文">[1]</a>伦敦时尚艺术区。——笔者注"##),
+            "{out}"
+        );
+        // …and the aside it came from is not left behind as plain text.
+        assert!(!out.contains("<aside"), "{out}");
+        assert!(!out.contains("duokan-footnote"), "{out}");
+        assert_eq!(out.matches("伦敦时尚艺术区").count(), 2, "{out}"); // marker + item
+    }
+
+    #[test]
+    fn duokan_numbering_per_paragraph_matches_we_read_rules() {
+        let html = concat!(
+            r##"<p>甲<a href="#fn-a"><img zy-footnote="注甲"/></a>乙<a href="#fn-b"><img zy-footnote="注乙"/></a></p>"##,
+            r##"<p>丙<a href="#fn-c"><img zy-footnote="注丙"/></a></p>"##,
+            r##"<aside epub:type="footnote" id="fn-a">注甲</aside>"##,
+            r##"<aside epub:type="footnote" id="fn-b">注乙</aside>"##,
+            r##"<aside epub:type="footnote" id="fn-c">注丙</aside>"##,
+        );
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains(r##"data-label="1" data-note="注甲""##), "{out}");
+        assert!(out.contains(r##"data-label="2" data-note="注乙""##), "{out}");
+        assert!(out.contains(r##"data-label="1" data-note="注丙""##), "{out}");
+        // File-wide seq keeps growing across paragraphs, ids stay unique.
+        assert!(out.contains(r##"id="wr-note-back-3""##), "{out}");
+        assert!(out.contains(r##"<p class="wr-note-item" id="wr-note-3">"##), "{out}");
+        // One block per note (a paragraph with two notes gets two).
+        assert_eq!(out.matches("<div class=\"wr-notes\">").count(), 3, "{out}");
+        assert_eq!(out.matches("<aside").count(), 0, "{out}");
+    }
+
+    #[test]
+    fn duokan_aside_supplies_text_even_without_an_icon() {
+        let html = concat!(
+            r##"<p>正文<a href="#fn-1"><img zy-footnote=""/></a></p>"##,
+            r##"<aside epub:type="footnote" id="fn-1">完整注文，比图标属性长。</aside>"##,
+        );
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains(r##"data-note="完整注文，比图标属性长。""##), "{out}");
+    }
+
+    #[test]
+    fn duokan_falls_back_to_the_icon_text_without_an_aside() {
+        // The aside went missing in the export, but the icon still has the note.
+        let html = r##"<p>正文<a href="#gone"><img alt="图标里的注" zy-footnote="图标里的注"/></a>尾</p>"##;
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains(r##"data-note="图标里的注""##), "{out}");
+        assert!(out.contains(">图标里的注<"), "{out}");
+    }
+
+    #[test]
+    fn non_footnote_aside_is_left_alone() {
+        let html = concat!(
+            r##"<p>正文<a href="#fn-1"><img zy-footnote="注"/></a></p>"##,
+            r##"<aside id="sidebar">侧栏文字</aside>"##,
+            r##"<aside epub:type="footnote" id="fn-1">注</aside>"##,
+        );
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains(r##"<aside id="sidebar">侧栏文字</aside>"##), "{out}");
+        assert!(!out.contains(r##"id="fn-1""##), "{out}");
+    }
+
+    #[test]
+    fn percent_encoded_note_id_still_pairs() {
+        let html = concat!(
+            r##"<p>正文<a href="#%E6%B3%A8-1"><img zy-footnote="短的"/></a></p>"##,
+            r##"<aside epub:type="footnote" id="注-1">百分号编码配对的注文。</aside>"##,
+        );
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains(r##"data-note="百分号编码配对的注文。""##), "{out}");
+    }
+
+    #[test]
+    fn duokan_icon_outside_a_noteref_is_kept() {
+        // No href fragment on the anchor: nothing says which note this is, so
+        // the image keeps its place instead of turning into a dead marker.
+        let html = r##"<p>正文<a href="other.xhtml"><img src="i.png" zy-footnote="注"/></a></p>"##;
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains(r##"<img src="i.png" zy-footnote="注"/>"##), "{out}");
+        assert!(!out.contains("wr-note"), "{out}");
+    }
+
+    #[test]
+    fn empty_note_text_leaves_the_markup_untouched() {
+        // An attribute (or an aside) with no text would leave a marker nobody
+        // can open, so both layouts keep their source markup instead.
+        let we_read = r##"<p>知<span data-wr-footernote=""></span>行</p>"##;
+        assert_eq!(expand_word_notes(we_read, DOC_BASE), we_read);
+        let duokan = r##"<p>知<a href="#fn-1"><img zy-footnote=""/></a>行</p>"##;
+        assert_eq!(expand_word_notes(duokan, DOC_BASE), duokan);
+    }
+
+    #[test]
+    fn duokan_markers_in_headings_expand() {
+        let html = concat!(
+            r##"<h1>标题<a epub:type="noteref" href="#fn-h"><img zy-footnote="标题注"/></a></h1>"##,
+            r##"<aside epub:type="footnote" id="fn-h">标题注</aside>"##,
+        );
+        let out = expand_word_notes(html, DOC_BASE);
+        assert!(out.contains(r##"data-note="标题注""##), "{out}");
+        assert!(!out.contains("<img"), "{out}");
     }
 }

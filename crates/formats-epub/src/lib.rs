@@ -872,5 +872,40 @@ mod tests {
                 "paths rewritten: {html}"
             );
         }
+
+        // 读客 / calibre EPUBs carry their notes as `zy-footnote` icons plus
+        // `<aside epub:type="footnote">` blocks (see `footnotes.rs`). Those
+        // notes used to stay invisible: the icon is an 11px image and the aside
+        // sits at the end of the file.
+        let mgy = root.join("真实案件才更瘆人 - 没药花园 - 2025 - 北京日报出版社·读客文化 - ISBN 9787547748695.epub");
+        if mgy.exists() {
+            let book = EpubOpener.open(&mgy).expect("真实案件才更瘆人");
+            let spine = book.spine();
+            let chapter = spine
+                .iter()
+                .find(|s| s.href.ends_with("Chapter1"))
+                .expect("Chapter1 in spine");
+            let html = book
+                .chapter_html(&chapter.href, "http://icedreader.localhost/book/t/")
+                .expect("Chapter1 html");
+            assert!(
+                !html.contains("zy-footnote"),
+                "note icons must be expanded: {html}"
+            );
+            assert!(
+                !html.contains("<aside"),
+                "footnote asides must be replaced by note blocks: {html}"
+            );
+            assert!(
+                html.contains(r#"class="wr-note" data-label="1" data-note="伦敦时尚艺术区。——笔者注""#),
+                "expected a word-note marker with the note text"
+            );
+            assert!(
+                html.contains(r#"<p class="wr-note-item" id="wr-note-1">"#),
+                "expected the note block"
+            );
+            // …and the chapter keeps its own text around them.
+            assert!(html.contains("在梅利莎位于切尔西"), "chapter text lost");
+        }
     }
 }

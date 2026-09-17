@@ -24,7 +24,7 @@ IcedReader 是 Windows 桌面电子书阅读器（不是 Iced GUI）。栈：Tau
    - 四槽字体齐且关掉「使用原书字体」：`@font-face` + 改写 `font-family`（`crates/core/src/fonts.rs`、`settings.rs`）
    - `#iced-reader-flow` 栏式分页（`ui/src/flowLayout.ts`）
    - `#iced-reader-highlight-style` 用户划线（`ui/src/highlights.ts`）
-   - `#iced-reader-note-style` 词注呈现（`ui/src/wordNotes.ts`；展开在 `crates/formats-epub/src/footnotes.rs`）
+   - `#iced-reader-note-style` 词注呈现（`ui/src/wordNotes.ts`；展开在 `crates/formats-epub/src/footnotes.rs`，认两种形态：微信读书 `data-wr-footernote` 空 span；读客/多看 `<a href="#footnote-N"><img zy-footnote="…"></a>` + 章末 `<aside epub:type="footnote" id="footnote-N">`，注文随标记搬进 `wr-notes` 块、aside 原样删掉）
    - `#iced-reader-cover-fit` 近空章整页背景封面（`ui/src/coverFit.ts`）
 2. **进度只存 `Locator`：** `href` + `fraction`（0～1）+ 可选 `cfi`。禁止 `scrollTop`。`cfi` 留空，不要填假值。
 3. **进度键：** 有 identifier 用 `id:...`；否则 `lib:...`（相对便携书库）。`path:` 仅无书库目录时回退。外部 EPUB/PDF 按文件名进 `data/library/`，同名复用、不另存 `-2`。`lib:书名-N.epub` 与 `lib:书名.epub` 视为同一本；**扩展名是身份的一部分**，同名 `.epub` 与 `.pdf` 是两本书（改名/删书不得互相牵连，PDF 一期不产 identifier）。见 `progress_key` / `same_book` / `book_stem`。
@@ -115,6 +115,6 @@ PDF 样本自检（不入库，放哪都行）：`cargo run -p iced-reader-pdf -
 - **字体：** 默认原书 CSS；四槽不齐时关掉原书字体正文不变。A± 变字号并写入 `settings.json`。五千年掌故：未安装的指定字体不要标成雅黑。新西游记：`cnepub` 标书内无字体文件，实际为 `（系统 serif）`。
 - **封面：** 资治通鉴第一页整页背景图，横屏/最小窗口都整幅居中、不裁切（四周露纸色）；普通正文页不动。PDF 封面 = 第 1 页，与正文同样的居中留白。
 - **划线：** 选字出现色板（默认黄=重点，绿=摘抄），下笔即定、不改色不调范围。点已有划线可删/写备注；有备注删除先确认，notes.md 留痕；纯划线删除无痕。重排、翻章、重启后高亮仍贴原句。iframe 保持 `about:srcdoc`。
-- **词注：** `cargo test -p iced-reader-epub -- --ignored word_notes_expand_in_zztj`。注标是 CSS 画的、正文不加字；悬停能读完；`[N]` 能来回跳；无词注的样书正文不变。
+- **词注：** `cargo test -p iced-reader-epub -- --ignored word_notes_expand_in_zztj`。注标是 CSS 画的、正文不加字；悬停能读完；`[N]` 能来回跳；无词注的样书正文不变。读客/多看格式另有人工核对点：《真实案件才更瘆人》正文的「注」图标要变成上标 `[N]` + 段后灰字注文（`cargo test -p iced-reader-epub user_epubs_if_present` 有断言），章末 `<aside>` 不再以原文形式出现在正文后面。
 - **PDF：** 打开 `.pdf` 进书架（页数、封面、**质量角标**：`Windows Everywhere….pdf` = 优、`經濟漩渦.pdf` = 良、`语文开窍….pdf` = 中；悬停看理由）；点封面进阅读应看到**一条连续纸带**（无 iframe、无灰底分栏），滚轮原生滚动、←/→ 翻页、PageDown/空格滚一屏、Home/End 首末页；**适应宽度 = 纸宽实时贴合窗口宽**（拖动窗口边缘，纸立刻跟着变宽；此模式恒单页）；**适应页面 = 整页贴合窗口高**，可切单页/双页/自动，双页为书式配对（第 1 页单独、之后 2-3 / 4-5），并排时进度区显示「· 跨页」；页码与进度跟着**视口面积最大的那张**走；目录跳页把目标页滚到视口顶部；进度区「· 跳页」输入第 N 页落到该页（越界夹到首/末页、非数字不跳且浮层不关）；无 outline 显示「本书没有目录」；退出重进回到同一页；改元数据改名后仍能打开、进度不丢；翻页要感觉即时（后台预取命中）；952 页的书滚动要顺、内存不随翻页无限涨（`loading="lazy"`）。含隐藏 OCR 文字层的扫描书不弹「缺字」提示；三本正文画质正常。
 - **删书 / 元数据：** 三点菜单外点或 Esc 关闭；删除先确认；确认后 epub+md+进度+划线+notes+质量缓存都清掉。改元数据后面板预览与保存后标题一致，库内文件按显示名改名（**扩展名不变**），进度/划线不丢；同名 `.epub` 与 `.pdf` 互不影响。
