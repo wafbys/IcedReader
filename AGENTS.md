@@ -55,6 +55,7 @@ PDF 样本自检（不入库，放哪都行）：`cargo run -p iced-reader-pdf -
 形状以代码为准。前端必须先确认再调 `delete_book`。
 
 - 书：`open_book` / `close_book` / `pending_book` / `list_library` / `delete_book`
+- 同书对照：`compare_books`（按需调用，不进 `list_library` 热路径；规则见 `docs/ideas/book-compare.md`）
 - 元数据：`get_book_meta` / `set_book_meta` / `reread_book_meta`
 - 阅读：`get_chapter`（`{ html, publisherFonts }`）/ `resource_origin` / `save_progress`
 - 划线/备注：`list_annotations` / `add_annotation` / `delete_annotation` / `save_note` / `read_notes`

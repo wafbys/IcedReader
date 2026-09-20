@@ -935,11 +935,41 @@ body {
   color: var(--accent) !important;
 }
 
-/* Duplicate hint: another shelf book is judged the same book (no auto
-   action; hover lists the file names). */
-.lib-info .lib-dup {
+/* Duplicate hint: N *other* shelf books are judged the same book, N excluding
+   this one (2 copies → each shows 另有 1 本). A sibling of .lib-info, not a
+   child: that element is a <button> and cannot nest a control. Clicking it
+   opens the 同书对照 panel. */
+.lib-dup {
+  appearance: none;
+  align-self: flex-start;
+  margin: -4px 0 0;
+  border: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f3ead6;
   color: #7a5a1e;
+  font: inherit;
+  font-size: 12px;
   font-weight: 600;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib-dup:hover:not(:disabled) {
+  background: #eadfc4;
+}
+
+.lib-dup:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.lib-dup:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 /* First-import analysis feedback (shown while open_book analyzes signals). */
@@ -1465,18 +1495,25 @@ body {
   line-height: 1.4;
 }
 
-/* 备注编辑卡 / 跳转浮层（浅色卡片）里的 .ghost 不能沿用暗色 chrome 的近白
-   字（对比度约 1.1:1，文字看不清）；与划线浮条同款改为深墨色。 */
+/* 备注编辑卡 / 跳转浮层 / 同书对照面板（浅色卡片）里的 .ghost 不能沿用暗色
+   chrome 的近白字（对比度约 1.1:1，文字看不清）；与划线浮条同款改为深墨色。
+   新加浅色卡片时记得把选择器加进来。 */
 .hl-note-card .btn.ghost,
-.jump-pop .btn.ghost {
+.jump-pop .btn.ghost,
+.cmp-modal .btn.ghost {
   color: var(--ink);
   border-color: #cfc3ab;
 }
 
 .hl-note-card .btn.ghost:disabled,
-.jump-pop .btn.ghost:disabled {
+.jump-pop .btn.ghost:disabled,
+.cmp-modal .btn.ghost:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.cmp-modal .btn.ghost:hover:not(:disabled) {
+  background: #f1e9da;
 }
 
 /* 「清除备注」仍要保留 danger 的红字（特异性高于上面的 .ghost 覆盖）。 */
@@ -1573,4 +1610,282 @@ body {
   color: var(--muted);
   margin-left: -4px;
 }
+
+/* ---- 同书对照面板（ComparePanel.tsx）----
+   行是轴、列是版本。宽屏并排，窄窗靠横向滚动；纸色、无主题。 */
+
+.cmp-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 82;
+  display: grid;
+  place-items: center;
+  background: rgba(24, 21, 17, 0.42);
+}
+
+.cmp-modal {
+  width: min(920px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px 18px;
+  background: #fffdf7;
+  color: var(--ink);
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(24, 21, 17, 0.3);
+  font-size: 13px;
+}
+
+.cmp-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cmp-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cmp-head strong {
+  font-size: 15px;
+}
+
+.cmp-file {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmp-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cmp-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.cmp-busy {
+  padding: 10px 0;
+}
+
+.cmp-error {
+  margin: 0;
+  color: #a3372c;
+  font-size: 12px;
+}
+
+/* 结论条：唯一的「倾向」出现在这里，且必须点名是哪一本。 */
+.cmp-verdict {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f7f2e6;
+  border: 1px solid #e6dccb;
+}
+
+.cmp-lean {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.cmp-lean strong {
+  margin-left: 4px;
+}
+
+.cmp-lean-none {
+  color: var(--muted);
+}
+
+.cmp-reasons {
+  margin: 0 0 6px;
+  padding-left: 18px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* 表头 = 轴名列 + 每个版本一列；行用同一个栅格，靠 --cmp-cols 对齐。 */
+.cmp-cols,
+.cmp-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.2fr) repeat(var(--cmp-cols, 2), minmax(96px, 1fr));
+  gap: 6px 8px;
+  align-items: center;
+}
+
+.cmp-cols {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-bottom: 6px;
+  background: #fffdf7;
+  border-bottom: 1px solid #eee4d3;
+}
+
+.cmp-col-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cmp-col-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmp-col-axis {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cmp-col-size {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cmp-col-grade {
+  align-self: flex-start;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.cmp-col-grade.g-优 {
+  background: #dff0e0;
+  color: #2e7d46;
+}
+
+.cmp-col-grade.g-良 {
+  background: #f5e9c8;
+  color: #8a6d1a;
+}
+
+.cmp-col-grade.g-中 {
+  background: #e8e6e2;
+  color: #6f6b66;
+}
+
+.cmp-open {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.cmp-group-title {
+  margin: 10px 0 2px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.cmp-tied-group {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #f6f3ec;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cmp-axis {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cmp-axis-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmp-axis-tag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #e7e3da;
+  color: #57524c;
+  font-size: 11px;
+}
+
+.cmp-cell {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: #faf7f0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Best / worst are the only two marks that carry a judgement. */
+.cmp-cell.mark-best {
+  background: #e4f0e2;
+  color: #2b6b3c;
+  font-weight: 650;
+}
+
+.cmp-cell.mark-worst {
+  background: #f6ece8;
+  color: #8a4a3c;
+}
+
+.cmp-cell.mark-unknown {
+  color: var(--muted);
+}
+
+.cmp-chapters {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cmp-strip {
+  display: flex;
+  gap: 1px;
+  height: 18px;
+  align-items: stretch;
+}
+
+.cmp-bar {
+  flex: 1 1 auto;
+  min-width: 1px;
+  border-radius: 1px;
+}
+
+.cmp-bar.same {
+  background: #b6d9b8;
+}
+
+.cmp-bar.diff {
+  background: #d98b6a;
+}
+
+.cmp-showall {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
 

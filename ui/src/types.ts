@@ -217,3 +217,76 @@ export function chapterIndex(spine: SpineItem[], href: string | undefined): numb
   const file = normHref(href);
   return spine.findIndex((item) => normHref(item.href) === file);
 }
+
+/** 同书对照（compare_books）的载荷。规则见 docs/ideas/book-compare.md。 */
+
+/** 这几本文件之间是什么关系。 */
+export type CompareRelationKind =
+  | "sameTypesetting"
+  | "sameEdition"
+  | "contained"
+  | "partition"
+  | "unrelated";
+
+export type CompareAxisGroup =
+  | "content"
+  | "apparatus"
+  | "packaging"
+  | "provenance";
+
+/** `presented` = 只摆数字不判优劣；`incomparable` = 数据缺失，比不了。 */
+export type CompareVerdict =
+  | "tie"
+  | "winner"
+  | "shared"
+  | "incomparable"
+  | "presented";
+
+export type CompareCellMark = "best" | "worst" | "tie" | "unknown";
+
+export type CompareCell = {
+  display: string;
+  num: number | null;
+  mark: CompareCellMark;
+};
+
+export type CompareAxis = {
+  key: string;
+  label: string;
+  group: CompareAxisGroup;
+  /** 这项是怎么量出来的，显示在行标题的悬停里。 */
+  note: string | null;
+  cells: CompareCell[];
+  verdict: CompareVerdict;
+  /** 该轴胜出的列下标，只有 winner / shared 时非空。 */
+  winners: number[];
+};
+
+export type CompareColumn = {
+  fileName: string;
+  title: string;
+  /** 这本书自己的 优/良/中，与本次对照无关。 */
+  quality: string | null;
+  sizeBytes: number;
+};
+
+/** 两本同回目时的逐章差额，用来画条带。 */
+export type CompareChapterDiff = {
+  labels: string[];
+  /** chars[b] - chars[a]，正数表示第二本这一章更长。 */
+  deltas: number[];
+  identical: boolean[];
+};
+
+export type BookComparison = {
+  kind: CompareRelationKind;
+  kindNote: string;
+  columns: CompareColumn[];
+  axes: CompareAxis[];
+  chapterDiff: CompareChapterDiff | null;
+  /** 倾向保留的列下标；只有唯一赢家时非空。 */
+  lean: number | null;
+  /** 它凭什么赢，一行一个轴。 */
+  leanReason: string[];
+  conclusion: string[];
+};

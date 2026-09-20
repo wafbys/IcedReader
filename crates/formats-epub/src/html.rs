@@ -1,6 +1,8 @@
 //! Lenient HTML helpers for street-quality EPUBs.
 //! rbook's rewriter is XML-strict; many Chinese EPUBs are not.
 
+use std::collections::HashSet;
+
 const VOID_TAGS: &[&str] = &[
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
     "track", "wbr",
@@ -306,6 +308,111 @@ fn split_query_frag(href: &str) -> (&str, &str) {
     match href.find(['?', '#']) {
         Some(i) => (&href[..i], &href[i..]),
         None => (href, ""),
+    }
+}
+
+/// Normalize a reference or a manifest key into one comparable key space:
+/// percent-decoded, query/fragment stripped, no leading slash, lowercased.
+/// Deliberately lenient — this feeds a resource inventory, not a renderer.
+pub fn normalize_ref_key(key: &str) -> String {
+    let path = split_query_frag(key).0.trim_start_matches('/');
+    percent_decode(path).to_ascii_lowercase()
+}
+
+/// Resolve one relative reference found inside the document keyed `base_key`
+/// into the same key space as `base_key`. Manifest keys all live in a single
+/// namespace, so resolving against the *referencing document's own key* needs
+/// no assumption about whether keys are zip-root or OPF-relative.
+/// `None` for empty / anchor / absolute-URL / `data:` references.
+pub fn resolve_ref_key(base_key: &str, reference: &str) -> Option<String> {
+    let reference = reference.trim();
+    if reference.is_empty() || reference.starts_with('#') || has_scheme(reference) {
+        return None;
+    }
+    let key = normalize_ref_key(&resolve_relative(base_key, reference));
+    (!key.is_empty()).then_some(key)
+}
+
+/// Collect the resource references of one package document: URL-bearing
+/// attributes plus every `url(...)` occurrence (which covers stylesheets,
+/// `<style>` blocks and inline `style=` alike). Over-collecting is harmless —
+/// the result is only ever tested for membership of manifest image keys.
+pub fn collect_refs(doc: &str, base_key: &str, out: &mut HashSet<String>) {
+    fn push(base_key: &str, raw: &str, out: &mut HashSet<String>) {
+        if let Some(key) = resolve_ref_key(base_key, raw) {
+            out.insert(key);
+        }
+    }
+
+    // `to_ascii_lowercase` only rewrites ASCII bytes, so every offset below is
+    // valid in `doc` as well.
+    let lower = doc.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+
+    let mut from = 0usize;
+    while let Some(rel) = lower[from..].find("url(") {
+        let start = from + rel + 4;
+        let end = lower[start..]
+            .find(')')
+            .map(|e| start + e)
+            .unwrap_or(lower.len());
+        let raw = doc[start..end]
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'');
+        push(base_key, raw, out);
+        if end >= lower.len() {
+            break;
+        }
+        from = end + 1;
+    }
+
+    for attr in ["href", "src", "srcset", "poster", "data"] {
+        let mut from = 0usize;
+        while let Some(rel) = lower[from..].find(attr) {
+            let name_at = from + rel;
+            let mut i = name_at + attr.len();
+            from = i;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= bytes.len() || bytes[i] != b'=' {
+                continue;
+            }
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= bytes.len() {
+                break;
+            }
+            let value = if bytes[i] == b'"' || bytes[i] == b'\'' {
+                let quote = bytes[i];
+                let start = i + 1;
+                let mut k = start;
+                while k < bytes.len() && bytes[k] != quote {
+                    k += 1;
+                }
+                from = from.max((k + 1).min(bytes.len()));
+                &doc[start..k.min(doc.len())]
+            } else {
+                let start = i;
+                let mut k = start;
+                while k < bytes.len() && !bytes[k].is_ascii_whitespace() && bytes[k] != b'>' {
+                    k += 1;
+                }
+                from = from.max(k);
+                &doc[start..k]
+            };
+            if attr == "srcset" {
+                for candidate in value.split(',') {
+                    if let Some(url) = candidate.split_whitespace().next() {
+                        push(base_key, url, out);
+                    }
+                }
+            } else {
+                push(base_key, value, out);
+            }
+        }
     }
 }
 

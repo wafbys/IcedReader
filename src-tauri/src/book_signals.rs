@@ -13,9 +13,12 @@
 //! tooltip hint only — dump sites stamp paper ISBNs on Kindle/Calibre files.
 //! 优 = no defects and at least three of those strengths (so an annotated
 //! UUID 资治通鉴 can outrank a bare dump). 良 = clean but thin. 中 = defects.
-//! When several copies of the same work sit on the shelf, [`edition_vs_peers`]
-//! adds 同书对比 lines; it does not change the badge (a third dump must not
-//! demote an existing 优).
+//!
+//! Everything above is measured **per book**: the badge and its 依据 must not
+//! move when an unrelated copy lands on the shelf. [`edition_vs_peers`] computes
+//! the relative verdicts for copies of one work; it is deliberately no longer
+//! folded into `quality_plus`/`quality_minus` and belongs to the 同书对照 panel
+//! (`docs/ideas/book-compare.md`).
 
 use std::collections::HashMap;
 use std::fs;
@@ -33,7 +36,15 @@ pub const CHAPTER_CHARS_PER_SPINE: u8 = 1;
 /// Extra grade inputs. 2 = `sup_count` is bracket notes (`[n]`), not every
 /// `<sup>` (exponents like 10^-43 must not count). Kind 1 caches skip the
 /// sup bonus until the book is reopened.
-pub const ANALYSIS_KIND: u8 = 2;
+/// 3 = `<?xml … ?>` no longer counted as body text, plus the
+/// `img_referenced` / `img_css_only` / `img_orphan` breakdown; kind ≤ 2 caches
+/// carry a `fingerprint` inflated by the XML declaration, so they must be
+/// recomputed before 同书 grouping can be trusted.
+pub const ANALYSIS_KIND: u8 = REFERENCED_IMAGE_KIND;
+/// `analysis_kind` at which plates switched from "every image in the package"
+/// to "images the text references". Older caches keep the old reading (see
+/// [`grade`]) so upgrading does not move a single shelf badge.
+pub const REFERENCED_IMAGE_KIND: u8 = 3;
 /// A "real" illustration, not a 1KB dingbat or footnote glyph.
 const SUBSTANTIAL_IMAGE_KB: f64 = 20.0;
 /// Need this many substantial images (or a truncated scan) to count as illustrated.
@@ -221,6 +232,34 @@ pub struct BookSignals {
     /// Image files ≥ 20KB (covers and plates, not 1KB glyphs).
     #[serde(default)]
     pub img_substantial: u64,
+    /// Images a content document (HTML/XHTML/NCX) points at. Measured
+    /// separately from `img_files` (the whole manifest) so a repack that
+    /// leaves stale covers or promo art in the package is visible as such
+    /// rather than reading as extra plates. See `docs/ideas/book-compare.md`.
+    #[serde(default)]
+    pub img_referenced: u64,
+    /// Of `img_referenced`, those ≥ 20KB — the candidate "plates" definition;
+    /// grading still uses `img_substantial` for now.
+    #[serde(default)]
+    pub img_referenced_substantial: u64,
+    /// Bytes of the images the text references. Together with
+    /// `img_orphan_bytes` it splits `img_bytes` three ways, so the 同书对照
+    /// panel can say *why* one copy is bigger (cover bytes are the remainder).
+    #[serde(default)]
+    pub img_referenced_bytes: u64,
+    /// Images only a stylesheet points at (a swapped cover background lands
+    /// here while the old one becomes an orphan).
+    #[serde(default)]
+    pub img_css_only: u64,
+    /// Images nothing in the package points at — leftover covers, promo art.
+    #[serde(default)]
+    pub img_orphan: u64,
+    #[serde(default)]
+    pub img_orphan_bytes: u64,
+    /// The image reference scan was cut short; the four fields above are then
+    /// not trustworthy.
+    #[serde(default)]
+    pub img_refs_truncated: bool,
     /// `data-wr-footernote` attributes across unique spine files.
     #[serde(default)]
     pub word_notes: u64,
@@ -393,6 +432,21 @@ fn scan_html(raw: &str) -> Scan {
                     i += 1;
                 }
                 continue;
+            }
+            // XML processing instruction (`<?xml … ?>`) — never visible text.
+            // It used to fall through to the "stray <" branch, so the whole
+            // declaration was counted as body: `chars` ran high by the
+            // declaration's length and two editions with byte-identical text
+            // fingerprinted differently purely over `standalone="no"`.
+            if j < n && chars[j] == '?' {
+                let mut k = j + 1;
+                while k + 1 < n && !(chars[k] == '?' && chars[k + 1] == '>') {
+                    k += 1;
+                }
+                if k + 1 < n {
+                    i = k + 2;
+                    continue;
+                }
             }
             let mut name = String::new();
             if j < n && chars[j] == '/' {
@@ -733,6 +787,13 @@ pub fn analyze_book(
         img_bytes: images.bytes,
         img_truncated: images.truncated,
         img_substantial: images.substantial as u64,
+        img_referenced: images.referenced as u64,
+        img_referenced_substantial: images.referenced_substantial as u64,
+        img_referenced_bytes: images.referenced_bytes,
+        img_css_only: images.css_only as u64,
+        img_orphan: images.orphan as u64,
+        img_orphan_bytes: images.orphan_bytes,
+        img_refs_truncated: images.refs_truncated,
         word_notes,
         missing_chars,
         sup_count,
@@ -756,31 +817,40 @@ pub fn analyze_book(
 /// parse, but on a background thread) and writes into `book-signals.json`; the
 /// shelf shows the grade from its next listing, and the reader's `warnings` are
 /// read from that cache.
-pub fn analyze_in_background(
-    path: std::path::PathBuf,
-    file_name: String,
-    rev: String,
-    identifiers: Vec<String>,
-    has_creator: bool,
-) {
+pub fn analyze_in_background(path: std::path::PathBuf, file_name: String, rev: String) {
     std::thread::spawn(move || {
-        let signals = match crate::openers::opener_for(&path) {
-            Some(opener) if opener.format_id() == iced_reader_core::PDF_FORMAT => {
-                analyze_pdf(&path, &rev).ok()
-            }
-            Some(opener) => match opener.open(&path) {
-                Ok(book) => {
-                    let images = iced_reader_epub::image_stats(&path).unwrap_or_default();
-                    analyze_book(book.as_ref(), &identifiers, has_creator, &rev, images).ok()
-                }
-                Err(_) => None,
-            },
-            None => None,
-        };
-        if let Some(signals) = signals {
-            write_one(&file_name, &signals);
-        }
+        analyze_path_now(&path, &file_name, &rev);
     });
+}
+
+/// Analyze one book **by path**, store the result in the cache, and return it.
+/// The single entry point for "produce this book's signals": the background
+/// import path and the on-demand 同书对照 both go through it, so they can never
+/// disagree about what a book's signals are. Metadata is read from the book
+/// itself rather than passed in, for the same reason.
+pub fn analyze_path_now(
+    path: &std::path::Path,
+    file_name: &str,
+    rev: &str,
+) -> Option<BookSignals> {
+    let opener = crate::openers::opener_for(path)?;
+    let signals = if opener.format_id() == iced_reader_core::PDF_FORMAT {
+        analyze_pdf(path, rev).ok()?
+    } else {
+        let book = opener.open(path).ok()?;
+        let meta = book.metadata();
+        let images = iced_reader_epub::image_stats(path).unwrap_or_default();
+        analyze_book(
+            book.as_ref(),
+            &meta.identifiers,
+            !meta.authors.is_empty(),
+            rev,
+            images,
+        )
+        .ok()?
+    };
+    write_one(file_name, &signals);
+    Some(signals)
 }
 
 pub fn analyze_pdf(path: &std::path::Path, rev: &str) -> Result<BookSignals, String> {
@@ -815,6 +885,13 @@ pub fn analyze_pdf(path: &std::path::Path, rev: &str) -> Result<BookSignals, Str
         img_bytes: 0,
         img_truncated: false,
         img_substantial: 0,
+        img_referenced: 0,
+        img_referenced_substantial: 0,
+        img_referenced_bytes: 0,
+        img_css_only: 0,
+        img_orphan: 0,
+        img_orphan_bytes: 0,
+        img_refs_truncated: false,
         word_notes: 0,
         missing_chars: 0,
         sup_count: 0,
@@ -1007,19 +1084,37 @@ pub fn grade(s: &BookSignals) -> Grade {
     } else if s.br_count > 0 {
         plus.push(format!("换行符约 {:.1}/千字", br_per_k));
     }
-    if s.img_files > 0 {
+    // Plates: the images the **text** actually points at. Counting every image
+    // in the package credited covers and unreferenced leftovers as apparatus —
+    // the sample repack claimed "较大插图 46 张" when only 39 were content
+    // (`docs/ideas/book-compare.md` F5). Cache kind < 3 has no reference
+    // breakdown, so those entries keep the old manifest-wide number until the
+    // book is next opened and re-analyzed; no shelf badge moves on upgrade.
+    let has_reference_data = s.analysis_kind >= REFERENCED_IMAGE_KIND;
+    let (plate_files, plate_substantial) = plate_counts(s);
+    if plate_files > 0 {
         if s.img_truncated {
             plus.push(format!("插图很多（已计 {} 张后截断）", s.img_files));
             good += 1;
-        } else if s.img_substantial >= SUBSTANTIAL_IMAGE_MIN {
+        } else if plate_substantial >= SUBSTANTIAL_IMAGE_MIN {
+            let scope = if has_reference_data {
+                "正文引用，不含封面/包内未引用的图"
+            } else {
+                "不含小装饰图"
+            };
             plus.push(format!(
-                "较大插图 {} 张（≥{SUBSTANTIAL_IMAGE_KB:.0}KB，不含小装饰图）",
-                s.img_substantial
+                "较大插图 {plate_substantial} 张（≥{SUBSTANTIAL_IMAGE_KB:.0}KB，{scope}）"
             ));
             good += 1;
         } else {
             plus.push(format!("含封面/插图 {} 张", s.img_files));
         }
+    } else if s.img_files > 0 {
+        // Everything in the package is a cover or a leftover.
+        plus.push(format!(
+            "包内有 {} 张图，正文未引用（封面/残留）",
+            s.img_files
+        ));
     }
     if s.word_notes > 0 {
         plus.push(format!("含词注约 {} 条", approx_zh(s.word_notes)));
@@ -1085,6 +1180,11 @@ pub fn grade(s: &BookSignals) -> Grade {
     }
 }
 
+// The three functions below are the relative-verdict axis used by the 同书对照
+// panel (`docs/ideas/book-compare.md`, step 3). They lost their only caller when
+// the relative lines were moved out of a book's own 依据, so they are dead until
+// `book_compare.rs` lands — kept, and covered by unit tests, on purpose.
+#[allow(dead_code)]
 fn note_weight(s: &BookSignals) -> u64 {
     if s.word_notes > 0 {
         s.word_notes
@@ -1095,16 +1195,39 @@ fn note_weight(s: &BookSignals) -> u64 {
     }
 }
 
+#[allow(dead_code)]
 fn image_rank(s: &BookSignals) -> u64 {
+    // Same definition of "plates" as `grade`, so the panel and the badge can
+    // never disagree about which copy has more apparatus.
+    let (files, substantial) = plate_counts(s);
     if s.img_truncated {
-        s.img_files.max(SUBSTANTIAL_IMAGE_MIN)
+        files.max(SUBSTANTIAL_IMAGE_MIN)
     } else {
-        s.img_substantial
+        substantial
+    }
+}
+
+/// How many images count as apparatus for one book: `(all referenced, of those
+/// ≥20KB)`. Cache generations before [`REFERENCED_IMAGE_KIND`] have no reference
+/// breakdown and report the manifest-wide numbers they were graded on. Both
+/// [`grade`] and the 同书对照 panel read this, so the two can never disagree.
+pub fn plate_counts(s: &BookSignals) -> (u64, u64) {
+    if s.analysis_kind >= REFERENCED_IMAGE_KIND {
+        (s.img_referenced, s.img_referenced_substantial)
+    } else {
+        (s.img_files, s.img_substantial)
     }
 }
 
 /// Relative plus/minus for one copy against other copies of the same work.
 /// Empty when `peers` is empty or every axis ties. Does not change 优/良/中.
+///
+/// Not part of a book's own 依据 any more — the relative verdicts are shown by
+/// the 同书对照 panel, not in the badge tooltip (`docs/ideas/book-compare.md`
+/// §1.1). Known weakness that panel must fix: the image axis ranks on
+/// `img_substantial`, which counts covers and unreferenced leftovers too, and
+/// its thresholds swallow small real differences (46 vs 44 reads as a tie).
+#[allow(dead_code)]
 pub fn edition_vs_peers(this: &BookSignals, peers: &[&BookSignals]) -> (Vec<String>, Vec<String>) {
     let mut plus = Vec::new();
     let mut minus = Vec::new();
@@ -1390,6 +1513,13 @@ mod tests {
             img_bytes: 0,
             img_truncated: false,
             img_substantial: 0,
+            img_referenced: 0,
+            img_referenced_substantial: 0,
+            img_referenced_bytes: 0,
+            img_css_only: 0,
+            img_orphan: 0,
+            img_orphan_bytes: 0,
+            img_refs_truncated: false,
             word_notes: 0,
             missing_chars: 0,
             sup_count: 0,
@@ -1430,6 +1560,13 @@ mod tests {
             img_bytes: 12_000,
             img_truncated: false,
             img_substantial: 0,
+            img_referenced: 0,
+            img_referenced_substantial: 0,
+            img_referenced_bytes: 0,
+            img_css_only: 0,
+            img_orphan: 0,
+            img_orphan_bytes: 0,
+            img_refs_truncated: false,
             word_notes: 0,
             missing_chars: 0,
             sup_count: 0,
@@ -1469,6 +1606,13 @@ mod tests {
                 img_bytes: 0,
                 img_truncated: false,
                 img_substantial: 0,
+                img_referenced: 0,
+                img_referenced_substantial: 0,
+                img_referenced_bytes: 0,
+                img_css_only: 0,
+                img_orphan: 0,
+                img_orphan_bytes: 0,
+                img_refs_truncated: false,
                 word_notes: 0,
                 missing_chars: 0,
                 sup_count: 0,
@@ -1591,6 +1735,13 @@ mod tests {
             img_bytes: substantial * 40 * 1024,
             img_truncated: truncated,
             img_substantial: substantial,
+            img_referenced: files,
+            img_referenced_substantial: substantial,
+            img_referenced_bytes: substantial * 40 * 1024,
+            img_css_only: 0,
+            img_orphan: 0,
+            img_orphan_bytes: 0,
+            img_refs_truncated: false,
             word_notes: 0,
             missing_chars: 0,
             sup_count: 0,
@@ -1700,6 +1851,187 @@ mod tests {
         let g = grade(&s);
         assert_eq!(g.label, "中");
         assert!(g.minus.iter().any(|r| r.contains("偏多")));
+    }
+
+    /// The XML declaration is not body text. Counting it used to inflate
+    /// `chars` by the declaration's length and made two byte-identical bodies
+    /// (one with `standalone="no"`, one without) fingerprint differently —
+    /// see `docs/ideas/book-compare.md` F2.
+    #[test]
+    fn scan_ignores_xml_declaration() {
+        let with_standalone = scan_html(
+            r#"<?xml version="1.0" encoding="utf-8" standalone="no"?><html><body><p>正文</p></body></html>"#,
+        );
+        let without = scan_html(
+            r#"<?xml version="1.0" encoding="utf-8"?><html><body><p>正文</p></body></html>"#,
+        );
+        assert_eq!(with_standalone.text, without.text);
+        assert!(with_standalone.text.contains("正文"));
+        assert!(!with_standalone.text.contains("standalone"));
+        assert!(!with_standalone.text.contains("version"));
+        // `scan_html` yields visible text only, so the declaration contributes
+        // nothing at all — not even a bare `<`.
+        assert_eq!(with_standalone.text, "正文");
+    }
+
+    /// A malformed `<?` with no closing `?>` must not swallow the document.
+    #[test]
+    fn scan_survives_unterminated_processing_instruction() {
+        let scan = scan_html("<html><body><p>甲</p><?xml version=\"1.0\"");
+        assert!(scan.text.contains("甲"));
+    }
+
+    /// References are resolved in the manifest's own key space, so a document
+    /// key with a directory prefix and a `../` in the reference still meet.
+    #[test]
+    fn collect_refs_resolves_relative_to_the_referencing_document() {
+        let mut refs = std::collections::HashSet::new();
+        iced_reader_epub::collect_refs(
+            r#"<img src="../Images/plate.jpg"/><img src="local.png"/>
+               <body style="background-image:url('../Images/cover.jpg')">"#,
+            "OEBPS/Text/ch1.xhtml",
+            &mut refs,
+        );
+        assert!(refs.contains("oebps/images/plate.jpg"), "{refs:?}");
+        assert!(refs.contains("oebps/text/local.png"), "{refs:?}");
+        assert!(refs.contains("oebps/images/cover.jpg"), "{refs:?}");
+    }
+
+    /// Absolute URLs, anchors and `data:` payloads are not package references.
+    #[test]
+    fn collect_refs_skips_absolute_and_anchors() {
+        let mut refs = std::collections::HashSet::new();
+        iced_reader_epub::collect_refs(
+            r##"<a href="#note1">n</a><a href="https://example.com/x.png">e</a>
+               <img src="data:image/png;base64,AAAA"/> <link href="Styles/main.css"/> "##,
+            "OEBPS/Text/ch1.xhtml",
+            &mut refs,
+        );
+        assert!(!refs.iter().any(|r| r.starts_with("http")), "{refs:?}");
+        assert!(!refs.iter().any(|r| r.contains("data:")), "{refs:?}");
+        assert!(!refs.contains("#note1"), "{refs:?}");
+        // Resolved against the *referencing document*, so a bare relative path
+        // stays under `OEBPS/Text/`.
+        assert!(refs.contains("oebps/text/styles/main.css"), "{refs:?}");
+    }
+
+    /// Plates count the images the text points at, not every image the package
+    /// carries. A book whose only images are a cover and leftovers must not get
+    /// the apparatus merit (`docs/ideas/book-compare.md` F5).
+    #[test]
+    fn plates_ignore_covers_and_unreferenced_images() {
+        // clean + author + 39 real plates = 优
+        let mut real = sig(IdQuality::Other, true, 46, 46, false);
+        real.img_referenced = 39;
+        real.img_referenced_substantial = 39;
+        real.img_css_only = 1;
+        real.img_orphan = 6;
+        assert_eq!(grade(&real).label, "优");
+        assert!(grade(&real)
+            .plus
+            .iter()
+            .any(|r| r.contains("较大插图 39 张")));
+
+        // Same manifest, but nothing in the text points at any of it: clean +
+        // author only = 良, and the reason says why no plates were credited.
+        let mut junk = real.clone();
+        junk.img_referenced = 0;
+        junk.img_referenced_substantial = 0;
+        junk.img_css_only = 1;
+        junk.img_orphan = 45;
+        let g = grade(&junk);
+        assert_eq!(g.label, "良");
+        assert!(g.plus.iter().any(|r| r.contains("正文未引用")), "{:?}", g.plus);
+        assert!(!g.plus.iter().any(|r| r.contains("较大插图")));
+    }
+
+    /// Cache entries written before [`REFERENCED_IMAGE_KIND`] have no reference
+    /// breakdown; they must keep grading exactly as they did, so upgrading the
+    /// app never moves a shelf badge before the book is reopened.
+    #[test]
+    fn old_cache_kind_still_grades_on_the_manifest_count() {
+        let mut old = sig(IdQuality::Other, true, 46, 46, false);
+        old.analysis_kind = REFERENCED_IMAGE_KIND - 1;
+        // No reference data at all, but the old axis only looked at the manifest.
+        old.img_referenced = 0;
+        old.img_referenced_substantial = 0;
+        assert_eq!(grade(&old).label, "优");
+        assert!(grade(&old)
+            .plus
+            .iter()
+            .any(|r| r.contains("较大插图 46 张")), "{:?}", grade(&old).plus);
+    }
+
+    /// Real-library diagnostic: image inventory per epub, split by who points
+    /// at each file. Prints so a repack pair can be compared by eye.
+    /// `cargo test -p iced-reader --lib -- --ignored --nocapture epub_image_breakdown`
+    #[test]
+    #[ignore = "reads the real library epubs next to the repo / in target/"]
+    fn epub_image_breakdown() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let dirs = [
+            root.clone(),
+            root.join("target/debug/data/library"),
+            root.join("target/release/data/library"),
+        ];
+        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+        for dir in &dirs {
+            let Ok(read) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            paths.extend(
+                read.filter_map(|i| i.ok())
+                    .map(|i| i.path())
+                    .filter(|p| {
+                        p.is_file()
+                            && p.extension()
+                                .and_then(|e| e.to_str())
+                                .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+                    }),
+            );
+        }
+        paths.sort();
+        for path in paths {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let Ok(book) = EpubOpener.open(&path) else {
+                println!("{name}\n  打不开");
+                continue;
+            };
+            let meta = book.metadata();
+            let images = iced_reader_epub::image_stats(&path).unwrap_or_default();
+            let Ok(signals) = analyze_book(
+                book.as_ref(),
+                &meta.identifiers,
+                !meta.authors.is_empty(),
+                "diagnostic",
+                images,
+            ) else {
+                println!("{name}\n  分析失败");
+                continue;
+            };
+            println!("{name}");
+            let g = grade(&signals);
+            println!(
+                "  chars={} fp={} 角标 {}",
+                signals.chars, signals.fingerprint, g.label
+            );
+            println!("  + {:?}", g.plus);
+            println!(
+                "  manifest: files={} bytes={} sub={}",
+                signals.img_files, signals.img_bytes, signals.img_substantial
+            );
+            println!(
+                "  by reference: doc={} (sub {}) css_only={} orphan={} ({} bytes)",
+                signals.img_referenced,
+                signals.img_referenced_substantial,
+                signals.img_css_only,
+                signals.img_orphan,
+                signals.img_orphan_bytes,
+            );
+        }
     }
 }
 

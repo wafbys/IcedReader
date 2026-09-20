@@ -22,6 +22,7 @@ type Props = {
   onImport: () => void;
   onDelete: (entry: LibraryEntry) => void;
   onEditMeta: (entry: LibraryEntry) => void;
+  onCompare: (entry: LibraryEntry) => void;
 };
 
 function progressLabel(entry: LibraryEntry): string {
@@ -138,6 +139,7 @@ export default function Library({
   onImport,
   onDelete,
   onEditMeta,
+  onCompare,
 }: Props) {
   /** Path of the entry whose menu is open (one at a time). */
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -309,15 +311,20 @@ export default function Library({
                 {entry.authors.length ? entry.authors.join(", ") : "未知作者"}
               </span>
               <span className="lib-progress">{progressLabel(entry)}</span>
-              {entry.duplicates.length > 0 && (
-                <span
-                  className="lib-dup"
-                  title={`与以下书为同一本：\n${entry.duplicates.join("\n")}`}
-                >
-                  同书 ×{entry.duplicates.length}
-                </span>
-              )}
             </button>
+            {/* 同书提示做成面板入口。它必须是 .lib-info 的**兄弟**而不是子节点：
+                外面那个是 <button>，按钮里不能再嵌可点控件。 */}
+            {entry.duplicates.length > 0 && (
+              <button
+                type="button"
+                className="lib-dup"
+                disabled={busy}
+                title={`与以下书为同一本：\n${entry.duplicates.join("\n")}\n\n点开对照两版差别`}
+                onClick={() => onCompare(entry)}
+              >
+                同书 · 另有 {entry.duplicates.length} 本
+              </button>
+            )}
           </li>
         ))}
       </ul>

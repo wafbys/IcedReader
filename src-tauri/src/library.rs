@@ -164,8 +164,7 @@ fn enrich_and_sort(
     mut entries: Vec<LibraryEntry>,
     all: &HashMap<String, book_signals::BookSignals>,
 ) -> Vec<LibraryEntry> {
-    let mut overlays: HashMap<usize, book_signals::BookSignals> = HashMap::new();
-    for (i, e) in entries.iter_mut().enumerate() {
+    for e in entries.iter_mut() {
         if e.open_error.is_some() {
             continue;
         }
@@ -190,7 +189,6 @@ fn enrich_and_sort(
         e.quality = Some(g.label.to_string());
         e.quality_plus = g.plus;
         e.quality_minus = g.minus;
-        overlays.insert(i, sig);
     }
 
     // Same-typesetting groups (equal chapter-text fingerprint). An empty
@@ -263,38 +261,10 @@ fn enrich_and_sort(
         e.duplicates = seen;
     }
 
-    // Same-work copies: say which edition is stronger. Does not change 优/良/中.
-    let name_at: HashMap<String, usize> = entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.file_name.clone(), i))
-        .collect();
-    for i in 0..entries.len() {
-        if entries[i].duplicates.is_empty() {
-            continue;
-        }
-        let peer_idxs: Vec<usize> = entries[i]
-            .duplicates
-            .iter()
-            .filter_map(|name| name_at.get(name).copied())
-            .collect();
-        let Some(this) = overlays.get(&i) else {
-            continue;
-        };
-        // `edition_vs_peers` compares EPUB apparatus (notes, plates, text
-        // length); for a PDF it would only emit nonsense about 0 characters.
-        if this.pdf.is_some() {
-            continue;
-        }
-        let peers: Vec<&book_signals::BookSignals> =
-            peer_idxs.iter().filter_map(|j| overlays.get(j)).collect();
-        if peers.is_empty() {
-            continue;
-        }
-        let (p, m) = book_signals::edition_vs_peers(this, &peers);
-        entries[i].quality_plus.extend(p);
-        entries[i].quality_minus.extend(m);
-    }
+    // How the copies compare is deliberately *not* folded in here: a book's
+    // 依据 must describe the book itself, or it changes whenever an unrelated
+    // copy appears on the shelf. The relative verdicts live in the 同书对照
+    // panel (`docs/ideas/book-compare.md`).
 
     entries.sort_by(|a, b| {
         let q = |e: &LibraryEntry| quality_rank(e.quality.as_deref());
@@ -929,6 +899,13 @@ mod tests {
                 img_bytes: 0,
                 img_truncated: false,
                 img_substantial: 0,
+                img_referenced: 0,
+                img_referenced_substantial: 0,
+                img_referenced_bytes: 0,
+                img_css_only: 0,
+                img_orphan: 0,
+                img_orphan_bytes: 0,
+                img_refs_truncated: false,
                 word_notes: 0,
                 missing_chars: 0,
                 sup_count: 0,

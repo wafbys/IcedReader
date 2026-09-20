@@ -6,6 +6,7 @@ import ChapterFrame, {
   type PageInfo,
 } from "./ChapterFrame";
 import BookMetaPanel from "./BookMetaPanel";
+import ComparePanel from "./ComparePanel";
 import FontPanel from "./FontPanel";
 import HighlightsPanel from "./HighlightsPanel";
 import Library from "./Library";
@@ -42,6 +43,8 @@ export default function App() {
   const [library, setLibrary] = useState<LibraryEntry[]>([]);
   /** 书架三点菜单「编辑元数据…」选中的条目（非 null 时显示模态面板）。 */
   const [metaEntry, setMetaEntry] = useState<LibraryEntry | null>(null);
+  /** 书架「同书 · 另有 N 本」点开的对照面板（非 null 时显示模态面板）。 */
+  const [compareEntry, setCompareEntry] = useState<LibraryEntry | null>(null);
   const [resourceOrigin, setResourceOrigin] = useState("");
   const [index, setIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -1386,6 +1389,14 @@ export default function App() {
           }}
         />
       )}
+      {compareEntry && (
+        <ComparePanel
+          entry={compareEntry}
+          entries={library}
+          onClose={() => setCompareEntry(null)}
+          onOpen={(entry) => void openPath(entry.path)}
+        />
+      )}
 
       <div className="workspace">
         {tocOpen && book && (
@@ -1435,6 +1446,7 @@ export default function App() {
               onImport={() => void openBook()}
               onDelete={(entry) => void deleteBook(entry)}
               onEditMeta={(entry) => setMetaEntry(entry)}
+              onCompare={(entry) => setCompareEntry(entry)}
             />
           )}
           {/* PDF：独立的连续纸带视图（SumatraPDF 式），不走 iframe / 分栏分页器，

@@ -1,4 +1,5 @@
 mod fonts;
+mod book_compare;
 mod book_meta;
 mod book_signals;
 mod library;
@@ -126,13 +127,7 @@ async fn open_book(path: String, state: tauri::State<'_, AppState>) -> Result<Op
             }
         };
         if need {
-            book_signals::analyze_in_background(
-                imported.clone(),
-                file_name.clone(),
-                rev.clone(),
-                metadata.identifiers.clone(),
-                !metadata.authors.is_empty(),
-            );
+            book_signals::analyze_in_background(imported.clone(), file_name.clone(), rev.clone());
         }
     }
 
@@ -640,6 +635,83 @@ async fn list_library(state: tauri::State<'_, AppState>) -> Result<Vec<library::
     Ok(entries)
 }
 
+/// 同书对照: compare two or more shelf copies of one work and say which to
+/// keep. On-demand only — never part of the shelf listing.
+///
+/// A copy whose signals were never computed (imported but never opened) is
+/// analyzed right here rather than silently dropped: a comparison missing one
+/// of the books would be worse than a couple of seconds of waiting.
+#[tauri::command]
+fn compare_books(
+    file_names: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<book_compare::Comparison, String> {
+    if file_names.len() < 2 {
+        return Err("至少需要两本同书才能对照".into());
+    }
+    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+
+    // Reuse the shelf listing so the panel shows exactly the titles and grades
+    // the shelf shows (companion md included).
+    let progress = {
+        let store = state.progress.lock().map_err(|e| e.to_string())?;
+        store.snapshot()
+    };
+    let mut cache = state
+        .library_meta
+        .lock()
+        .map_err(|e| e.to_string())?;
+    let entries =
+        library::list_library_cached(&dir, &progress, &mut cache, &book_signals::read_all());
+    drop(cache);
+
+    let mut inputs = Vec::with_capacity(file_names.len());
+    for file_name in &file_names {
+        // Same guard as `meta_path_for` / `library_cover_path`: a plain file
+        // name inside the library, never a path.
+        if file_name.is_empty()
+            || std::path::Path::new(file_name)
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err("invalid book file name".into());
+        }
+        if file_name.to_ascii_lowercase().ends_with(".pdf") {
+            return Err("PDF 暂不参与同书对照".into());
+        }
+        let Some(entry) = entries.iter().find(|e| &e.file_name == file_name) else {
+            return Err(format!("不在书库中：{file_name}"));
+        };
+        let path = dir.join(file_name);
+        if !path.is_file() {
+            return Err(format!("不在书库中：{file_name}"));
+        }
+        if entry.open_error.is_some() {
+            return Err(format!("打不开：{file_name}"));
+        }
+
+        // Cached signals only count for the file revision they were computed
+        // from — the same rule the shelf grades by.
+        let rev = library::file_rev(&path);
+        let signals = book_signals::read_all()
+            .get(file_name)
+            .filter(|s| s.rev == rev && s.analysis_kind == book_signals::ANALYSIS_KIND)
+            .cloned()
+            .or_else(|| book_signals::analyze_path_now(&path, file_name, &rev))
+            .ok_or_else(|| format!("无法分析：{file_name}"))?;
+
+        inputs.push(book_compare::CompareInput {
+            file_name: file_name.clone(),
+            title: entry.title.clone(),
+            quality: entry.quality.clone(),
+            size_bytes: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+            signals,
+        });
+    }
+
+    book_compare::compare(&inputs)
+}
+
 /// Open one book's editable metadata (the companion md) for the 编辑元数据
 /// panel. Reads the md per call — never part of the list hot path.
 #[tauri::command]
@@ -921,6 +993,7 @@ pub fn run() {
             open_book,
             close_book,
             list_library,
+            compare_books,
             get_book_meta,
             reread_book_meta,
             set_book_meta,

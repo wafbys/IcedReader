@@ -4,8 +4,11 @@ mod footnotes;
 mod html;
 
 pub use footnotes::expand_word_notes;
-pub use html::{href_file_key, slice_chapter, split_href};
+pub use html::{
+    collect_refs, href_file_key, normalize_ref_key, resolve_ref_key, slice_chapter, split_href,
+};
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use iced_reader_core::{
@@ -41,6 +44,12 @@ pub struct EpubBook {
 
 /// Image inventory of one epub, used by the shelf quality grade.
 /// Scanning stops once the archive is clearly image-heavy.
+///
+/// Images are also classified by *who points at them*: the package's own
+/// documents (HTML/XHTML/NCX), only its stylesheets, or nothing at all. A
+/// repack that swaps the cover usually leaves the old one — and maybe a promo
+/// image — declared in the manifest but referenced from nowhere, and counting
+/// those as "plates" rewards packing junk (`docs/ideas/book-compare.md` F3).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImageStats {
     pub files: usize,
@@ -48,7 +57,26 @@ pub struct ImageStats {
     pub truncated: bool,
     /// Files at least 20KB — covers and real plates, not 1KB dingbats.
     pub substantial: usize,
+    /// Images referenced by a content document (HTML/XHTML/NCX).
+    pub referenced: usize,
+    pub referenced_bytes: u64,
+    /// Of `referenced`, those at least 20KB.
+    pub referenced_substantial: usize,
+    /// Images referenced only by a stylesheet — a swapped cover background
+    /// lands here while the old one becomes an orphan.
+    pub css_only: usize,
+    pub css_only_bytes: u64,
+    /// Images no document or stylesheet in the package points at.
+    pub orphan: usize,
+    pub orphan_bytes: u64,
+    /// The reference scan hit `MAX_REF_DOC_BYTES`; the four fields above are
+    /// then not trustworthy.
+    pub refs_truncated: bool,
 }
+
+/// Cap on how much document text the reference scan reads. Real books are a
+/// few MB; this only stops a pathological archive from stalling an import.
+const MAX_REF_DOC_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Image inventory of one epub (entry count + decoded byte total), used by the
 /// shelf quality grade. Reading stops early once the archive is clearly a big
@@ -58,7 +86,36 @@ pub fn image_stats(path: &std::path::Path) -> Result<ImageStats, CoreError> {
     let mut stats = ImageStats::default();
     const MAX_IMAGES: usize = 300;
     const MAX_BYTES: u64 = 48 * 1024 * 1024;
-    const SUBSTANTIAL: usize = 20 * 1024;
+    const SUBSTANTIAL: u64 = 20 * 1024;
+
+    // Pass 1: what do the package's own documents point at? The manifest is
+    // deliberately *not* scanned — it declares every image, so counting it
+    // would make "orphan" impossible.
+    let mut from_docs: HashSet<String> = HashSet::new();
+    let mut from_css: HashSet<String> = HashSet::new();
+    let mut doc_bytes = 0u64;
+    for entry in epub.manifest().iter() {
+        let kind = entry.kind();
+        let media_type = kind.as_str();
+        let is_css = media_type.starts_with("text/css");
+        if !is_css && !media_type.starts_with("text/") && !media_type.contains("html") {
+            continue;
+        }
+        if doc_bytes >= MAX_REF_DOC_BYTES {
+            stats.refs_truncated = true;
+            break;
+        }
+        let key = entry.resource().key().value().unwrap_or_default().to_string();
+        let Ok(data) = epub.read_resource_bytes(&key) else {
+            continue;
+        };
+        doc_bytes += data.len() as u64;
+        let text = String::from_utf8_lossy(&data);
+        let bucket = if is_css { &mut from_css } else { &mut from_docs };
+        html::collect_refs(&text, &key, bucket);
+    }
+
+    // Pass 2: inventory the images and classify them against those references.
     for entry in epub.manifest().iter() {
         if !entry.kind().as_str().starts_with("image/") {
             continue;
@@ -68,12 +125,29 @@ pub fn image_stats(path: &std::path::Path) -> Result<ImageStats, CoreError> {
             break;
         }
         let key = entry.resource().key().value().unwrap_or_default().to_string();
-        if let Ok(data) = epub.read_resource_bytes(&key) {
-            stats.files += 1;
-            stats.bytes += data.len() as u64;
-            if data.len() >= SUBSTANTIAL {
-                stats.substantial += 1;
+        let Ok(data) = epub.read_resource_bytes(&key) else {
+            continue;
+        };
+        let len = data.len() as u64;
+        stats.files += 1;
+        stats.bytes += len;
+        let substantial = len >= SUBSTANTIAL;
+        if substantial {
+            stats.substantial += 1;
+        }
+        let norm = html::normalize_ref_key(&key);
+        if from_docs.contains(&norm) {
+            stats.referenced += 1;
+            stats.referenced_bytes += len;
+            if substantial {
+                stats.referenced_substantial += 1;
             }
+        } else if from_css.contains(&norm) {
+            stats.css_only += 1;
+            stats.css_only_bytes += len;
+        } else {
+            stats.orphan += 1;
+            stats.orphan_bytes += len;
         }
     }
     Ok(stats)
