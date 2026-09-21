@@ -96,6 +96,7 @@ PDF 样本自检（不入库，放哪都行）：`cargo run -p iced-reader-pdf -
 - 字体面板：原书 CSS 声明 vs 本章实际绘制，规则见 `ui/src/usedFonts.ts`。在注入自定义字体之前从原 HTML/CSS 抽取；`src` 不在书内的 `@font-face` 标「书内无字体文件」。
 - 目录用 `book.toc`（否则 spine 标题）。不要在前端 parse NCX。
 - 书架：`ui/src/Library.tsx`。封面走 `/library-cover/{文件名}` + `coverRev`，不要 `immutable` 长缓存，不要在 JS 里 unzip / 把封面字节塞进 `list_library`。回书架先 `await` 进度再 `list_library`。封面三点菜单（悬停才显示）：「编辑元数据…」在上、「从书库删除」在下（先确认）。统计行、质量角标、同书提示由 `list_library` 字段纯前端算；`list_library` 不在热路径重算质量。书库只扫 `data/library/` 一层（`*.epub` / `*.pdf`）。开发 `target/debug/data` 与 release `target/release/data` 是两套。
+- 对话框（编辑元数据 / 同书对照）一律原生 `<dialog>` + `showModal()`（`ui/src/modal.ts`）：top layer、背景 inert、焦点圈定、Esc 走 `cancel` 都由浏览器管，不要再套一层 fixed 遮罩 div；`App.tsx` 的全局快捷键见到 `dialog[open]` 直接让位。
 - 顶栏 `.chrome` 固定 52px、不换行；窄窗口（≤1180px）把低频按钮收进右上「⋯」。不放品牌字。全屏用 Tauri `setFullscreen`（F11），关掉 WebView2 浏览器加速键。Esc：先关浮层/目录，再退出全屏。全屏顶栏默认收起，窗口顶部整条热区可唤出。位置/大小/最大化存 `data/window.json`；全屏不当下次启动状态。不要在 `CloseRequested` 里 `prevent_close`。
 - 界面文案默认中文。提交信息用中文，说明做了什么、为什么。
 

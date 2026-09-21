@@ -28,6 +28,10 @@ pub struct LibraryEntry {
     pub has_cover: bool,
     /// Length + mtime so the cover URL changes when the same filename is replaced.
     pub cover_rev: String,
+    /// Book file size in bytes (0 when it cannot be stat'ed). Shown in the shelf
+    /// tooltip and the 编辑元数据 panel; the same length also rides inside
+    /// `cover_rev`, but that string is a cache key, not something to display.
+    pub size_bytes: u64,
     pub open_error: Option<String>,
     /// 优/良/中 from the cached first-import book signals (rev valid only).
     pub quality: Option<String>,
@@ -621,6 +625,13 @@ pub(crate) fn file_rev(path: &Path) -> String {
     format!("{}-{}", meta.len(), mtime)
 }
 
+/// Book file size in bytes, for display (shelf tooltip / 编辑元数据). A missing
+/// or unreadable file is 0 — the shelf still lists the entry so the user can
+/// delete the broken book instead of the row vanishing.
+fn file_size(path: &Path) -> u64 {
+    fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+}
+
 /// Slow path: open the book once and extract everything bound to the file
 /// content (no progress). Route calls through [`LibraryMetaCache`] so that
 /// unchanged books are not re-opened on every shelf refresh. Works for every
@@ -727,6 +738,7 @@ fn entry_from(path: &Path, profile: &BookProfile, progress: &ProgressStore) -> L
         updated_at: rec.map(|r| r.updated_at),
         has_cover: profile.has_cover,
         cover_rev: file_rev(path),
+        size_bytes: file_size(path),
         open_error: profile.open_error.clone(),
         quality: None,
         quality_plus: Vec::new(),

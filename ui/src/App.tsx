@@ -885,6 +885,9 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // 真 modal（编辑元数据 / 同书对照）打开时壳层全局键一律让位：正文不该在
+      // 对话框后面翻页，Esc 也不该去退全屏——它归 dialog 自己的 cancel。
+      if (document.querySelector("dialog[open]")) return;
       // 焦点在可编辑控件（编辑元数据等模态输入框）时不劫持方向键——
       // 左右键用于移动光标而非翻页。F11/Esc 不在此列，保持全局语义。
       const t = e.target as HTMLElement | null;

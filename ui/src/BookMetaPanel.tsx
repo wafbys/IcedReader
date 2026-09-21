@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { fmtBytes } from "./format";
+import { useModalDialog } from "./modal";
 import type { BookMetaFields, BookMetaView, LibraryEntry } from "./types";
 
 /**
@@ -48,6 +50,24 @@ type Props = {
   onSaved: () => void;
 };
 
+/**
+ * 输入框里的值被裁掉时才挂 title：短值不弹多余提示，长值鼠标一停能看全。
+ * 事件委托挂在表单上，八个输入框共用一份逻辑（只读框、拼接预览的 title
+ * 在 JSX 上写死）。
+ */
+function tipOverflowOnHover(e: MouseEvent<HTMLElement>) {
+  const el = e.target as HTMLElement;
+  if (el instanceof HTMLInputElement) {
+    el.title = el.scrollWidth > el.clientWidth ? el.value : "";
+  }
+}
+
+/** 指针离开时清掉，免得值改短之后还挂着上一次的旧提示。 */
+function clearOverflowTip(e: MouseEvent<HTMLElement>) {
+  const el = e.target as HTMLElement;
+  if (el instanceof HTMLInputElement) el.title = "";
+}
+
 export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
   const [view, setView] = useState<BookMetaView | null>(null);
   const [error, setError] = useState("");
@@ -64,6 +84,14 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
   const [saving, setSaving] = useState(false);
   /** 正在从原书重新读取元数据（大书要开一遍 epub，需要反馈）。 */
   const [reading, setReading] = useState(false);
+  /** 主输入框（表单异步读出来之后落焦到它）。 */
+  const titleRef = useRef<HTMLInputElement | null>(null);
+
+  // 真 modal：面板是原生 <dialog>，背景整层 inert，Esc 走 cancel（保存中不关）；
+  // 点遮罩不关（见 ui/src/modal.ts）。
+  const dialogRef = useModalDialog(() => {
+    if (!saving) onClose();
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -92,17 +120,11 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
     };
   }, [entry.fileName]);
 
+  // 表单是异步读出来的：打开时它还不存在，读完（表单出现）后再补一次落焦，
+  // 否则焦点会停在头部的「关闭」按钮上。
   useEffect(() => {
-    if (saving) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, saving]);
+    if (view) titleRef.current?.focus();
+  }, [view]);
 
   const fields = {
     title,
@@ -163,244 +185,244 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
   };
 
   return (
-    <div
-      className="meta-overlay"
-      role="presentation"
-      onPointerDown={(e) => {
-        // 点遮罩（不含卡片）关闭；保存中不响应，避免误关。
-        if (e.target === e.currentTarget && !saving) onClose();
-      }}
-    >
-      <div
-        className="meta-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="编辑书籍信息"
-      >
-        <header className="meta-head">
-          <div className="meta-head-text">
-            <strong>编辑书籍信息</strong>
-            <span className="meta-file" title={entry.fileName}>
+    <dialog ref={dialogRef} className="meta-modal" aria-label="编辑书籍信息">
+      <header className="meta-head">
+        <div className="meta-head-text">
+          <strong>编辑书籍信息</strong>
+          <span className="meta-file">
+            <span className="meta-file-name" title={entry.fileName}>
               {entry.fileName}
             </span>
+            <span
+              className="meta-file-size"
+              title={
+                entry.sizeBytes > 0
+                  ? `书籍文件大小：${entry.sizeBytes.toLocaleString()} 字节`
+                  : "书籍文件大小未知"
+              }
+            >
+              · {fmtBytes(entry.sizeBytes)}
+            </span>
+          </span>
+        </div>
+        <button
+          type="button"
+          className="btn ghost small"
+          onClick={onClose}
+          disabled={saving}
+        >
+          关闭
+        </button>
+      </header>
+
+      {!view && !error && <p className="meta-note">读取中…</p>}
+      {error && !view && <p className="meta-error">{error}</p>}
+
+      {view && (
+        <form
+          id="bookmeta-form"
+          className="meta-form"
+          onMouseOver={tipOverflowOnHover}
+          onMouseOut={clearOverflowTip}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+        >
+          <div className="meta-field">
+            <span className="meta-cap">原书名（只读）</span>
+            <div className="meta-ro" title={view.originalTitle}>
+              {view.originalTitle || "（无书名，回退到文件名）"}
+            </div>
+            <div className="meta-row meta-reread-row">
+              <p className="meta-note">
+                首次导入这本书时程序见到的书名。只读保留原始信息，不随本次编辑改变。
+              </p>
+              <button
+                type="button"
+                className="btn ghost small"
+                onClick={() => void reread()}
+                disabled={saving || reading}
+                title="清空手填字段，从原书重新读取书名/作者/出版社/ISBN 填入表单；是否保存仍由你决定"
+              >
+                {reading ? "读取中…" : "重新读取原书元数据"}
+              </button>
+            </div>
           </div>
+
+          <div className="meta-field">
+            <label htmlFor="bookmeta-title">
+              主书名 <span className="meta-req">必填</span>
+            </label>
+            <input
+              id="bookmeta-title"
+              ref={titleRef}
+              className="meta-input"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder={view.displayTitle || "主书名"}
+            />
+            {titleMissing && (
+              <p className="meta-error">主书名必填：留空时标题只能回退原书名，无法拼接。</p>
+            )}
+          </div>
+
+          <div className="meta-field">
+            <label htmlFor="bookmeta-subtitle">副标题</label>
+            <input
+              id="bookmeta-subtitle"
+              className="meta-input"
+              value={subtitle}
+              onChange={(e) => setSubtitle(e.target.value)}
+            />
+          </div>
+
+          <div className="meta-field">
+            <label htmlFor="bookmeta-volume">卷册</label>
+            <input
+              id="bookmeta-volume"
+              className="meta-input"
+              value={volume}
+              onChange={(e) => setVolume(e.target.value)}
+            />
+          </div>
+
+          <div className="meta-field">
+            <label htmlFor="bookmeta-author">作者</label>
+            <input
+              id="bookmeta-author"
+              className="meta-input"
+              value={author}
+              onChange={(e) => setAuthor(e.target.value)}
+            />
+            <p className="meta-note">原书有作者则已预填（多名用半角逗号连接，中文标点不进入书名）；没读到就留空，清空则不拼入标题。</p>
+          </div>
+
+          <div className="meta-field">
+            <label htmlFor="bookmeta-translator">译者</label>
+            <input
+              id="bookmeta-translator"
+              className="meta-input"
+              value={translator}
+              onChange={(e) => setTranslator(e.target.value)}
+            />
+            <p className="meta-note">
+              填姓名即可；拼入标题时自动补「译者 」标签（已写「译者」开头则保留原样），留空不拼入。
+            </p>
+          </div>
+
+          <div className="meta-field">
+            <label htmlFor="bookmeta-year">出版年份</label>
+            <input
+              id="bookmeta-year"
+              className="meta-input"
+              value={year}
+              onChange={(e) => setYear(e.target.value)}
+            />
+          </div>
+
+          <div className="meta-field">
+            <label htmlFor="bookmeta-publisher">出版社</label>
+            <input
+              id="bookmeta-publisher"
+              className="meta-input"
+              value={publisher}
+              onChange={(e) => setPublisher(e.target.value)}
+            />
+          </div>
+
+          <div className="meta-field">
+            <label htmlFor="bookmeta-isbn">ISBN</label>
+            <input
+              id="bookmeta-isbn"
+              className="meta-input"
+              value={isbn}
+              onChange={(e) => setIsbn(e.target.value)}
+            />
+            <p className="meta-note">
+              填号码即可；拼入标题时自动补 ASCII「ISBN 」前缀（你已写 ISBN 开头则保留原样）。
+            </p>
+          </div>
+
+          <div className="meta-preview">
+            <span className="meta-cap">拼接预览</span>
+            <code className="meta-joined" title={joined || undefined}>
+              {joined || "（书名必填；留空则不拼接）"}
+            </code>
+          </div>
+          <p className="meta-note">
+            书名 _ 副标题 - 卷册 - 作者 - 译者 - 出版年份 - 出版社 - ISBN。
+            书名与副标题之间用 空格 _ 空格，其后各项用 空格 - 空格；
+            空字段自动跳过，不会出现连续分隔符。符号由程序生成（只出半角）。
+          </p>
+
+          <div className="meta-field">
+            <label htmlFor="bookmeta-display">显示名（可留空）</label>
+            <div className="meta-row">
+              <input
+                id="bookmeta-display"
+                className="meta-input"
+                value={display}
+                onChange={(e) => setDisplay(e.target.value)}
+                placeholder={effective}
+              />
+              <button
+                type="button"
+                className="btn ghost small"
+                onClick={() => setDisplay(joined)}
+                disabled={!canAutoFill}
+                title={
+                  display.trim()
+                    ? "显示名已手填：自动填充不覆盖手改，清空后可重新使用"
+                    : joined
+                      ? "把上方字段的拼接填入显示名"
+                      : "主书名或字段都为空，没有可填充的内容"
+                }
+              >
+                自动填充
+              </button>
+            </div>
+            <p className="meta-note">
+              留空 = 书架/阅读自动按上方模板拼接（以后改字段即跟随）。
+              填写 = 固定为该名字，字段改动和自动填充都不覆盖它；清空可回到自动拼接。
+            </p>
+          </div>
+
+          <p className="meta-effect">
+            保存后书架将显示：
+            <strong title={effective}>{effective}</strong>
+            <span className="meta-note">
+              （数据目录里的 epub 与同名 md 会按此名改名；若已有同名文件自动加
+              -2、-3…，进度与划线一并保留。）
+            </span>
+          </p>
+        </form>
+      )}
+
+      {view && (
+        <div className="meta-actions">
+          {error && <p className="meta-error meta-actions-error">{error}</p>}
+          <button
+            type="submit"
+            form="bookmeta-form"
+            className="btn"
+            disabled={saving || reading || titleMissing}
+            title={
+              reading ? "正在从原书读取…" : titleMissing ? "主书名必填" : undefined
+            }
+          >
+            {saving ? "保存中…" : "保存"}
+          </button>
           <button
             type="button"
-            className="btn ghost small"
+            className="btn ghost"
             onClick={onClose}
             disabled={saving}
           >
-            关闭
+            取消
           </button>
-        </header>
-
-        {!view && !error && <p className="meta-note">读取中…</p>}
-        {error && !view && <p className="meta-error">{error}</p>}
-
-        {view && (
-          <form
-            id="bookmeta-form"
-            className="meta-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void save();
-            }}
-          >
-            <div className="meta-field">
-              <span className="meta-cap">原书名（只读）</span>
-              <div className="meta-ro" title={view.originalTitle}>
-                {view.originalTitle || "（无书名，回退到文件名）"}
-              </div>
-              <div className="meta-row meta-reread-row">
-                <p className="meta-note">
-                  首次导入这本书时程序见到的书名。只读保留原始信息，不随本次编辑改变。
-                </p>
-                <button
-                  type="button"
-                  className="btn ghost small"
-                  onClick={() => void reread()}
-                  disabled={saving || reading}
-                  title="清空手填字段，从原书重新读取书名/作者/出版社/ISBN 填入表单；是否保存仍由你决定"
-                >
-                  {reading ? "读取中…" : "重新读取原书元数据"}
-                </button>
-              </div>
-            </div>
-
-            <div className="meta-field">
-              <label htmlFor="bookmeta-title">
-                主书名 <span className="meta-req">必填</span>
-              </label>
-              <input
-                id="bookmeta-title"
-                className="meta-input"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder={view.displayTitle || "主书名"}
-                autoFocus
-              />
-              {titleMissing && (
-                <p className="meta-error">主书名必填：留空时标题只能回退原书名，无法拼接。</p>
-              )}
-            </div>
-
-            <div className="meta-field">
-              <label htmlFor="bookmeta-subtitle">副标题</label>
-              <input
-                id="bookmeta-subtitle"
-                className="meta-input"
-                value={subtitle}
-                onChange={(e) => setSubtitle(e.target.value)}
-              />
-            </div>
-
-            <div className="meta-field">
-              <label htmlFor="bookmeta-volume">卷册</label>
-              <input
-                id="bookmeta-volume"
-                className="meta-input"
-                value={volume}
-                onChange={(e) => setVolume(e.target.value)}
-              />
-            </div>
-
-            <div className="meta-field">
-              <label htmlFor="bookmeta-author">作者</label>
-              <input
-                id="bookmeta-author"
-                className="meta-input"
-                value={author}
-                onChange={(e) => setAuthor(e.target.value)}
-              />
-              <p className="meta-note">原书有作者则已预填（多名用半角逗号连接，中文标点不进入书名）；没读到就留空，清空则不拼入标题。</p>
-            </div>
-
-            <div className="meta-field">
-              <label htmlFor="bookmeta-translator">译者</label>
-              <input
-                id="bookmeta-translator"
-                className="meta-input"
-                value={translator}
-                onChange={(e) => setTranslator(e.target.value)}
-              />
-              <p className="meta-note">
-                填姓名即可；拼入标题时自动补「译者 」标签（已写「译者」开头则保留原样），留空不拼入。
-              </p>
-            </div>
-
-            <div className="meta-field">
-              <label htmlFor="bookmeta-year">出版年份</label>
-              <input
-                id="bookmeta-year"
-                className="meta-input"
-                value={year}
-                onChange={(e) => setYear(e.target.value)}
-              />
-            </div>
-
-            <div className="meta-field">
-              <label htmlFor="bookmeta-publisher">出版社</label>
-              <input
-                id="bookmeta-publisher"
-                className="meta-input"
-                value={publisher}
-                onChange={(e) => setPublisher(e.target.value)}
-              />
-            </div>
-
-            <div className="meta-field">
-              <label htmlFor="bookmeta-isbn">ISBN</label>
-              <input
-                id="bookmeta-isbn"
-                className="meta-input"
-                value={isbn}
-                onChange={(e) => setIsbn(e.target.value)}
-              />
-              <p className="meta-note">
-                填号码即可；拼入标题时自动补 ASCII「ISBN 」前缀（你已写 ISBN 开头则保留原样）。
-              </p>
-            </div>
-
-            <div className="meta-preview">
-              <span className="meta-cap">拼接预览</span>
-              <code className="meta-joined" title={joined || undefined}>
-                {joined || "（书名必填；留空则不拼接）"}
-              </code>
-            </div>
-            <p className="meta-note">
-              书名 _ 副标题 - 卷册 - 作者 - 译者 - 出版年份 - 出版社 - ISBN。
-              书名与副标题之间用 空格 _ 空格，其后各项用 空格 - 空格；
-              空字段自动跳过，不会出现连续分隔符。符号由程序生成（只出半角）。
-            </p>
-
-            <div className="meta-field">
-              <label htmlFor="bookmeta-display">显示名（可留空）</label>
-              <div className="meta-row">
-                <input
-                  id="bookmeta-display"
-                  className="meta-input"
-                  value={display}
-                  onChange={(e) => setDisplay(e.target.value)}
-                  placeholder={effective}
-                />
-                <button
-                  type="button"
-                  className="btn ghost small"
-                  onClick={() => setDisplay(joined)}
-                  disabled={!canAutoFill}
-                  title={
-                    display.trim()
-                      ? "显示名已手填：自动填充不覆盖手改，清空后可重新使用"
-                      : joined
-                        ? "把上方字段的拼接填入显示名"
-                        : "主书名或字段都为空，没有可填充的内容"
-                  }
-                >
-                  自动填充
-                </button>
-              </div>
-              <p className="meta-note">
-                留空 = 书架/阅读自动按上方模板拼接（以后改字段即跟随）。
-                填写 = 固定为该名字，字段改动和自动填充都不覆盖它；清空可回到自动拼接。
-              </p>
-            </div>
-
-            <p className="meta-effect">
-              保存后书架将显示：
-              <strong title={effective}>{effective}</strong>
-              <span className="meta-note">
-                （数据目录里的 epub 与同名 md 会按此名改名；若已有同名文件自动加
-                -2、-3…，进度与划线一并保留。）
-              </span>
-            </p>
-          </form>
-        )}
-
-        {view && (
-          <div className="meta-actions">
-            {error && <p className="meta-error meta-actions-error">{error}</p>}
-            <button
-              type="submit"
-              form="bookmeta-form"
-              className="btn"
-              disabled={saving || reading || titleMissing}
-              title={
-                reading ? "正在从原书读取…" : titleMissing ? "主书名必填" : undefined
-              }
-            >
-              {saving ? "保存中…" : "保存"}
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={onClose}
-              disabled={saving}
-            >
-              取消
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </dialog>
   );
 }

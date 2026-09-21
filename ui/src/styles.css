@@ -1175,30 +1175,38 @@ body {
   opacity: 1;
 }
 
-/* 编辑元数据模态（书名规范）——从书架三点菜单进入。fixed 遮罩 + 居中浅色卡片，
-   属于壳层 UI，不注入任何正文样式（AGENTS：程序生成的符号只出半角）。 */
-.meta-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  display: grid;
-  place-items: center;
-  background: rgba(24, 21, 17, 0.42);
-}
-
+/* 编辑元数据模态（书名规范）——从书架三点菜单进入。真 modal：原生 <dialog> +
+   showModal（ui/src/modal.ts），进 top layer、背景 inert，遮罩是它自己的
+   ::backdrop 而不是一层 fixed div。属于壳层 UI，不注入任何正文样式（AGENTS：
+   程序生成的符号只出半角）。 */
 .meta-modal {
-  width: min(500px, calc(100vw - 32px));
+  width: min(760px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px 18px;
+  border: 0;
   background: #fffdf7;
   color: var(--ink);
   border-radius: 12px;
   box-shadow: 0 14px 40px rgba(24, 21, 17, 0.3);
   font-size: 13px;
+}
+
+/* 两个真 modal 共用：遮罩画在 ::backdrop 里（top layer，不是 dialog 的后代，
+   拿不到继承的 CSS 变量，只能写字面色）。 */
+.meta-modal::backdrop,
+.cmp-modal::backdrop {
+  background: rgba(24, 21, 17, 0.42);
+}
+
+/* 没打开时保持 UA 的 display:none——上面那句 display:flex 否则会把它顶掉，
+   一个没 showModal 的 dialog 就会以普通卡片的样子留在页面里。 */
+.meta-modal:not([open]),
+.cmp-modal:not([open]) {
+  display: none;
 }
 
 .meta-head {
@@ -1219,12 +1227,26 @@ body {
   font-size: 15px;
 }
 
+/* 头部：文件名 + 书籍文件大小。名字可长可短（书名改过之后尤甚），所以名字
+   先被省略号裁掉，大小这份固定短文本始终看得见；名字的完整值在 title 里。 */
 .meta-file {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
   color: var(--muted);
   font-size: 12px;
+}
+
+.meta-file-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.meta-file-size {
+  flex: none;
 }
 
 .meta-form {
@@ -1614,15 +1636,6 @@ body {
 /* ---- 同书对照面板（ComparePanel.tsx）----
    行是轴、列是版本。宽屏并排，窄窗靠横向滚动；纸色、无主题。 */
 
-.cmp-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 82;
-  display: grid;
-  place-items: center;
-  background: rgba(24, 21, 17, 0.42);
-}
-
 .cmp-modal {
   width: min(920px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
@@ -1630,6 +1643,7 @@ body {
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px 18px;
+  border: 0;
   background: #fffdf7;
   color: var(--ink);
   border-radius: 12px;
@@ -1704,6 +1718,13 @@ body {
 
 .cmp-lean strong {
   margin-left: 4px;
+}
+
+/* 被点名那本的文件大小，跟着书名后面（与表头的 .cmp-col-size 同一层级的信息）。 */
+.cmp-lean-size {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .cmp-lean-none {

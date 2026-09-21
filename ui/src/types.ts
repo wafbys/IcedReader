@@ -63,6 +63,8 @@ export type LibraryEntry = {
   updatedAt: number | null;
   hasCover: boolean;
   coverRev: string;
+  /** 书籍文件字节数（0 = 取不到）。书架 tooltip / 编辑元数据面板显示。 */
+  sizeBytes: number;
   openError: string | null;
   /** 优/良/中 from the cached first-import signals (null when unknown). */
   quality: string | null;

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { fmtBytes } from "./format";
 import type { LibraryEntry } from "./types";
 
 /** Hover tooltip content for one quality badge (优/良/中) with its reasons. */
@@ -24,6 +25,11 @@ type Props = {
   onEditMeta: (entry: LibraryEntry) => void;
   onCompare: (entry: LibraryEntry) => void;
 };
+
+/** 封面 / 书名悬停提示：书名 + 书籍文件大小（同一本书两处看到同一份信息）。 */
+function bookTip(entry: LibraryEntry): string {
+  return `${entry.title}\n大小 ${fmtBytes(entry.sizeBytes)}`;
+}
 
 function progressLabel(entry: LibraryEntry): string {
   if (entry.openError) return "无法打开";
@@ -252,7 +258,7 @@ export default function Library({
                 type="button"
                 className="lib-card lib-cover-btn"
                 disabled={busy || !!entry.openError}
-                title={entry.openError ?? entry.title}
+                title={entry.openError ?? bookTip(entry)}
                 onClick={() => onOpen(entry.path)}
               >
                 <Cover
@@ -303,7 +309,7 @@ export default function Library({
               type="button"
               className="lib-info"
               disabled={busy || !!entry.openError}
-              title={entry.openError ?? entry.title}
+              title={entry.openError ?? bookTip(entry)}
               onClick={() => onOpen(entry.path)}
             >
               <strong>{entry.title}</strong>
