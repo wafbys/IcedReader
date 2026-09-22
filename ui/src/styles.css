@@ -166,9 +166,6 @@ body {
   .reading .chrome .top-more {
     display: block;
   }
-  /* Tighten spacing after the low-frequency buttons collapse: the freed room
-     lets the progress area (页码 / 全书 N%) show instead of being squeezed out
-     by the book title and the PDF zoom controls. */
   .reading .chrome {
     gap: 6px;
     padding: 0 8px;
@@ -231,30 +228,6 @@ body {
 .top-menu button:disabled {
   cursor: default;
   opacity: 0.5;
-}
-
-/* PDF 张数在窄窗收进「⋯」菜单；宽窗由顶栏的 .zoom-mode 显示，这里隐藏。 */
-.top-menu-group {
-  display: none;
-  flex-direction: column;
-}
-
-.top-menu-cap {
-  padding: 6px 10px 2px;
-  font-size: 11px;
-  color: #9a9188;
-}
-
-.top-menu button.on {
-  color: var(--accent);
-}
-
-/* 窄窗才把张数放进菜单（宽窗顶栏已有 .zoom-mode）。这条必须排在基线的
-   `display: none` 之后，否则同优先级下会被它覆盖。 */
-@media (max-width: 1180px) {
-  .top-menu-group {
-    display: flex;
-  }
 }
 
 .type-size {

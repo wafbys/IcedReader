@@ -44,6 +44,14 @@ impl From<&str> for Error {
     }
 }
 
+/// A poisoned mutex folds into a plain message (same text as the old
+/// `map_err(|e| e.to_string())`), so `?` works on `Mutex::lock()` too.
+impl<T> From<std::sync::PoisonError<T>> for Error {
+    fn from(err: std::sync::PoisonError<T>) -> Self {
+        Self::Message(err.to_string())
+    }
+}
+
 impl Serialize for Error {
     fn serialize<S: serde::Serializer>(
         &self,

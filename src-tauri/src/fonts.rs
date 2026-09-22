@@ -59,10 +59,10 @@ pub fn apply_css_if_active(css: Vec<u8>, settings: &SettingsStore) -> Vec<u8> {
 }
 
 pub fn copy_into_slot(slot: FontSlot, src: &Path) -> crate::error::Result<FontFile> {
-    portable::ensure_layout().map_err(|e| e.to_string())?;
-    let fonts_dir = portable::fonts_dir().map_err(|e| e.to_string())?;
+    portable::ensure_layout()?;
+    let fonts_dir = portable::fonts_dir()?;
 
-    let meta = fs::metadata(src).map_err(|e| e.to_string())?;
+    let meta = fs::metadata(src)?;
     if !meta.is_file() {
         return Err("不是字体文件".into());
     }
@@ -71,15 +71,13 @@ pub fn copy_into_slot(slot: FontSlot, src: &Path) -> crate::error::Result<FontFi
     }
 
     let mut header = [0u8; 4];
-    fs::File::open(src)
-        .and_then(|mut f| f.read_exact(&mut header))
-        .map_err(|e| e.to_string())?;
+    fs::File::open(src).and_then(|mut f| f.read_exact(&mut header))?;
     let kind = sniff_font(&header).ok_or_else(|| "无法识别的字体文件".to_string())?;
 
     let dest_name = format!("{}.{ext}", slot.as_str(), ext = kind.extension());
     let dest = fonts_dir.join(&dest_name);
     let tmp = fonts_dir.join(format!(".{}.upload", slot.as_str()));
-    fs::copy(src, &tmp).map_err(|e| e.to_string())?;
+    fs::copy(src, &tmp)?;
     remove_slot_files(&fonts_dir, slot);
     if let Err(err) = fs::rename(&tmp, &dest) {
         let _ = fs::remove_file(&tmp);

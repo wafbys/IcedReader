@@ -80,7 +80,7 @@ pub fn handle<R: tauri::Runtime>(
     let fetched = if is_document(&media_guess, &href) {
         book.chapter_html(&href, &resource_base(&book_id))
             .map(Fetch::Html)
-            .map_err(|e| e.to_string())
+            .map_err(crate::error::Error::from)
     } else {
         book.resource(&href)
             .map(|res| Fetch::Resource {
@@ -88,7 +88,7 @@ pub fn handle<R: tauri::Runtime>(
                 data: res.data,
                 href: href.clone(),
             })
-            .map_err(|e| e.to_string())
+            .map_err(crate::error::Error::from)
     };
 
     match fetched {
@@ -116,7 +116,7 @@ pub fn handle<R: tauri::Runtime>(
         Err(err) => cors(
             StatusCode::NOT_FOUND,
             "text/plain; charset=utf-8",
-            err.into_bytes(),
+            err.to_string().into_bytes(),
         ),
     }
 }

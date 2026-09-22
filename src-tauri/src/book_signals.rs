@@ -865,7 +865,7 @@ pub fn analyze_path_now(path: &std::path::Path, file_name: &str, rev: &str) -> O
 }
 
 pub fn analyze_pdf(path: &std::path::Path, rev: &str) -> crate::error::Result<BookSignals> {
-    let doc = iced_reader_pdf::PdfDoc::open(path).map_err(|e| e.to_string())?;
+    let doc = iced_reader_pdf::PdfDoc::open(path)?;
     let quality = iced_reader_pdf::analyze_quality(&doc);
     let info = doc.info();
     // Same file re-downloaded ⇒ same page count, title, outline labels and

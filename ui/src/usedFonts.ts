@@ -150,38 +150,6 @@ export function specifiedFamiliesFromReport(
   return unique(names);
 }
 
-export function missingAuthorFonts(doc: Document, authorFamilies: string[]): string[] {
-  const canvas = doc.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return [...authorFamilies];
-  const loaded = familiesFromDocument(doc);
-  return authorFamilies.filter((family) => {
-    if (isGeneric(family) || isCssWide(family)) return false;
-    if (loaded.some((f) => f.toLowerCase() === family.toLowerCase())) return false;
-    return !latinMetricsInstalled(ctx, family);
-  });
-}
-
-export function firstVisibleChars(doc: Document, n = 12): string {
-  const root = doc.body ?? doc.documentElement;
-  if (!root) return "";
-  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let out = "";
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    const text = node.nodeValue;
-    if (!text) continue;
-    const el = node.parentElement;
-    if (!el || skipTag(el.tagName)) continue;
-    for (const ch of text) {
-      if (!ch.trim()) continue;
-      out += ch;
-      if ([...out].length >= n) return out;
-    }
-  }
-  return out;
-}
-
 export function collectUsedFonts(
   doc: Document,
   authorFamilies: string[] = [],

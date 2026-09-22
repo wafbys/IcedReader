@@ -382,12 +382,12 @@ pub fn cover_bytes(path: &Path) -> crate::error::Result<(String, Vec<u8>)> {
     if opener.format_id() == PDF_FORMAT {
         return Ok(iced_reader_pdf::cover(path, PDF_COVER_WIDTH)?);
     }
-    let book = opener.open(path).map_err(|e| e.to_string())?;
+    let book = opener.open(path)?;
     let href = book
         .metadata()
         .cover_href
         .ok_or_else(|| "no cover".to_string())?;
-    let res = book.resource(&href).map_err(|e| e.to_string())?;
+    let res = book.resource(&href)?;
     if res.data.is_empty() {
         return Err("empty cover".into());
     }
@@ -407,7 +407,7 @@ pub fn library_cover_path(file_name: &str) -> crate::error::Result<PathBuf> {
     {
         return Err("invalid cover name".into());
     }
-    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let dir = portable::library_dir()?;
     let path = dir.join(file_name);
     if !path.is_file() {
         return Err("book not in library".into());
@@ -554,7 +554,7 @@ pub fn rename_book_files(
     if book_new.is_file() {
         return Err(format!("target already exists: {new_name}").into());
     }
-    fs::rename(&book_old, &book_new).map_err(|e| e.to_string())?;
+    fs::rename(&book_old, &book_new)?;
     let md_old = meta_path_for(dir, old_file_name)?;
     if md_old.is_file() {
         // Best-effort: the new md is written right after this returns.
@@ -587,7 +587,7 @@ pub fn delete_book_from(dir: &Path, file_name: &str) -> crate::error::Result<Pat
     if !path.is_file() {
         return Err("book not in library".into());
     }
-    fs::remove_file(&path).map_err(|e| e.to_string())?;
+    fs::remove_file(&path)?;
     // The companion md (user metadata) dies with the book; missing is fine.
     let _ = fs::remove_file(meta_path_for(dir, file_name)?);
     // The notes archive (划线+备注) dies with the book too.

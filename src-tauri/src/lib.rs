@@ -94,8 +94,8 @@ async fn open_book(
     let source = std::path::Path::new(&path);
     let opener = openers::opener_for(source).ok_or_else(|| format!("unsupported file: {path}"))?;
     let is_pdf = opener.format_id() == PDF_FORMAT;
-    let imported = portable::import_book(source).map_err(|e| e.to_string())?;
-    let book = opener.open(&imported).map_err(|e| e.to_string())?;
+    let imported = portable::import_book(source)?;
+    let book = opener.open(&imported)?;
     let mut metadata = book.metadata();
     let library = portable::library_dir().ok();
     let key = progress_key(&imported, &metadata.identifiers, library.as_deref());
@@ -179,8 +179,7 @@ async fn open_book(
     };
     state
         .books
-        .lock()
-        .map_err(|e| e.to_string())?
+        .lock()?
         .insert(opened.id.clone(), Arc::from(book));
     Ok(opened)
 }
@@ -279,20 +278,20 @@ fn read_notes_text(file_name: &str) -> String {
 
 /// 写某本书的 notes.md；空内容 = 移除档案文件。
 fn write_notes_text(file_name: &str, text: &str) -> crate::error::Result<()> {
-    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let dir = portable::library_dir()?;
     let path = notes::notes_path_for(&dir, file_name)?;
     if text.trim().is_empty() {
         if path.is_file() {
-            fs::remove_file(&path).map_err(|e| e.to_string())?;
+            fs::remove_file(&path)?;
         }
         return Ok(());
     }
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension("notes.md.tmp");
-    fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    fs::write(&tmp, text)?;
+    fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -350,12 +349,7 @@ fn add_annotation(
         pos: pos.clamp(0.0, 1.0),
         created_at: unix_now(),
     };
-    state
-        .annotations
-        .lock()
-        .map_err(|e| e.to_string())?
-        .add(key, highlight.clone())
-        .map_err(|e| e.to_string())?;
+    state.annotations.lock()?.add(key, highlight.clone())?;
     Ok(highlight)
 }
 
@@ -375,12 +369,7 @@ fn delete_annotation(
             write_notes_text(&file_name, &updated)?;
         }
     }
-    state
-        .annotations
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(&key, &id)
-        .map_err(|e| e.to_string())?;
+    state.annotations.lock()?.remove(&key, &id)?;
     Ok(())
 }
 
@@ -398,8 +387,7 @@ fn save_note(
     // 划线必须在当前书里；章归属需要打开的书（spine 标题）。
     let rec = state
         .annotations
-        .lock()
-        .map_err(|e| e.to_string())?
+        .lock()?
         .list(&key)
         .into_iter()
         .find(|h| h.id == id)
@@ -408,7 +396,7 @@ fn save_note(
         // Clone the `Arc` out and drop the map lock before asking the book for
         // its spine (an EPUB spine read touches the archive).
         let book = {
-            let books = state.books.lock().map_err(|e| e.to_string())?;
+            let books = state.books.lock()?;
             books
                 .get(&book_id)
                 .ok_or_else(|| "book not open".to_string())?
@@ -499,7 +487,7 @@ async fn get_chapter(
     // Take the book out of the map and drop the lock before laying out: for a
     // PDF this call rasterises a page (up to ~1.7 s on a heavy first page).
     let book = {
-        let books = state.books.lock().map_err(|e| e.to_string())?;
+        let books = state.books.lock()?;
         books
             .get(&id)
             .ok_or_else(|| "book not open".to_string())?
@@ -507,7 +495,7 @@ async fn get_chapter(
     };
     let is_pdf = book.format_id() == PDF_FORMAT;
     let base = protocol::resource_base(&id);
-    let html = book.chapter_html(&href, &base).map_err(|e| e.to_string())?;
+    let html = book.chapter_html(&href, &base)?;
     // A PDF page document is our own and carries no CSS, so the publisher
     // font report comes back empty either way.
     let publisher_fonts = collect_publisher_fonts(&html, &base, &href, |res_href| {
@@ -521,7 +509,7 @@ async fn get_chapter(
             publisher_fonts,
         });
     }
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    let settings = state.settings.lock()?;
     Ok(ChapterView {
         html: fonts::apply_html_if_active(html, &settings),
         publisher_fonts,
@@ -557,8 +545,7 @@ fn save_progress(
 ) -> crate::error::Result<()> {
     state
         .progress
-        .lock()
-        .map_err(|e| e.to_string())?
+        .lock()?
         .set(
             key,
             Locator {
@@ -577,7 +564,7 @@ fn resource_origin() -> String {
 
 #[tauri::command]
 fn get_font_settings(state: tauri::State<'_, AppState>) -> crate::error::Result<FontSettingsView> {
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    let settings = state.settings.lock()?;
     Ok(settings.view())
 }
 
@@ -586,10 +573,8 @@ fn set_use_original_fonts(
     use_original_fonts: bool,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<FontSettingsView> {
-    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-    settings
-        .set_use_original_fonts(use_original_fonts)
-        .map_err(|e| e.to_string())?;
+    let mut settings = state.settings.lock()?;
+    settings.set_use_original_fonts(use_original_fonts)?;
     Ok(settings.view())
 }
 
@@ -598,10 +583,8 @@ fn set_font_scale(
     font_scale: u32,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<FontSettingsView> {
-    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-    settings
-        .set_font_scale(font_scale)
-        .map_err(|e| e.to_string())?;
+    let mut settings = state.settings.lock()?;
+    settings.set_font_scale(font_scale)?;
     Ok(settings.view())
 }
 
@@ -613,8 +596,8 @@ fn install_font(
 ) -> crate::error::Result<FontSettingsView> {
     let slot = FontSlot::parse(&slot).ok_or_else(|| "未知字体槽位".to_string())?;
     let file = fonts::copy_into_slot(slot, std::path::Path::new(&path))?;
-    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-    settings.set_font(slot, file).map_err(|e| e.to_string())?;
+    let mut settings = state.settings.lock()?;
+    settings.set_font(slot, file)?;
     Ok(settings.view())
 }
 
@@ -625,8 +608,8 @@ fn clear_font(
 ) -> crate::error::Result<FontSettingsView> {
     let slot = FontSlot::parse(&slot).ok_or_else(|| "未知字体槽位".to_string())?;
     let view = {
-        let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-        settings.clear_font(slot).map_err(|e| e.to_string())?;
+        let mut settings = state.settings.lock()?;
+        settings.clear_font(slot)?;
         settings.view()
     };
     fonts::delete_slot_files(slot);
@@ -640,12 +623,12 @@ fn clear_font(
 async fn list_library(
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<Vec<library::LibraryEntry>> {
-    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let dir = portable::library_dir()?;
     let progress = {
-        let store = state.progress.lock().map_err(|e| e.to_string())?;
+        let store = state.progress.lock()?;
         store.snapshot()
     };
-    let mut cache = state.library_meta.lock().map_err(|e| e.to_string())?;
+    let mut cache = state.library_meta.lock()?;
     // Read the signals cache once per listing (never recomputed here).
     let signals = book_signals::read_all();
     let entries = library::list_library_cached(&dir, &progress, &mut cache, &signals);
@@ -680,15 +663,15 @@ fn compare_books(
     if file_names.len() < 2 {
         return Err("至少需要两本同书才能对照".into());
     }
-    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let dir = portable::library_dir()?;
 
     // Reuse the shelf listing so the panel shows exactly the titles and grades
     // the shelf shows (companion md included).
     let progress = {
-        let store = state.progress.lock().map_err(|e| e.to_string())?;
+        let store = state.progress.lock()?;
         store.snapshot()
     };
-    let mut cache = state.library_meta.lock().map_err(|e| e.to_string())?;
+    let mut cache = state.library_meta.lock()?;
     let entries =
         library::list_library_cached(&dir, &progress, &mut cache, &book_signals::read_all());
     drop(cache);
@@ -747,7 +730,7 @@ fn get_book_meta(
     file_name: String,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<book_meta::BookMetaView> {
-    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let dir = portable::library_dir()?;
     let md_path = library::meta_path_for(&dir, &file_name)?;
     let path = dir.join(&file_name);
     if !path.is_file() {
@@ -755,7 +738,7 @@ fn get_book_meta(
     }
     let overlay = read_meta_file(&md_path);
     let profile = {
-        let mut cache = state.library_meta.lock().map_err(|e| e.to_string())?;
+        let mut cache = state.library_meta.lock()?;
         cache.profile(&path, &dir)
     };
     Ok(book_meta::view_for(&profile, overlay.as_ref()))
@@ -769,7 +752,7 @@ async fn reread_book_meta(
     file_name: String,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<book_meta::BookMetaView> {
-    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let dir = portable::library_dir()?;
     let md_path = library::meta_path_for(&dir, &file_name)?;
     let path = dir.join(&file_name);
     if !path.is_file() {
@@ -777,13 +760,13 @@ async fn reread_book_meta(
     }
     let existing = read_meta_file(&md_path);
     let profile = {
-        let mut cache = state.library_meta.lock().map_err(|e| e.to_string())?;
+        let mut cache = state.library_meta.lock()?;
         cache.profile(&path, &dir)
     };
     let original_title = existing
         .and_then(|m| m.original_title)
         .unwrap_or_else(|| profile.title.clone());
-    let book = openers::open_any(&path).map_err(|e| e.to_string())?;
+    let book = openers::open_any(&path)?;
     let metadata = book.metadata();
     Ok(book_meta::reread_view_for(
         &profile,
@@ -801,7 +784,7 @@ async fn set_book_meta(
     fields: book_meta::BookMetaFields,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<()> {
-    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let dir = portable::library_dir()?;
     let md_path = library::meta_path_for(&dir, &file_name)?;
     let path = dir.join(&file_name);
     if !path.is_file() {
@@ -811,11 +794,7 @@ async fn set_book_meta(
     let existing = read_meta_file(&md_path);
     // File-bound profile (dc:title base + progress key). Opening an epub only
     // happens on a cache miss; saving metadata is low-frequency, so fine.
-    let profile = state
-        .library_meta
-        .lock()
-        .map_err(|e| e.to_string())?
-        .profile(&path, &dir);
+    let profile = state.library_meta.lock()?.profile(&path, &dir);
     let original_title = existing
         .as_ref()
         .and_then(|m| m.original_title.clone())
@@ -861,16 +840,12 @@ async fn set_book_meta(
             let new_lib_key = format!("lib:{}.{}", target_stem.to_lowercase(), extension);
             state
                 .progress
-                .lock()
-                .map_err(|e| e.to_string())?
-                .rename_key(&profile.progress_key, &new_lib_key)
-                .map_err(|e| e.to_string())?;
+                .lock()?
+                .rename_key(&profile.progress_key, &new_lib_key)?;
             state
                 .annotations
-                .lock()
-                .map_err(|e| e.to_string())?
-                .rename_book(&profile.progress_key, &new_lib_key)
-                .map_err(|e| e.to_string())?;
+                .lock()?
+                .rename_book(&profile.progress_key, &new_lib_key)?;
         }
         book_signals::rename_key(&file_name, &new_name);
         // Drop cached shelf metadata/cover bytes for the old path/name so the
@@ -915,20 +890,10 @@ fn delete_book(
     progress_key: String,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<()> {
-    let dir = portable::library_dir().map_err(|e| e.to_string())?;
+    let dir = portable::library_dir()?;
     library::delete_book_from(&dir, &file_name)?;
-    state
-        .progress
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(&progress_key)
-        .map_err(|e| e.to_string())?;
-    state
-        .annotations
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove_book(&progress_key)
-        .map_err(|e| e.to_string())?;
+    state.progress.lock()?.remove(&progress_key)?;
+    state.annotations.lock()?.remove_book(&progress_key)?;
     // Drop any cached metadata / cover bytes for the removed file.
     let deleted = dir.join(&file_name);
     if let Ok(mut cache) = state.library_meta.lock() {
@@ -950,7 +915,7 @@ fn pending_book() -> Option<String> {
 
 #[tauri::command]
 fn close_book(id: String, state: tauri::State<'_, AppState>) -> crate::error::Result<()> {
-    state.books.lock().map_err(|e| e.to_string())?.remove(&id);
+    state.books.lock()?.remove(&id);
     Ok(())
 }
 
@@ -982,7 +947,7 @@ pub fn run() {
             covers: Arc::new(Mutex::new(library::CoverCache::default())),
         })
         .setup(|app| {
-            portable::ensure_layout().map_err(|e| e.to_string())?;
+            portable::ensure_layout()?;
             if let Ok(file) = portable::progress_file() {
                 if let Ok(store) = ProgressStore::open(file) {
                     if let Ok(mut slot) = app.state::<AppState>().progress.lock() {
@@ -1004,7 +969,7 @@ pub fn run() {
                     }
                 }
             }
-            let webview_dir = portable::webview_dir().map_err(|e| e.to_string())?;
+            let webview_dir = portable::webview_dir()?;
             let conf = app
                 .config()
                 .app
