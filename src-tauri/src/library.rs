@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use iced_reader_core::{
     book_extension, book_stem, clean_title, progress_key, read_meta_file, resolved_title, Locator,
@@ -289,36 +290,56 @@ fn enrich_and_sort(
 /// file revision, so a replaced epub re-reads its cover exactly once and an
 /// unchanged one is served from memory instead of re-opening the whole
 /// archive on every shelf visit.
+///
+/// Insertion-ordered (a `VecDeque`, like the PDF raster cache) so that, at the
+/// cap, the **oldest** entry is dropped. The old version cleared the whole map
+/// once it hit 32, which made a library larger than the cap re-render its
+/// covers on every shelf visit.
 #[derive(Default)]
 pub struct CoverCache {
-    /// file_name → (rev, media type, bytes)
-    covers: HashMap<String, (String, String, Vec<u8>)>,
+    /// `(file_name, rev, media type, bytes)`, oldest first.
+    covers: VecDeque<(String, String, String, Vec<u8>)>,
 }
 
 /// Keep memory bounded: the biggest sample covers are several MB each, so a
-/// modest cap stays cheap while covering realistic shelf sizes.
+/// modest cap stays cheap while covering a screenful or two of shelf.
 const COVER_CACHE_MAX: usize = 32;
 
 impl CoverCache {
     pub fn get(&self, file_name: &str, rev: &str) -> Option<(&str, &[u8])> {
         self.covers
-            .get(file_name)
-            .filter(|(cached_rev, _, _)| cached_rev == rev)
-            .map(|(_, media, data)| (media.as_str(), data.as_slice()))
+            .iter()
+            .find(|(name, cached_rev, _, _)| name == file_name && cached_rev == rev)
+            .map(|(_, _, media, data)| (media.as_str(), data.as_slice()))
     }
 
     pub fn insert(&mut self, file_name: &str, rev: String, media: String, data: Vec<u8>) {
-        if self.covers.len() >= COVER_CACHE_MAX {
-            self.covers.clear();
+        // One entry per file: replace the previous revision if present.
+        if let Some(index) = self
+            .covers
+            .iter()
+            .position(|(name, _, _, _)| name == file_name)
+        {
+            self.covers.remove(index);
+        }
+        while self.covers.len() >= COVER_CACHE_MAX {
+            self.covers.pop_front();
         }
         self.covers
-            .insert(file_name.to_string(), (rev, media, data));
+            .push_back((file_name.to_string(), rev, media, data));
     }
 
     /// Drop one book's cover after deletion.
     pub fn remove(&mut self, file_name: &str) {
-        self.covers.remove(file_name);
+        self.covers.retain(|(name, _, _, _)| name != file_name);
     }
+}
+
+/// `(file_name, rev)` covers being rendered right now, so the shelf pre-warm and
+/// a protocol miss do not render the same cover twice.
+fn covers_in_flight() -> &'static Mutex<HashSet<(String, String)>> {
+    static IN_FLIGHT: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
+    IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 /// Cover bytes for one library book: EPUBs hand over their declared cover
@@ -351,28 +372,37 @@ pub fn warm_cover_in_background(
     file_name: String,
     cache: std::sync::Arc<std::sync::Mutex<CoverCache>>,
 ) {
+    let rev = file_rev(&path);
+    // Skip anything already cached, and claim the work before spawning so a
+    // request that misses does not start a second render of what the shelf
+    // pre-warm is already rendering.
+    let cached = cache
+        .lock()
+        .map(|c| c.get(&file_name, &rev).is_some())
+        .unwrap_or(true);
+    if cached {
+        return;
+    }
+    let key = (file_name.clone(), rev.clone());
+    let claimed = covers_in_flight()
+        .lock()
+        .map(|mut in_flight| in_flight.insert(key.clone()))
+        .unwrap_or(false);
+    if !claimed {
+        return;
+    }
     std::thread::spawn(move || {
-        let rev = file_rev(&path);
-        // Render **outside** the lock: a PDF cover costs hundreds of ms and
-        // holding the cache lock across it would block every other cover
-        // request. Check, render, then insert under the lock (a duplicate
-        // render from a racing warm is cheaper than the stall).
-        {
-            let Ok(cache) = cache.lock() else {
-                return;
-            };
-            if cache.get(&file_name, &rev).is_some() {
-                return;
+        // Render **outside** the cache lock: a PDF cover costs hundreds of ms and
+        // holding the lock across it would block every other cover request.
+        if let Ok((media, data)) = cover_bytes(&path) {
+            if let Ok(mut cache) = cache.lock() {
+                if cache.get(&file_name, &rev).is_none() {
+                    cache.insert(&file_name, rev, media, data);
+                }
             }
         }
-        let Ok((media, data)) = cover_bytes(&path) else {
-            return;
-        };
-        let Ok(mut cache) = cache.lock() else {
-            return;
-        };
-        if cache.get(&file_name, &rev).is_none() {
-            cache.insert(&file_name, rev, media, data);
+        if let Ok(mut in_flight) = covers_in_flight().lock() {
+            in_flight.remove(&key);
         }
     });
 }
@@ -1241,5 +1271,33 @@ mod tests {
         assert_eq!(cache.get("a.epub", "rev2"), None);
         cache.remove("a.epub");
         assert_eq!(cache.get("a.epub", "rev1"), None);
+    }
+
+    #[test]
+    fn cover_cache_evicts_the_oldest_not_everything() {
+        let mut cache = CoverCache::default();
+        for i in 0..COVER_CACHE_MAX {
+            cache.insert(
+                &format!("b{i}.epub"),
+                format!("r{i}"),
+                "image/png".into(),
+                vec![i as u8],
+            );
+        }
+        // One past the cap: the oldest goes, the rest survive (the old code
+        // wiped the whole map here, making big shelves re-render every visit).
+        cache.insert("extra.epub", "r".into(), "image/png".into(), vec![9]);
+        assert_eq!(cache.get("b0.epub", "r0"), None, "oldest evicted");
+        assert!(cache.get("b1.epub", "r1").is_some(), "the rest survive");
+        assert!(cache.get("extra.epub", "r").is_some());
+    }
+
+    #[test]
+    fn cover_cache_replaces_a_books_old_revision() {
+        let mut cache = CoverCache::default();
+        cache.insert("a.epub", "rev1".into(), "image/png".into(), vec![1]);
+        cache.insert("a.epub", "rev2".into(), "image/png".into(), vec![2]);
+        assert_eq!(cache.get("a.epub", "rev1"), None);
+        assert_eq!(cache.get("a.epub", "rev2"), Some(("image/png", &[2u8][..])));
     }
 }

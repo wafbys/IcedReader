@@ -15,9 +15,9 @@
 //! UUID 资治通鉴 can outrank a bare dump). 良 = clean but thin. 中 = defects.
 //!
 //! Everything above is measured **per book**: the badge and its 依据 must not
-//! move when an unrelated copy lands on the shelf. [`edition_vs_peers`] computes
-//! the relative verdicts for copies of one work; it is deliberately no longer
-//! folded into `quality_plus`/`quality_minus` and belongs to the 同书对照 panel
+//! move when an unrelated copy lands on the shelf. `book_compare` computes the
+//! relative verdicts for copies of one work; it is deliberately not folded into
+//! `quality_plus`/`quality_minus` and belongs to the 同书对照 panel
 //! (`docs/ideas/book-compare.md`).
 
 use std::collections::{HashMap, HashSet};

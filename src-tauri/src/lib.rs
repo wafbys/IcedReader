@@ -637,14 +637,21 @@ async fn list_library(
     // real CPU, and a protocol request must never do it (see
     // `serve_library_cover`). With this the first cover request usually hits and
     // the shelf shows real covers instead of the placeholder.
-    for entry in &entries {
-        if entry.has_cover {
-            library::warm_cover_in_background(
-                dir.join(&entry.file_name),
-                entry.file_name.clone(),
-                std::sync::Arc::clone(&state.covers),
-            );
-        }
+    // Cap the count: a large library would otherwise start one render thread
+    // per book (PDF covers are hundreds of ms each) for covers nobody has
+    // scrolled to. The shelf's lazy `<img>` warms whatever is actually shown,
+    // and `warm_cover_in_background` dedups the two paths.
+    const COVER_WARM_MAX: usize = 24;
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.has_cover)
+        .take(COVER_WARM_MAX)
+    {
+        library::warm_cover_in_background(
+            dir.join(&entry.file_name),
+            entry.file_name.clone(),
+            std::sync::Arc::clone(&state.covers),
+        );
     }
     Ok(entries)
 }
