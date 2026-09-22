@@ -227,31 +227,40 @@ fn enrich_and_sort(
     }
     // Same-edition hint across different fingerprints: identical heading
     // sequence and near-equal total length (repacks that moved files around).
-    for a in 0..valid.len() {
-        for b in (a + 1)..valid.len() {
-            let (ia, sa) = valid[a];
-            let (ib, sb) = valid[b];
-            if sa.fingerprint == sb.fingerprint {
-                continue;
-            }
-            if sa.headings != sb.headings {
-                continue;
-            }
-            if sa.chars == 0 || sb.chars == 0 {
-                continue;
-            }
-            let ratio = (sa.chars.max(sb.chars) - sa.chars.min(sb.chars)) as f64
-                / sa.chars.max(sb.chars) as f64;
-            if ratio > 0.02 {
-                continue;
-            }
-            let name_a = entries[ia].file_name.clone();
-            let name_b = entries[ib].file_name.clone();
-            if !entries[ia].duplicates.contains(&name_b) {
-                entries[ia].duplicates.push(name_b);
-            }
-            if !entries[ib].duplicates.contains(&name_a) {
-                entries[ib].duplicates.push(name_a);
+    // Group by heading sequence first, so this is O(bucket²) instead of O(shelf²)
+    // — only books that already share a heading sequence are ever compared.
+    let mut by_headings: HashMap<&[String], Vec<(&book_signals::BookSignals, usize)>> =
+        HashMap::new();
+    for (i, s) in &valid {
+        by_headings
+            .entry(s.headings.as_slice())
+            .or_default()
+            .push((s, *i));
+    }
+    for bucket in by_headings.values().filter(|v| v.len() > 1) {
+        for a in 0..bucket.len() {
+            for b in (a + 1)..bucket.len() {
+                let (sa, ia) = bucket[a];
+                let (sb, ib) = bucket[b];
+                if sa.fingerprint == sb.fingerprint {
+                    continue;
+                }
+                if sa.chars == 0 || sb.chars == 0 {
+                    continue;
+                }
+                let ratio = (sa.chars.max(sb.chars) - sa.chars.min(sb.chars)) as f64
+                    / sa.chars.max(sb.chars) as f64;
+                if ratio > 0.02 {
+                    continue;
+                }
+                let name_a = entries[ia].file_name.clone();
+                let name_b = entries[ib].file_name.clone();
+                if !entries[ia].duplicates.contains(&name_b) {
+                    entries[ia].duplicates.push(name_b);
+                }
+                if !entries[ib].duplicates.contains(&name_a) {
+                    entries[ib].duplicates.push(name_a);
+                }
             }
         }
     }
@@ -921,44 +930,112 @@ mod tests {
         assert!(keys.iter().any(|k| !k.ends_with("同名书.pdf")), "{keys:?}");
     }
 
+    /// An all-defaults signal set (the struct has no `Default` impl).
+    fn empty_signals(rev: String) -> book_signals::BookSignals {
+        book_signals::BookSignals {
+            rev,
+            chars: 0,
+            chapter_shas: Vec::new(),
+            chapter_chars: Vec::new(),
+            chapter_chars_kind: book_signals::CHAPTER_CHARS_PER_SPINE,
+            fingerprint: "pdf-fp".into(),
+            mojibake: 0,
+            br_count: 0,
+            empty_p: 0,
+            img_count: 0,
+            headings: Vec::new(),
+            id_quality: book_signals::IdQuality::None,
+            has_creator: false,
+            img_files: 0,
+            img_bytes: 0,
+            img_truncated: false,
+            img_substantial: 0,
+            img_referenced: 0,
+            img_referenced_substantial: 0,
+            img_referenced_bytes: 0,
+            img_css_only: 0,
+            img_orphan: 0,
+            img_orphan_bytes: 0,
+            img_refs_truncated: false,
+            word_notes: 0,
+            missing_chars: 0,
+            sup_count: 0,
+            analysis_kind: book_signals::ANALYSIS_KIND,
+            pdf: None,
+        }
+    }
+
+    /// A minimal shelf entry whose revision matches `rev` (so cached signals
+    /// count) and with no open error.
+    fn entry(file_name: &str, rev: &str) -> LibraryEntry {
+        LibraryEntry {
+            path: file_name.to_string(),
+            file_name: file_name.to_string(),
+            title: file_name.to_string(),
+            authors: Vec::new(),
+            progress_key: format!("lib:{file_name}"),
+            chapter_index: None,
+            chapter_count: None,
+            chapter_title: None,
+            fraction: None,
+            updated_at: None,
+            has_cover: false,
+            cover_rev: rev.to_string(),
+            size_bytes: 0,
+            open_error: None,
+            quality: None,
+            quality_plus: Vec::new(),
+            quality_minus: Vec::new(),
+            duplicates: Vec::new(),
+            id_quality: book_signals::IdQuality::None,
+        }
+    }
+
+    #[test]
+    fn same_edition_repacks_hint_each_other_across_fingerprints() {
+        // Same heading sequence and near-equal length, different chapter-text
+        // fingerprints (a repack that moved files around).
+        let mut a = empty_signals("rev".into());
+        a.fingerprint = "fp-a".into();
+        a.chars = 100_000;
+        a.headings = vec!["第一章".into(), "第二章".into()];
+        let mut b = empty_signals("rev".into());
+        b.fingerprint = "fp-b".into();
+        b.chars = 100_500; // within 2%
+        b.headings = a.headings.clone();
+        let mut c = empty_signals("rev".into());
+        c.fingerprint = "fp-c".into();
+        c.chars = 100_000;
+        c.headings = vec!["另一本".into()]; // different headings: never hinted
+
+        let mut signals = HashMap::new();
+        signals.insert("a.epub".to_string(), a);
+        signals.insert("b.epub".to_string(), b);
+        signals.insert("c.epub".to_string(), c);
+
+        let out = enrich_and_sort(
+            vec![
+                entry("a.epub", "rev"),
+                entry("b.epub", "rev"),
+                entry("c.epub", "rev"),
+            ],
+            &signals,
+        );
+        let dup = |name: &str| {
+            out.iter()
+                .find(|e| e.file_name == name)
+                .unwrap()
+                .duplicates
+                .clone()
+        };
+        assert_eq!(dup("a.epub"), vec!["b.epub".to_string()]);
+        assert_eq!(dup("b.epub"), vec!["a.epub".to_string()]);
+        assert!(dup("c.epub").is_empty());
+    }
+
     #[test]
     fn shelf_badges_a_pdf_from_its_signals() {
         use iced_reader_pdf::{PdfQuality, TextLayer};
-
-        /// An all-defaults signal set (the struct has no `Default` impl).
-        fn empty(rev: String) -> book_signals::BookSignals {
-            book_signals::BookSignals {
-                rev,
-                chars: 0,
-                chapter_shas: Vec::new(),
-                chapter_chars: Vec::new(),
-                chapter_chars_kind: book_signals::CHAPTER_CHARS_PER_SPINE,
-                fingerprint: "pdf-fp".into(),
-                mojibake: 0,
-                br_count: 0,
-                empty_p: 0,
-                img_count: 0,
-                headings: Vec::new(),
-                id_quality: book_signals::IdQuality::None,
-                has_creator: false,
-                img_files: 0,
-                img_bytes: 0,
-                img_truncated: false,
-                img_substantial: 0,
-                img_referenced: 0,
-                img_referenced_substantial: 0,
-                img_referenced_bytes: 0,
-                img_css_only: 0,
-                img_orphan: 0,
-                img_orphan_bytes: 0,
-                img_refs_truncated: false,
-                word_notes: 0,
-                missing_chars: 0,
-                sup_count: 0,
-                analysis_kind: book_signals::ANALYSIS_KIND,
-                pdf: None,
-            }
-        }
 
         let root = std::env::temp_dir().join("icedreader-library-pdf-badge");
         let _ = fs::remove_dir_all(&root);
@@ -985,7 +1062,7 @@ mod tests {
                     has_author: true,
                     encrypted: false,
                 }),
-                ..empty(rev.clone())
+                ..empty_signals(rev.clone())
             },
         );
 

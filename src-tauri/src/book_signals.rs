@@ -831,11 +831,22 @@ pub fn analyze_in_background(path: std::path::PathBuf, file_name: String, rev: S
         }
     }
     std::thread::spawn(move || {
+        // Drop-guard: even a panic clears the in-flight key, so the book is not
+        // stuck as "already analysing" forever.
+        let _in_flight = InFlight(key);
         analyze_path_now(&path, &file_name, &rev);
-        if let Ok(mut pending) = in_flight().lock() {
-            pending.remove(&key);
-        }
     });
+}
+
+/// Removes a `(file, revision)` key from [`in_flight`] when dropped.
+struct InFlight((String, String));
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = in_flight().lock() {
+            pending.remove(&self.0);
+        }
+    }
 }
 
 /// Analyze one book **by path**, store the result in the cache, and return it.
