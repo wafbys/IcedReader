@@ -42,13 +42,13 @@ pub type Result<T> = std::result::Result<T, PdfError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PdfError {
-    #[error("io: {0}")]
+    #[error("IO 错误：{0}")]
     Io(#[from] std::io::Error),
-    #[error("not a readable PDF: {0}")]
+    #[error("无法读取的 PDF：{0}")]
     Load(String),
-    #[error("page {0} out of range (this file has {1} pages)")]
+    #[error("页码 {0} 超出范围（本书共 {1} 页）")]
     PageOutOfRange(usize, usize),
-    #[error("image encode: {0}")]
+    #[error("图片编码失败：{0}")]
     Encode(String),
 }
 
@@ -275,7 +275,7 @@ impl PdfDoc {
         let doc = Document::load_mem(&bytes).map_err(|e| PdfError::Load(e.to_string()))?;
         let pages = doc.get_pages();
         if pages.is_empty() {
-            return Err(PdfError::Load("no pages".into()));
+            return Err(PdfError::Load("没有页面".into()));
         }
         let t = Instant::now();
         // Takes ownership of the bytes; the raw copy is not kept, so a big PDF

@@ -92,7 +92,7 @@ async fn open_book(
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<OpenedBook> {
     let source = std::path::Path::new(&path);
-    let opener = openers::opener_for(source).ok_or_else(|| format!("unsupported file: {path}"))?;
+    let opener = openers::opener_for(source).ok_or_else(|| format!("不支持的文件：{path}"))?;
     let is_pdf = opener.format_id() == PDF_FORMAT;
     let imported = portable::import_book(source)?;
     let book = opener.open(&imported)?;
@@ -692,7 +692,7 @@ fn compare_books(
                 .components()
                 .any(|c| !matches!(c, std::path::Component::Normal(_)))
         {
-            return Err("invalid book file name".into());
+            return Err("无效的书名".into());
         }
         if file_name.to_ascii_lowercase().ends_with(".pdf") {
             return Err("PDF 暂不参与同书对照".into());
@@ -741,7 +741,7 @@ fn get_book_meta(
     let md_path = library::meta_path_for(&dir, &file_name)?;
     let path = dir.join(&file_name);
     if !path.is_file() {
-        return Err("book not in library".into());
+        return Err("书不在书库中".into());
     }
     let overlay = read_meta_file(&md_path);
     let profile = {
@@ -763,7 +763,7 @@ async fn reread_book_meta(
     let md_path = library::meta_path_for(&dir, &file_name)?;
     let path = dir.join(&file_name);
     if !path.is_file() {
-        return Err("book not in library".into());
+        return Err("书不在书库中".into());
     }
     let existing = read_meta_file(&md_path);
     let profile = {
@@ -795,7 +795,7 @@ async fn set_book_meta(
     let md_path = library::meta_path_for(&dir, &file_name)?;
     let path = dir.join(&file_name);
     if !path.is_file() {
-        return Err("book not in library".into());
+        return Err("书不在书库中".into());
     }
 
     let existing = read_meta_file(&md_path);

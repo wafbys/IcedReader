@@ -33,7 +33,7 @@ impl BookOpener for EpubOpener {
     }
 
     fn open(&self, path: &Path) -> Result<Box<dyn Book>, CoreError> {
-        let epub = Epub::open(path).map_err(|e| CoreError::msg(e.to_string()))?;
+        let epub = Epub::open(path).map_err(|e| CoreError::msg(format!("无法读取 EPUB：{e}")))?;
         Ok(Box::new(EpubBook { inner: epub }))
     }
 }

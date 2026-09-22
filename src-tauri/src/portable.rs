@@ -97,7 +97,7 @@ pub fn import_book_to(src: &Path, library: &Path) -> io::Result<PathBuf> {
     if !src_n.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("not a file: {}", src.display()),
+            format!("不是文件：{}", src.display()),
         ));
     }
     let name = src

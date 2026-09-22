@@ -68,11 +68,11 @@ fn book_stem_len(file_name: &str) -> usize {
 pub enum CoreError {
     #[error("{0}")]
     Message(String),
-    #[error("unsupported format: {0}")]
+    #[error("不支持的格式：{0}")]
     UnsupportedFormat(String),
-    #[error("chapter not found: {0}")]
+    #[error("找不到章节：{0}")]
     ChapterNotFound(String),
-    #[error("resource not found: {0}")]
+    #[error("找不到资源：{0}")]
     ResourceNotFound(String),
 }
 

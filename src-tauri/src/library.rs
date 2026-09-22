@@ -425,10 +425,10 @@ pub fn cover_bytes(path: &Path) -> crate::error::Result<(String, Vec<u8>)> {
     let href = book
         .metadata()
         .cover_href
-        .ok_or_else(|| "no cover".to_string())?;
+        .ok_or_else(|| "没有封面".to_string())?;
     let res = book.resource(&href)?;
     if res.data.is_empty() {
-        return Err("empty cover".into());
+        return Err("封面为空".into());
     }
     Ok((res.media_type, res.data))
 }
@@ -444,12 +444,12 @@ pub fn library_cover_path(file_name: &str) -> crate::error::Result<PathBuf> {
             .components()
             .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
-        return Err("invalid cover name".into());
+        return Err("无效的封面文件名".into());
     }
     let dir = portable::library_dir()?;
     let path = dir.join(file_name);
     if !path.is_file() {
-        return Err("book not in library".into());
+        return Err("书不在书库中".into());
     }
     Ok(path)
 }
@@ -464,7 +464,7 @@ pub fn meta_path_for(dir: &Path, file_name: &str) -> crate::error::Result<PathBu
             .components()
             .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
-        return Err("invalid book file name".into());
+        return Err("无效的书名".into());
     }
     Ok(dir.join(as_path).with_extension("md"))
 }
@@ -479,7 +479,7 @@ pub fn notes_path_for(dir: &Path, file_name: &str) -> crate::error::Result<PathB
             .components()
             .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
-        return Err("invalid book file name".into());
+        return Err("无效的书名".into());
     }
     Ok(dir.join(as_path).with_extension("notes.md"))
 }
@@ -577,11 +577,11 @@ pub fn rename_book_files(
             .components()
             .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
-        return Err("invalid book file name".into());
+        return Err("无效的书名".into());
     }
     let book_old = dir.join(old_file_name);
     if !book_old.is_file() {
-        return Err("book not in library".into());
+        return Err("书不在书库中".into());
     }
     // Keep the format: renaming `三体.pdf` yields `新名.pdf`, never `.epub`.
     let extension = book_extension(old_file_name).unwrap_or("epub");
@@ -591,7 +591,7 @@ pub fn rename_book_files(
     }
     let book_new = dir.join(&new_name);
     if book_new.is_file() {
-        return Err(format!("target already exists: {new_name}").into());
+        return Err(format!("同名文件已存在：{new_name}").into());
     }
     fs::rename(&book_old, &book_new)?;
     let md_old = meta_path_for(dir, old_file_name)?;
@@ -620,11 +620,11 @@ pub fn delete_book_from(dir: &Path, file_name: &str) -> crate::error::Result<Pat
             .components()
             .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
-        return Err("invalid book file name".into());
+        return Err("无效的书名".into());
     }
     let path = dir.join(file_name);
     if !path.is_file() {
-        return Err("book not in library".into());
+        return Err("书不在书库中".into());
     }
     fs::remove_file(&path)?;
     // The companion md (user metadata) dies with the book; missing is fine.
