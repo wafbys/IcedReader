@@ -40,7 +40,10 @@ pub enum TextLayer {
 impl TextLayer {
     /// Whether anything can be searched/selected at all (phase-2 capability).
     pub fn is_searchable(self) -> bool {
-        matches!(self, TextLayer::MachineReadable | TextLayer::OcrLayer | TextLayer::Mixed)
+        matches!(
+            self,
+            TextLayer::MachineReadable | TextLayer::OcrLayer | TextLayer::Mixed
+        )
     }
 }
 
@@ -89,9 +92,8 @@ pub fn analyze(doc: &PdfDoc) -> PdfQuality {
     }
     // A page that draws both counts as visible text (the reader can select it);
     // the OCR shape is "no visible text anywhere, but a hidden layer exists".
-    let text_layer = if sampled == 0 {
-        TextLayer::ScanOnly
-    } else if visible_pages == 0 && invisible_pages == 0 {
+    let text_layer = if visible_pages == 0 && invisible_pages == 0 {
+        // No sampled page drew text at all (also covers `sampled == 0`).
         TextLayer::ScanOnly
     } else if visible_pages == sampled {
         TextLayer::MachineReadable
@@ -114,14 +116,8 @@ pub fn analyze(doc: &PdfDoc) -> PdfQuality {
         fonts: doc.fonts().len(),
         embedded_fonts: doc.embedded_font_objects().len(),
         unresolved_visible_fonts: doc.visible_text_risk(),
-        has_title: info
-            .title
-            .map(|t| !t.trim().is_empty())
-            .unwrap_or(false),
-        has_author: info
-            .author
-            .map(|a| !a.trim().is_empty())
-            .unwrap_or(false),
+        has_title: info.title.map(|t| !t.trim().is_empty()).unwrap_or(false),
+        has_author: info.author.map(|a| !a.trim().is_empty()).unwrap_or(false),
         encrypted: false,
     }
 }

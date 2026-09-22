@@ -355,18 +355,14 @@ fn next_container(html: &str, from: usize) -> Option<(usize, &'static str)> {
         }
         let at = find_byte(html, pos, b'<')?;
         debug_assert!(at <= html.len(), "at={at} len={} pos={pos}", html.len());
-        if html.get(at..).is_none_or(|rest| rest.starts_with("<!--")) {
-            let Some(rest) = html.get(at..) else {
-                return None;
-            };
-            if rest.starts_with("<!--") {
-                let after = html[at + 4..]
-                    .find("-->")
-                    .map(|r| at + 4 + r + 3)
-                    .unwrap_or(html.len());
-                pos = after;
-                continue;
-            }
+        let rest = html.get(at..)?;
+        if rest.starts_with("<!--") {
+            let after = html[at + 4..]
+                .find("-->")
+                .map(|r| at + 4 + r + 3)
+                .unwrap_or(html.len());
+            pos = after;
+            continue;
         }
         if html[at..].starts_with("</") {
             pos = at + 2;
@@ -608,10 +604,7 @@ fn find_open_tag(html: &str, from: usize, name: &str) -> Option<usize> {
         let bytes = html.as_bytes();
         // Byte-level lookaround only: `at±k` may land inside a multi-byte
         // char when the tag name appears in Chinese prose.
-        if at > 0
-            && bytes.get(at - 1) == Some(&b'<')
-            && boundary_at(bytes, at + name.len())
-        {
+        if at > 0 && bytes.get(at - 1) == Some(&b'<') && boundary_at(bytes, at + name.len()) {
             return Some(at - 1);
         }
         pos = at + name.len();
@@ -646,7 +639,6 @@ fn find_close_tag(html: &str, from: usize, name: &str) -> Option<usize> {
     }
     None
 }
-
 
 /// Index just past the `>` of the tag starting at `tag_start` (quote-aware).
 fn tag_end(html: &str, tag_start: usize) -> Option<usize> {
@@ -689,10 +681,7 @@ fn span_close(html: &str, open_end: usize) -> Option<(usize, usize)> {
     let mut depth = 1usize;
     let mut pos = open_end;
     while pos < html.len() {
-        let rel = match find_ci(&html[pos..], "<") {
-            Some(r) => r,
-            None => return None,
-        };
+        let rel = find_ci(&html[pos..], "<")?;
         let at = pos + rel;
         if html[at..].starts_with("<!--") {
             pos = html[at + 4..]
@@ -793,8 +782,7 @@ fn decode_entities(s: &str) -> String {
 
 /// Escape text for an attribute value (double-quoted).
 fn escape_attr(s: &str) -> String {
-    escape_common(s)
-        .replace('"', "&quot;")
+    escape_common(s).replace('"', "&quot;")
 }
 
 /// Escape text for an element text node.
@@ -850,7 +838,10 @@ mod tests {
             "{out}"
         );
         assert!(out.contains(r#"<div class="wr-notes">"#), "{out}");
-        assert!(out.contains(r#"<p class="wr-note-item" id="wr-note-1">"#), "{out}");
+        assert!(
+            out.contains(r#"<p class="wr-note-item" id="wr-note-1">"#),
+            "{out}"
+        );
         assert!(out.contains("弃疑：抛弃不明的谋划。"), "{out}");
         // the block's note label [1] doubles as the back link to the marker
         assert!(
@@ -904,7 +895,10 @@ mod tests {
         let html = r#"<p>句<span data-wr-footernote="曰“a&amp;b”，通&#39;c&#39;。"></span></p>"#;
         let out = expand_word_notes(html, DOC_BASE);
         assert!(out.contains("曰“a&amp;b”，通'c'。"), "{out}");
-        assert!(out.contains(r##"data-note="曰“a&amp;b”，通'c'。"##), "{out}");
+        assert!(
+            out.contains(r##"data-note="曰“a&amp;b”，通'c'。"##),
+            "{out}"
+        );
         assert!(out.contains("c.xhtml#wr-note-1"), "{out}");
     }
 
@@ -936,7 +930,10 @@ mod tests {
     fn keeps_inner_content_of_non_empty_span() {
         let html = r#"<p>语<span data-wr-footernote="释义">原文</span>尾</p>"#;
         let out = expand_word_notes(html, DOC_BASE);
-        assert!(out.contains(r##"<a id="wr-note-back-1" class="wr-note" data-label="1""##), "{out}");
+        assert!(
+            out.contains(r##"<a id="wr-note-back-1" class="wr-note" data-label="1""##),
+            "{out}"
+        );
         assert!(out.contains(">原文</a>"), "{out}");
         assert!(out.contains("释义"), "{out}");
     }
@@ -1015,12 +1012,24 @@ mod tests {
             r##"<aside epub:type="footnote" id="fn-c">注丙</aside>"##,
         );
         let out = expand_word_notes(html, DOC_BASE);
-        assert!(out.contains(r##"data-label="1" data-note="注甲""##), "{out}");
-        assert!(out.contains(r##"data-label="2" data-note="注乙""##), "{out}");
-        assert!(out.contains(r##"data-label="1" data-note="注丙""##), "{out}");
+        assert!(
+            out.contains(r##"data-label="1" data-note="注甲""##),
+            "{out}"
+        );
+        assert!(
+            out.contains(r##"data-label="2" data-note="注乙""##),
+            "{out}"
+        );
+        assert!(
+            out.contains(r##"data-label="1" data-note="注丙""##),
+            "{out}"
+        );
         // File-wide seq keeps growing across paragraphs, ids stay unique.
         assert!(out.contains(r##"id="wr-note-back-3""##), "{out}");
-        assert!(out.contains(r##"<p class="wr-note-item" id="wr-note-3">"##), "{out}");
+        assert!(
+            out.contains(r##"<p class="wr-note-item" id="wr-note-3">"##),
+            "{out}"
+        );
         // One block per note (a paragraph with two notes gets two).
         assert_eq!(out.matches("<div class=\"wr-notes\">").count(), 3, "{out}");
         assert_eq!(out.matches("<aside").count(), 0, "{out}");
@@ -1033,7 +1042,10 @@ mod tests {
             r##"<aside epub:type="footnote" id="fn-1">完整注文，比图标属性长。</aside>"##,
         );
         let out = expand_word_notes(html, DOC_BASE);
-        assert!(out.contains(r##"data-note="完整注文，比图标属性长。""##), "{out}");
+        assert!(
+            out.contains(r##"data-note="完整注文，比图标属性长。""##),
+            "{out}"
+        );
     }
 
     #[test]
@@ -1053,7 +1065,10 @@ mod tests {
             r##"<aside epub:type="footnote" id="fn-1">注</aside>"##,
         );
         let out = expand_word_notes(html, DOC_BASE);
-        assert!(out.contains(r##"<aside id="sidebar">侧栏文字</aside>"##), "{out}");
+        assert!(
+            out.contains(r##"<aside id="sidebar">侧栏文字</aside>"##),
+            "{out}"
+        );
         assert!(!out.contains(r##"id="fn-1""##), "{out}");
     }
 
@@ -1064,7 +1079,10 @@ mod tests {
             r##"<aside epub:type="footnote" id="注-1">百分号编码配对的注文。</aside>"##,
         );
         let out = expand_word_notes(html, DOC_BASE);
-        assert!(out.contains(r##"data-note="百分号编码配对的注文。""##), "{out}");
+        assert!(
+            out.contains(r##"data-note="百分号编码配对的注文。""##),
+            "{out}"
+        );
     }
 
     #[test]
@@ -1073,7 +1091,10 @@ mod tests {
         // the image keeps its place instead of turning into a dead marker.
         let html = r##"<p>正文<a href="other.xhtml"><img src="i.png" zy-footnote="注"/></a></p>"##;
         let out = expand_word_notes(html, DOC_BASE);
-        assert!(out.contains(r##"<img src="i.png" zy-footnote="注"/>"##), "{out}");
+        assert!(
+            out.contains(r##"<img src="i.png" zy-footnote="注"/>"##),
+            "{out}"
+        );
         assert!(!out.contains("wr-note"), "{out}");
     }
 

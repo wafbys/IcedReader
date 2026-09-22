@@ -802,8 +802,7 @@ fn normalize_book_href(href: &str) -> String {
 
 fn is_external(href: &str) -> bool {
     let l = href.to_ascii_lowercase();
-    (l.starts_with("http://") || l.starts_with("https://"))
-        && !l.contains("icedreader.localhost")
+    (l.starts_with("http://") || l.starts_with("https://")) && !l.contains("icedreader.localhost")
 }
 
 fn file_name(href: &str) -> String {

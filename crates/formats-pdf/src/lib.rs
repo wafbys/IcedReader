@@ -305,8 +305,7 @@ impl PdfDoc {
     pub fn page_size(&self, index: usize) -> (f32, f32) {
         self.pdf
             .pages()
-            .iter()
-            .nth(index)
+            .get(index)
             .map(|page| page.render_dimensions())
             .unwrap_or((1.0, 1.0))
     }
@@ -356,10 +355,7 @@ impl PdfDoc {
                 page: (item.page > 0).then(|| item.page - 1),
                 children: Vec::new(),
             };
-            while stack
-                .last()
-                .is_some_and(|(level, _)| *level >= item.level)
-            {
+            while stack.last().is_some_and(|(level, _)| *level >= item.level) {
                 let (_, done) = stack.pop().expect("checked above");
                 attach_outline(done, &mut stack, &mut roots);
             }
@@ -377,7 +373,7 @@ impl PdfDoc {
     /// hayro while still being un-extractable for search/highlights.
     pub fn embedded_font_objects(&self) -> Vec<EmbeddedFont> {
         let mut out = Vec::new();
-        for (_, object) in self.doc.objects.iter() {
+        for object in self.doc.objects.values() {
             let Object::Dictionary(dict) = object else {
                 continue;
             };
@@ -621,7 +617,7 @@ impl PdfDoc {
         {
             descriptors.push(dict);
         }
-        if let Some(descendants) = font.get(b"DescendantFonts").ok() {
+        if let Ok(descendants) = font.get(b"DescendantFonts") {
             if let Some(descendants) = self.resolve(descendants) {
                 if let Ok(items) = descendants.as_array() {
                     for item in items {
@@ -706,8 +702,7 @@ impl PdfDoc {
         }
         let pages = self.pdf.pages();
         let page = pages
-            .iter()
-            .nth(index)
+            .get(index)
             .ok_or(PdfError::PageOutOfRange(index, self.page_count()))?;
         let (page_w, _page_h) = page.render_dimensions();
         let scale = opts.width as f32 / page_w.max(1.0);
@@ -748,14 +743,14 @@ impl PdfDoc {
             }
             PageFormat::Jpeg => {
                 let rgb: Vec<u8> = rgba
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .flat_map(|px| [px[0], px[1], px[2]])
                     .collect();
                 let mut jpeg = Vec::new();
-                let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-                    &mut jpeg,
-                    JPEG_QUALITY,
-                );
+                let mut encoder =
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY);
                 encoder
                     .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
                     .map_err(|e| PdfError::Encode(e.to_string()))?;
@@ -800,11 +795,10 @@ fn interpreter_settings(substitute: Option<(Vec<u8>, u32)>) -> InterpreterSettin
     let mut settings = InterpreterSettings::default();
     if let Some((bytes, ttc_index)) = substitute {
         let data: hayro::hayro_interpret::font::FontData = std::sync::Arc::new(bytes);
-        settings.font_resolver = std::sync::Arc::new(
-            move |_query: &hayro::hayro_interpret::font::FontQuery| {
+        settings.font_resolver =
+            std::sync::Arc::new(move |_query: &hayro::hayro_interpret::font::FontQuery| {
                 Some((data.clone(), ttc_index))
-            },
-        );
+            });
     }
     settings
 }
@@ -833,7 +827,9 @@ pub fn ink_ratio(rgba: &[u8]) -> f64 {
         return 0.0;
     }
     let inked = rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[0] < 250 || px[1] < 250 || px[2] < 250)
         .count();
     inked as f64 / pixels as f64
@@ -926,14 +922,18 @@ fn pdf_text(obj: &Object) -> Option<String> {
     let bytes = obj.as_str().ok()?;
     if bytes.starts_with(&[0xFE, 0xFF]) {
         let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
             .collect();
         return Some(String::from_utf16_lossy(&units));
     }
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         return Some(String::from_utf16_lossy(&units));
@@ -981,7 +981,11 @@ pub(crate) mod tests {
              /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
                 .to_string(),
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
-            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            ),
             "<< /Title (Spike Sample) /Author (Tester) >>".to_string(),
         ];
         // The Info dictionary needs a trailer reference; rebuild with it.
@@ -1010,7 +1014,11 @@ pub(crate) mod tests {
             "<< /Type /Font /Subtype /Type0 /BaseFont /SimSun \
              /Encoding /Identity-H /DescendantFonts [6 0 R] >>"
                 .to_string(),
-            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            ),
             "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /SimSun \
              /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
              /FontDescriptor 7 0 R /DW 1000 >>"
@@ -1044,7 +1052,11 @@ pub(crate) mod tests {
             "<< /Type /Font /Subtype /Type0 /BaseFont /SimSun \
              /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 8 0 R >>"
                 .to_string(),
-            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            ),
             "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /SimSun \
              /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
              /FontDescriptor 7 0 R /DW 1000 >>"
@@ -1154,7 +1166,11 @@ pub(crate) mod tests {
         assert_eq!(page.width, 400);
         assert!(page.height > 0);
         assert_eq!(&page.data[..4], b"\x89PNG", "encoded as PNG");
-        assert!(page.data.len() > 500, "non-trivial PNG: {} bytes", page.data.len());
+        assert!(
+            page.data.len() > 500,
+            "non-trivial PNG: {} bytes",
+            page.data.len()
+        );
         // `embed-fonts` must have supplied a stand-in for Helvetica, otherwise
         // the page would come out blank.
         assert!(
@@ -1174,7 +1190,10 @@ pub(crate) mod tests {
         let fonts = doc.fonts();
         assert_eq!(fonts.len(), 1, "{fonts:?}");
         assert_eq!(fonts[0].name, "Helvetica");
-        assert!(!fonts[0].embedded, "base-14 fonts are normally not embedded");
+        assert!(
+            !fonts[0].embedded,
+            "base-14 fonts are normally not embedded"
+        );
         assert!(is_standard_font_name(&fonts[0].name));
         assert!(
             doc.unresolved_fonts().is_empty(),

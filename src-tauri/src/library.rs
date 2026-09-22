@@ -3,8 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use iced_reader_core::{
-    book_extension, book_stem, clean_title, progress_key, read_meta_file, resolved_title,
-    Locator, ProgressStore, PDF_FORMAT,
+    book_extension, book_stem, clean_title, progress_key, read_meta_file, resolved_title, Locator,
+    ProgressStore, PDF_FORMAT,
 };
 use serde::Serialize;
 
@@ -85,7 +85,8 @@ impl LibraryMetaCache {
             }
         }
         let profile = profile_book(path, library_dir);
-        self.books.insert(path.to_path_buf(), (rev, profile.clone()));
+        self.books
+            .insert(path.to_path_buf(), (rev, profile.clone()));
         profile
     }
 
@@ -113,7 +114,7 @@ pub struct BookProfile {
 
 impl BookProfile {
     pub fn chapter_count(&self) -> Option<u32> {
-        (!self.chapter_hrefs.is_empty()).then(|| self.chapter_hrefs.len() as u32)
+        (!self.chapter_hrefs.is_empty()).then_some(self.chapter_hrefs.len() as u32)
     }
 }
 
@@ -180,15 +181,14 @@ fn enrich_and_sort(
         }
         // Re-classify from the live OPF so an old cache that stored a 10-digit
         // Kindle id as Isbn does not keep granting 优 until the book is reopened.
-        let mut sig = sig.clone();
-        sig.id_quality = e.id_quality;
         // Two formats, two questions: an EPUB is graded on text cleanliness and
         // apparatus, a PDF on what the reader can do with it (text layer, font
         // embedding, outline) — see `book_signals::grade_pdf`.
         let g = if sig.pdf.is_some() {
-            book_signals::grade_pdf(&sig)
+            book_signals::grade_pdf(sig)
         } else {
-            book_signals::grade(&sig).with_filename_isbn(sig.id_quality, &e.file_name)
+            book_signals::grade_with_id(sig, e.id_quality)
+                .with_filename_isbn(e.id_quality, &e.file_name)
         };
         e.quality = Some(g.label.to_string());
         e.quality_plus = g.plus;
@@ -279,9 +279,7 @@ fn enrich_and_sort(
                 .then_with(|| a.title.cmp(&b.title)),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => q(b)
-                .cmp(&q(a))
-                .then_with(|| a.title.cmp(&b.title)),
+            (None, None) => q(b).cmp(&q(a)).then_with(|| a.title.cmp(&b.title)),
         }
     });
     entries
@@ -313,7 +311,8 @@ impl CoverCache {
         if self.covers.len() >= COVER_CACHE_MAX {
             self.covers.clear();
         }
-        self.covers.insert(file_name.to_string(), (rev, media, data));
+        self.covers
+            .insert(file_name.to_string(), (rev, media, data));
     }
 
     /// Drop one book's cover after deletion.
@@ -354,20 +353,34 @@ pub fn warm_cover_in_background(
 ) {
     std::thread::spawn(move || {
         let rev = file_rev(&path);
+        // Render **outside** the lock: a PDF cover costs hundreds of ms and
+        // holding the cache lock across it would block every other cover
+        // request. Check, render, then insert under the lock (a duplicate
+        // render from a racing warm is cheaper than the stall).
+        {
+            let Ok(cache) = cache.lock() else {
+                return;
+            };
+            if cache.get(&file_name, &rev).is_some() {
+                return;
+            }
+        }
+        let Ok((media, data)) = cover_bytes(&path) else {
+            return;
+        };
         let Ok(mut cache) = cache.lock() else {
             return;
         };
-        if cache.get(&file_name, &rev).is_some() {
-            return;
+        if cache.get(&file_name, &rev).is_none() {
+            cache.insert(&file_name, rev, media, data);
         }
-        let _ = cover_bytes_cached(&path, &file_name, &mut cache);
     });
 }
 
-pub fn cover_bytes(path: &Path) -> Result<(String, Vec<u8>), String> {
+pub fn cover_bytes(path: &Path) -> crate::error::Result<(String, Vec<u8>)> {
     let opener = openers::opener_for(path).ok_or_else(|| "不支持的格式".to_string())?;
     if opener.format_id() == PDF_FORMAT {
-        return iced_reader_pdf::cover(path, PDF_COVER_WIDTH).map_err(|e| e.to_string());
+        return Ok(iced_reader_pdf::cover(path, PDF_COVER_WIDTH)?);
     }
     let book = opener.open(path).map_err(|e| e.to_string())?;
     let href = book
@@ -385,26 +398,12 @@ pub fn cover_bytes(path: &Path) -> Result<(String, Vec<u8>), String> {
 /// in-process cover cache keys on the file revision, so one render per book.
 const PDF_COVER_WIDTH: u32 = 400;
 
-/// Cover bytes for one request, served from the in-process cache whenever the
-/// file revision is unchanged.
-pub fn cover_bytes_cached(
-    path: &Path,
-    file_name: &str,
-    cache: &mut CoverCache,
-) -> Result<(String, Vec<u8>), String> {
-    let rev = file_rev(path);
-    if let Some((media, data)) = cache.get(file_name, &rev) {
-        return Ok((media.to_string(), data.to_vec()));
-    }
-    let (media, data) = cover_bytes(path)?;
-    cache.insert(file_name, rev, media.clone(), data.clone());
-    Ok((media, data))
-}
-
-pub fn library_cover_path(file_name: &str) -> Result<PathBuf, String> {
+pub fn library_cover_path(file_name: &str) -> crate::error::Result<PathBuf> {
     let as_path = Path::new(file_name);
     if file_name.is_empty()
-        || as_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+        || as_path
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
         return Err("invalid cover name".into());
     }
@@ -419,10 +418,12 @@ pub fn library_cover_path(file_name: &str) -> Result<PathBuf, String> {
 /// Companion metadata path for a library book (`三体.epub` → `三体.md`). Only
 /// a plain file name inside `dir` is accepted (no separators / `..`), mirroring
 /// [`delete_book_from`] and [`library_cover_path`].
-pub fn meta_path_for(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+pub fn meta_path_for(dir: &Path, file_name: &str) -> crate::error::Result<PathBuf> {
     let as_path = Path::new(file_name);
     if file_name.is_empty()
-        || as_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+        || as_path
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
         return Err("invalid book file name".into());
     }
@@ -432,10 +433,12 @@ pub fn meta_path_for(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
 /// Companion notes archive `<stem>.notes.md` (划线+备注档案，删除留痕)。
 /// Same name guard as [`meta_path_for`]: plain file name only, and the
 /// extension swap keeps `<stem>.epub → <stem>.notes.md`.
-pub fn notes_path_for(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+pub fn notes_path_for(dir: &Path, file_name: &str) -> crate::error::Result<PathBuf> {
     let as_path = Path::new(file_name);
     if file_name.is_empty()
-        || as_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+        || as_path
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
         return Err("invalid book file name".into());
     }
@@ -451,11 +454,7 @@ pub fn clean_file_stem(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
         let c = ch as u32;
-        if matches!(
-            ch,
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
-        ) || c < 0x20
-        {
+        if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c < 0x20 {
             out.push(' ');
         } else {
             out.push(ch);
@@ -475,14 +474,9 @@ pub fn clean_file_stem(input: &str) -> String {
 /// Pick a stem that does not collide with any existing library file.
 /// Collision copies use ` (2)`, ` (3)`… — not `-N`, which `lib:` progress
 /// keys treat as the same book. Case-insensitive, like NTFS.
-/// `preferred` is already clean (see [`clean_file_stem`]).
-#[allow(dead_code)]
-pub fn unique_stem(dir: &Path, preferred: &str) -> String {
-    unique_stem_ignoring(dir, preferred, &[])
-}
-
-/// Like [`unique_stem`], but `ignore` file names (the book being renamed)
-/// do not count as taken, so a re-save does not bump `三体 (2)` to `(3)`.
+/// `preferred` is already clean (see [`clean_file_stem`]); `ignore` file names
+/// (the book being renamed) do not count as taken, so a re-save does not bump
+/// `三体 (2)` to `(3)`.
 pub fn unique_stem_ignoring(dir: &Path, preferred: &str, ignore: &[&str]) -> String {
     let Ok(read) = fs::read_dir(dir) else {
         return preferred.to_string();
@@ -537,10 +531,12 @@ pub fn rename_book_files(
     dir: &Path,
     old_file_name: &str,
     new_stem: &str,
-) -> Result<String, String> {
+) -> crate::error::Result<String> {
     let as_path = Path::new(old_file_name);
     if old_file_name.is_empty()
-        || as_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+        || as_path
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
         return Err("invalid book file name".into());
     }
@@ -556,7 +552,7 @@ pub fn rename_book_files(
     }
     let book_new = dir.join(&new_name);
     if book_new.is_file() {
-        return Err(format!("target already exists: {new_name}"));
+        return Err(format!("target already exists: {new_name}").into());
     }
     fs::rename(&book_old, &book_new).map_err(|e| e.to_string())?;
     let md_old = meta_path_for(dir, old_file_name)?;
@@ -578,10 +574,12 @@ pub fn rename_book_files(
 /// Delete one library book file. Only a plain file name inside `dir` is
 /// accepted (no separators / `..`), mirroring `library_cover_path`. The caller
 /// is responsible for clearing the book's progress/annotation records.
-pub fn delete_book_from(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+pub fn delete_book_from(dir: &Path, file_name: &str) -> crate::error::Result<PathBuf> {
     let as_path = Path::new(file_name);
     if file_name.is_empty()
-        || as_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+        || as_path
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
         return Err("invalid book file name".into());
     }
@@ -823,16 +821,25 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
 
         // Nothing taken → the preferred stem wins.
-        assert_eq!(unique_stem(&root, "三体 - 刘慈欣"), "三体 - 刘慈欣");
+        assert_eq!(
+            unique_stem_ignoring(&root, "三体 - 刘慈欣", &[]),
+            "三体 - 刘慈欣"
+        );
 
         fs::write(root.join("三体 - 刘慈欣.epub"), b"a").unwrap();
         fs::write(root.join("三体 - 刘慈欣-2.md"), b"b").unwrap();
         fs::write(root.join("OTHER.EPUB"), b"c").unwrap();
         // .epub collision → (2); existing (2) → (3). `-N` is not used (lib: aliases).
-        assert_eq!(unique_stem(&root, "三体 - 刘慈欣"), "三体 - 刘慈欣 (2)");
-        assert_eq!(unique_stem(&root, "other"), "other (2)");
+        assert_eq!(
+            unique_stem_ignoring(&root, "三体 - 刘慈欣", &[]),
+            "三体 - 刘慈欣 (2)"
+        );
+        assert_eq!(unique_stem_ignoring(&root, "other", &[]), "other (2)");
         fs::write(root.join("三体 - 刘慈欣 (2).epub"), b"d").unwrap();
-        assert_eq!(unique_stem(&root, "三体 - 刘慈欣"), "三体 - 刘慈欣 (3)");
+        assert_eq!(
+            unique_stem_ignoring(&root, "三体 - 刘慈欣", &[]),
+            "三体 - 刘慈欣 (3)"
+        );
         assert_eq!(
             unique_stem_ignoring(&root, "三体 - 刘慈欣", &["三体 - 刘慈欣.epub"]),
             "三体 - 刘慈欣"
@@ -881,10 +888,7 @@ mod tests {
         assert!(keys.contains(&"lib:同名书.pdf"), "{keys:?}");
         // The EPUB keeps its own key (an `id:` one when it has an identifier),
         // never the PDF's `lib:` key.
-        assert!(
-            keys.iter().any(|k| !k.ends_with("同名书.pdf")),
-            "{keys:?}"
-        );
+        assert!(keys.iter().any(|k| !k.ends_with("同名书.pdf")), "{keys:?}");
     }
 
     #[test]
@@ -969,10 +973,7 @@ mod tests {
         assert!(entries[0].quality_minus.is_empty());
 
         // A scan with an OCR layer is 良; a plain scan is 中.
-        for (layer, expected) in [
-            (TextLayer::OcrLayer, "良"),
-            (TextLayer::ScanOnly, "中"),
-        ] {
+        for (layer, expected) in [(TextLayer::OcrLayer, "良"), (TextLayer::ScanOnly, "中")] {
             let mut scan_signals = signals.clone();
             if let Some(sig) = scan_signals.get_mut("带角标的书.pdf") {
                 if let Some(pdf) = sig.pdf.as_mut() {
@@ -985,11 +986,8 @@ mod tests {
         }
 
         // No cached signals at all ⇒ no badge (the shelf must not guess).
-        let ungraded = list_library_with_signals(
-            &root,
-            &ProgressStore::in_memory(),
-            &HashMap::new(),
-        );
+        let ungraded =
+            list_library_with_signals(&root, &ProgressStore::in_memory(), &HashMap::new());
         assert!(ungraded[0].quality.is_none());
     }
 
@@ -997,14 +995,18 @@ mod tests {
     /// depend on any committed binary sample).
     fn write_tiny_pdf(path: &Path) {
         let content = "BT /F1 24 Tf 20 100 Td (Hello) Tj ET";
-        let objects = vec![
+        let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
              /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
                 .to_string(),
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
-            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            ),
             // UTF-16BE title: 经济漩涡：一个样本
             "<< /Title <FEFF7ECF6D4E6F296DA1FF1A4E004E2A6837672C> >>".to_string(),
         ];
@@ -1015,7 +1017,10 @@ mod tests {
             pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", index + 1, body));
         }
         let xref_at = pdf.len();
-        pdf.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+        pdf.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
         for offset in &offsets {
             pdf.push_str(&format!("{offset:010} 00000 n \n"));
         }
@@ -1101,7 +1106,10 @@ mod tests {
 
         delete_book_from(&root, "sample.epub").unwrap();
         assert!(!root.join("sample.epub").exists());
-        assert!(!root.join("sample.md").exists(), "companion md must be deleted with the book");
+        assert!(
+            !root.join("sample.md").exists(),
+            "companion md must be deleted with the book"
+        );
         assert!(root.join("other.md").exists(), "unrelated md files stay");
         assert!(meta_path_for(&root, "../x.epub").is_err());
         assert_eq!(
@@ -1191,7 +1199,10 @@ mod tests {
         // same-named replacement: profile must still derive the lib: key so
         // the shelf shows old progress and 删除 clears it.
         let profile = profile_book(&path, &root);
-        assert!(profile.open_error.is_some(), "broken file must be listed as unreadable");
+        assert!(
+            profile.open_error.is_some(),
+            "broken file must be listed as unreadable"
+        );
         assert_eq!(profile.progress_key, "lib:broken.epub");
         assert_eq!(profile.chapter_count(), None);
 
@@ -1216,7 +1227,12 @@ mod tests {
     #[test]
     fn cover_cache_keyed_by_file_revision() {
         let mut cache = CoverCache::default();
-        cache.insert("a.epub", "rev1".into(), "image/jpeg".into(), b"one".to_vec());
+        cache.insert(
+            "a.epub",
+            "rev1".into(),
+            "image/jpeg".into(),
+            b"one".to_vec(),
+        );
         assert_eq!(
             cache.get("a.epub", "rev1"),
             Some(("image/jpeg", b"one".as_slice()))

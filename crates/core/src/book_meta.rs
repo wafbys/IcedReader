@@ -142,6 +142,9 @@ pub fn clean_title(s: &str) -> String {
 /// ASCII [`ISBN_LABEL`] prefix; a translator value not already starting with
 /// 译者 gets [`TRANSLATOR_LABEL`] — both so the segments read e.g.
 /// `… - 译者 阳曦 - … - ISBN 978-7-…`.
+// Eight metadata fields, each optional and independent; bundling them into a
+// struct would only move the same positional arguments to every call site.
+#[allow(clippy::too_many_arguments)]
 pub fn join_title(
     title: &str,
     subtitle: &str,
@@ -317,7 +320,10 @@ mod tests {
 
     #[test]
     fn clean_collapses_fullwidth_and_runs() {
-        assert_eq!(clean_title("  三体\u{3000}\u{3000}黑暗森林  "), "三体 黑暗森林");
+        assert_eq!(
+            clean_title("  三体\u{3000}\u{3000}黑暗森林  "),
+            "三体 黑暗森林"
+        );
         assert_eq!(clean_title("A\u{00a0}B"), "A B");
         assert_eq!(clean_title("  spaced   out  "), "spaced out");
         assert_eq!(clean_title("   "), "");
@@ -345,10 +351,16 @@ mod tests {
         assert_eq!(join_title("三体", "", "", "", "", "", "", ""), "三体");
 
         // The single ` _ ` slot: 书名 ↔ 副标题.
-        assert_eq!(join_title("三体", "黑暗森林", "", "", "", "", "", ""), "三体 _ 黑暗森林");
+        assert_eq!(
+            join_title("三体", "黑暗森林", "", "", "", "", "", ""),
+            "三体 _ 黑暗森林"
+        );
 
         // 卷册 and later bibliographic fields join with ` - ` (no ` _ ` there).
-        assert_eq!(join_title("三体", "", "第二部", "", "", "", "", ""), "三体 - 第二部");
+        assert_eq!(
+            join_title("三体", "", "第二部", "", "", "", "", ""),
+            "三体 - 第二部"
+        );
         assert_eq!(
             join_title("三体", "黑暗森林", "第二部", "", "", "", "", ""),
             "三体 _ 黑暗森林 - 第二部"
@@ -373,12 +385,24 @@ mod tests {
         // Full template with a missing publisher in the middle: no empty
         // segment, no doubled separator.
         assert_eq!(
-            join_title("三体", "黑暗森林", "第二部", "刘慈欣", "阳曦", "2008", "", "978-7-5366-9293-0"),
+            join_title(
+                "三体",
+                "黑暗森林",
+                "第二部",
+                "刘慈欣",
+                "阳曦",
+                "2008",
+                "",
+                "978-7-5366-9293-0"
+            ),
             "三体 _ 黑暗森林 - 第二部 - 刘慈欣 - 译者 阳曦 - 2008 - ISBN 978-7-5366-9293-0"
         );
 
         // A value that already begins with ISBN (any case) is kept as-is.
-        assert_eq!(join_title("三体", "", "", "", "", "", "", "isbn 978-7-1"), "三体 - isbn 978-7-1");
+        assert_eq!(
+            join_title("三体", "", "", "", "", "", "", "isbn 978-7-1"),
+            "三体 - isbn 978-7-1"
+        );
         assert_eq!(
             join_title("三体", "", "", "", "", "", "", "ISBN-13 978-7-1"),
             "三体 - ISBN-13 978-7-1"
@@ -396,7 +420,16 @@ mod tests {
             "三体 - 译者 - 译者 阳曦"
         );
         assert_eq!(
-            join_title(" The Lord of the Rings ", " The Two Towers ", "", "", "", "", "", ""),
+            join_title(
+                " The Lord of the Rings ",
+                " The Two Towers ",
+                "",
+                "",
+                "",
+                "",
+                "",
+                ""
+            ),
             "The Lord of the Rings _ The Two Towers"
         );
     }
@@ -431,7 +464,10 @@ mod tests {
             year: "2008".into(),
             ..Default::default()
         };
-        assert_eq!(resolved_title(Some(&full), base), "三体 _ 黑暗森林 - 刘慈欣 - 2008");
+        assert_eq!(
+            resolved_title(Some(&full), base),
+            "三体 _ 黑暗森林 - 刘慈欣 - 2008"
+        );
 
         // Title empty (everything else set) → falls through to base.
         let no_title = BookMeta {
@@ -464,15 +500,24 @@ mod tests {
         let back = parse_meta(&text).expect("parse own output");
         assert_eq!(back, meta);
         // The v2 keys are on disk.
-        for key in ["translator", "author", "year", "publisher", "isbn", "displayTitle"] {
-            assert!(text.contains(&format!("{key}: ")), "missing {key} in {text}");
+        for key in [
+            "translator",
+            "author",
+            "year",
+            "publisher",
+            "isbn",
+            "displayTitle",
+        ] {
+            assert!(
+                text.contains(&format!("{key}: ")),
+                "missing {key} in {text}"
+            );
         }
 
         // A v1 md (no v2 keys) parses with empty v2 fields — no data loss.
-        let v1 = parse_meta(
-            "<!-- icedreader-meta\ntitle: 三体\nvolume: 第二部\ndisplayTitle:\n-->",
-        )
-        .unwrap();
+        let v1 =
+            parse_meta("<!-- icedreader-meta\ntitle: 三体\nvolume: 第二部\ndisplayTitle:\n-->")
+                .unwrap();
         assert_eq!(v1.title, "三体");
         assert_eq!(v1.volume, "第二部");
         assert_eq!(v1.author, "");

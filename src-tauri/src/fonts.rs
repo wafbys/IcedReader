@@ -58,7 +58,7 @@ pub fn apply_css_if_active(css: Vec<u8>, settings: &SettingsStore) -> Vec<u8> {
     }
 }
 
-pub fn copy_into_slot(slot: FontSlot, src: &Path) -> Result<FontFile, String> {
+pub fn copy_into_slot(slot: FontSlot, src: &Path) -> crate::error::Result<FontFile> {
     portable::ensure_layout().map_err(|e| e.to_string())?;
     let fonts_dir = portable::fonts_dir().map_err(|e| e.to_string())?;
 
@@ -83,7 +83,7 @@ pub fn copy_into_slot(slot: FontSlot, src: &Path) -> Result<FontFile, String> {
     remove_slot_files(&fonts_dir, slot);
     if let Err(err) = fs::rename(&tmp, &dest) {
         let _ = fs::remove_file(&tmp);
-        return Err(err.to_string());
+        return Err(err.into());
     }
 
     let original_name = src

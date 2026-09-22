@@ -233,8 +233,8 @@ pub fn upsert(text: &str, entry: &NoteEntry) -> String {
         // 插到该章内最后一条 Note 之后（保持追加顺序），下一个 `## ` 章标题
         // 或文尾为止；前面不是空行时补一个分隔空行。
         let mut insert_at = sec + 1;
-        for k in sec + 1..segs.len() {
-            match &segs[k] {
+        for (k, seg) in segs.iter().enumerate().skip(sec + 1) {
+            match seg {
                 Seg::Note(_) => insert_at = k + 1,
                 Seg::Text(lines) => {
                     if lines.first().is_some_and(|l| l.starts_with("## ")) {
@@ -252,7 +252,7 @@ pub fn upsert(text: &str, entry: &NoteEntry) -> String {
         } else {
             segs.splice(
                 insert_at..insert_at,
-                [Seg::Text(vec![String::new()]), note_seg].into_iter(),
+                [Seg::Text(vec![String::new()]), note_seg],
             );
         }
         serialize(&segs)
@@ -357,7 +357,7 @@ pub fn notes_of(text: &str) -> Vec<(String, String)> {
 pub fn notes_path_for(
     dir: &std::path::Path,
     file_name: &str,
-) -> Result<std::path::PathBuf, String> {
+) -> crate::error::Result<std::path::PathBuf> {
     library::notes_path_for(dir, file_name)
 }
 
@@ -439,7 +439,7 @@ mod tests {
         let mut e2 = entry("b", "笔记 b");
         e2.section_title = "## 第 2 章 · 另一章".into();
         let out = upsert(&v1, &e2);
-        assert!(out.starts_with(&preamble), "文件头必须原样保留");
+        assert!(out.starts_with(preamble), "文件头必须原样保留");
         assert!(out.contains("## 第 2 章 · 另一章"));
         assert!(out.contains("笔记 b"));
         assert!(out.contains("笔记 a"));
@@ -480,10 +480,7 @@ mod tests {
         let v1 = upsert("", &entry("a", "a 的笔记"));
         let mixed = format!("{hand}{v1}");
         // 用户区里出现顶层 `## `（虽不鼓励）应被切断保护，内容仍在。
-        let with_head = upsert(
-            &mixed,
-            &entry("b", "b 的笔记\n\n## 我自己小节\n\n正文内容"),
-        );
+        let with_head = upsert(&mixed, &entry("b", "b 的笔记\n\n## 我自己小节\n\n正文内容"));
         assert!(with_head.contains("## 我自己小节"));
         assert!(with_head.contains("我自己小节\n\n正文内容"));
         assert!(with_head.contains("b 的笔记"));
@@ -498,7 +495,9 @@ mod tests {
         let parsed = notes_of(&text);
         assert_eq!(parsed.len(), 2);
         assert!(parsed.iter().any(|(id, n)| id == "a" && n == "笔记 a"));
-        assert!(parsed.iter().any(|(id, n)| id == "b" && n == "笔记 b 第二行"));
+        assert!(parsed
+            .iter()
+            .any(|(id, n)| id == "b" && n == "笔记 b 第二行"));
         // 重解析再序列化应保持结构稳定（解析不引入漂移）。
         assert_eq!(serialize(&parse(&text)), text);
     }

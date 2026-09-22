@@ -56,15 +56,14 @@ pub struct BookMetaView {
 }
 
 pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaView {
-    let base = profile.title.trim();    let original_title = overlay
+    let base = profile.title.trim();
+    let original_title = overlay
         .and_then(|m| m.original_title.clone())
         .unwrap_or_else(|| base.to_string());
     let title = overlay
         .and_then(|m| (!m.title.trim().is_empty()).then(|| m.title.clone()))
         .unwrap_or_else(|| clean_title(base));
-    let subtitle = overlay
-        .map(|m| m.subtitle.clone())
-        .unwrap_or_default();
+    let subtitle = overlay.map(|m| m.subtitle.clone()).unwrap_or_default();
     let volume = overlay.map(|m| m.volume.clone()).unwrap_or_default();
     // Prefill the author from the book's own dc:creator when the companion md
     // has none — the shelf card already shows it, so the join should too
@@ -75,15 +74,18 @@ pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaVi
     let year = overlay.map(|m| m.year.clone()).unwrap_or_default();
     let publisher = overlay.map(|m| m.publisher.clone()).unwrap_or_default();
     let isbn = overlay.map(|m| m.isbn.clone()).unwrap_or_default();
-    let translator = overlay
-        .map(|m| m.translator.clone())
-        .unwrap_or_default();
-    let confirmed_title = overlay
-        .map(|m| m.display_title.clone())
-        .unwrap_or_default();
+    let translator = overlay.map(|m| m.translator.clone()).unwrap_or_default();
+    let confirmed_title = overlay.map(|m| m.display_title.clone()).unwrap_or_default();
     let display_title = resolved_title(overlay, base);
     let suggested_title = join_title(
-        &title, &subtitle, &volume, &author, &translator, &year, &publisher, &isbn,
+        &title,
+        &subtitle,
+        &volume,
+        &author,
+        &translator,
+        &year,
+        &publisher,
+        &isbn,
     );
     BookMetaView {
         file_name: profile.file_name.clone(),
@@ -270,13 +272,13 @@ mod tests {
     fn extract_isbn_prefers_isbn_and_strips_prefix() {
         assert_eq!(extract_isbn(&[]), "");
         assert_eq!(
-            extract_isbn(&[
-                "urn:uuid:xxx".into(),
-                "urn:isbn:978-7-5366-9293-0".into(),
-            ]),
+            extract_isbn(&["urn:uuid:xxx".into(), "urn:isbn:978-7-5366-9293-0".into(),]),
             "978-7-5366-9293-0"
         );
-        assert_eq!(extract_isbn(&["isbn:9781234567890".into()]), "9781234567890");
+        assert_eq!(
+            extract_isbn(&["isbn:9781234567890".into()]),
+            "9781234567890"
+        );
         assert_eq!(extract_isbn(&[" 978-7-1 ".into()]), "978-7-1");
         assert_eq!(extract_isbn(&["amazon:XXXXXX".into()]), "");
     }
@@ -301,7 +303,13 @@ mod tests {
         assert_eq!(view.publisher, "原书出版社");
         assert_eq!(view.isbn, "978-7-1");
         // User-edited fields come back empty; nothing is confirmed.
-        for empty in [&view.subtitle, &view.volume, &view.translator, &view.year, &view.confirmed_title] {
+        for empty in [
+            &view.subtitle,
+            &view.volume,
+            &view.translator,
+            &view.year,
+            &view.confirmed_title,
+        ] {
             assert!(empty.is_empty(), "expected empty field");
         }
         assert_eq!(

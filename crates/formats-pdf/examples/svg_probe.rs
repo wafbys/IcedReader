@@ -41,7 +41,7 @@ fn main() {
     };
     let pdf = Pdf::new(bytes).expect("open pdf");
     let pages = pdf.pages();
-    let Some(page) = pages.iter().nth(page_no - 1) else {
+    let Some(page) = pages.get(page_no - 1) else {
         eprintln!("[!] 第 {page_no} 页不存在");
         std::process::exit(1);
     };
@@ -60,7 +60,10 @@ fn main() {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "probe".into());
-    println!("{name} p{page_no}: SVG {:.1} KB in {ms:.1} ms", svg.len() as f64 / 1024.0);
+    println!(
+        "{name} p{page_no}: SVG {:.1} KB in {ms:.1} ms",
+        svg.len() as f64 / 1024.0
+    );
     println!(
         "  <text={} <tspan={} <path={} <image={} @font-face={} base64-payload={}",
         count(&svg, "<text"),

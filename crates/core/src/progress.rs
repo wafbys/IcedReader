@@ -97,7 +97,10 @@ impl ProgressStore {
         self.entries.insert(
             key,
             ProgressRecord {
-                locator: Locator { fraction, ..locator },
+                locator: Locator {
+                    fraction,
+                    ..locator
+                },
                 updated_at: unix_now(),
             },
         );
@@ -161,8 +164,8 @@ impl ProgressStore {
             fs::create_dir_all(dir).map_err(|e| CoreError::msg(e.to_string()))?;
         }
         let tmp = path.with_extension("json.tmp");
-        let data = serde_json::to_vec_pretty(&self.entries)
-            .map_err(|e| CoreError::msg(e.to_string()))?;
+        let data =
+            serde_json::to_vec_pretty(&self.entries).map_err(|e| CoreError::msg(e.to_string()))?;
         fs::write(&tmp, data).map_err(|e| CoreError::msg(e.to_string()))?;
         fs::rename(&tmp, path).map_err(|e| CoreError::msg(e.to_string()))?;
         Ok(())
@@ -172,11 +175,7 @@ impl ProgressStore {
 /// Stable key so a moved portable folder still finds progress.
 /// Prefer EPUB identifier; else a path relative to the portable library.
 pub fn progress_key(path: &Path, identifiers: &[String], library_dir: Option<&Path>) -> String {
-    if let Some(id) = identifiers
-        .iter()
-        .map(|s| s.trim())
-        .find(|s| !s.is_empty())
-    {
+    if let Some(id) = identifiers.iter().map(|s| s.trim()).find(|s| !s.is_empty()) {
         return format!("id:{id}");
     }
     if let Some(lib) = library_dir {
@@ -200,11 +199,9 @@ fn normalize_path(path: &Path) -> PathBuf {
 fn relative_to(path: &Path, root: &Path) -> Option<String> {
     let path = normalize_path(path);
     let root = normalize_path(root);
-    path.strip_prefix(&root).ok().map(|rel| {
-        rel.to_string_lossy()
-            .replace('\\', "/")
-            .to_lowercase()
-    })
+    path.strip_prefix(&root)
+        .ok()
+        .map(|rel| rel.to_string_lossy().replace('\\', "/").to_lowercase())
 }
 
 /// Equal keys, or two `lib:` keys sharing a stem (numbered copies and the
@@ -232,10 +229,7 @@ fn lib_book_stem(key: &str) -> Option<String> {
     let stem_end = crate::book_stem(rest).len();
     let (stem, extension) = rest.split_at(stem_end);
     let mut stem = stem;
-    loop {
-        let Some(hyph) = stem.rfind('-') else {
-            break;
-        };
+    while let Some(hyph) = stem.rfind('-') {
         let (head, tail) = stem.split_at(hyph);
         if tail.len() > 1 && tail[1..].chars().all(|c| c.is_ascii_digit()) {
             stem = head;
@@ -320,19 +314,16 @@ mod tests {
 
         // Renaming the file foo.epub → 新书名.epub carries the newest alias
         // record over and drops the stale twin (like an alias write does).
-        store
-            .rename_key("lib:foo.epub", "lib:新书名.epub")
-            .unwrap();
-        assert_eq!(
-            store.get("lib:新书名.epub").unwrap().locator.fraction,
-            0.9
-        );
+        store.rename_key("lib:foo.epub", "lib:新书名.epub").unwrap();
+        assert_eq!(store.get("lib:新书名.epub").unwrap().locator.fraction, 0.9);
         assert!(store.get("lib:foo.epub").is_none());
         assert_eq!(store.get("lib:bar.epub").unwrap().locator.fraction, 0.3);
         assert_eq!(store.get("id:fixed").unwrap().locator.fraction, 0.5);
 
         // No record for a lib key → no-op, no error.
-        store.rename_key("lib:missing.epub", "lib:new.epub").unwrap();
+        store
+            .rename_key("lib:missing.epub", "lib:new.epub")
+            .unwrap();
 
         // Non-lib keys are ignored entirely.
         store.rename_key("id:fixed", "id:other").unwrap();
@@ -447,14 +438,8 @@ mod tests {
         store.set("lib:书名.epub".into(), loc(0.1)).unwrap();
         store.set("lib:书名-2.epub".into(), loc(0.9)).unwrap();
         // Only one alias record survives; both reads see the newest value.
-        assert_eq!(
-            store.get("lib:书名.epub").unwrap().locator.fraction,
-            0.9
-        );
-        assert_eq!(
-            store.get("lib:书名-2.epub").unwrap().locator.fraction,
-            0.9
-        );
+        assert_eq!(store.get("lib:书名.epub").unwrap().locator.fraction, 0.9);
+        assert_eq!(store.get("lib:书名-2.epub").unwrap().locator.fraction, 0.9);
         assert_eq!(store.entries.len(), 1, "alias records merged");
     }
 
@@ -493,10 +478,7 @@ mod tests {
             lib_book_stem("lib:书名-12.pdf").as_deref(),
             Some("书名.pdf")
         );
-        assert_eq!(
-            lib_book_stem("lib:书名.EPUB").as_deref(),
-            Some("书名.epub")
-        );
+        assert_eq!(lib_book_stem("lib:书名.EPUB").as_deref(), Some("书名.epub"));
         // Unknown extension: the whole name is the stem (no stripping).
         assert_eq!(
             lib_book_stem("lib:readme.txt").as_deref(),

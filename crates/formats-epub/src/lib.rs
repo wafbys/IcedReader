@@ -105,13 +105,22 @@ pub fn image_stats(path: &std::path::Path) -> Result<ImageStats, CoreError> {
             stats.refs_truncated = true;
             break;
         }
-        let key = entry.resource().key().value().unwrap_or_default().to_string();
+        let key = entry
+            .resource()
+            .key()
+            .value()
+            .unwrap_or_default()
+            .to_string();
         let Ok(data) = epub.read_resource_bytes(&key) else {
             continue;
         };
         doc_bytes += data.len() as u64;
         let text = String::from_utf8_lossy(&data);
-        let bucket = if is_css { &mut from_css } else { &mut from_docs };
+        let bucket = if is_css {
+            &mut from_css
+        } else {
+            &mut from_docs
+        };
         html::collect_refs(&text, &key, bucket);
     }
 
@@ -124,7 +133,12 @@ pub fn image_stats(path: &std::path::Path) -> Result<ImageStats, CoreError> {
             stats.truncated = true;
             break;
         }
-        let key = entry.resource().key().value().unwrap_or_default().to_string();
+        let key = entry
+            .resource()
+            .key()
+            .value()
+            .unwrap_or_default()
+            .to_string();
         let Ok(data) = epub.read_resource_bytes(&key) else {
             continue;
         };
@@ -828,7 +842,10 @@ mod tests {
                 .inner
                 .read_resource_str(&key)
                 .unwrap_or_else(|e| panic!("read {key}: {e}"));
-            let out = expand_word_notes(&raw, &chapter_doc_base("http://icedreader.localhost/book/t/", &key));
+            let out = expand_word_notes(
+                &raw,
+                &chapter_doc_base("http://icedreader.localhost/book/t/", &key),
+            );
             if out.contains("wr-note-item") {
                 noted += 1;
                 if out.contains("data-wr-footernote") {
@@ -884,7 +901,9 @@ mod tests {
             "marker href must be an absolute same-document URL"
         );
         assert!(
-            html.contains(&format!(r##"<a class="wr-note-back" href="{doc_base}#wr-note-back-"##)),
+            html.contains(&format!(
+                r##"<a class="wr-note-back" href="{doc_base}#wr-note-back-"##
+            )),
             "note blocks must link back to their markers"
         );
     }
@@ -971,7 +990,9 @@ mod tests {
                 "footnote asides must be replaced by note blocks: {html}"
             );
             assert!(
-                html.contains(r#"class="wr-note" data-label="1" data-note="伦敦时尚艺术区。——笔者注""#),
+                html.contains(
+                    r#"class="wr-note" data-label="1" data-note="伦敦时尚艺术区。——笔者注""#
+                ),
                 "expected a word-note marker with the note text"
             );
             assert!(

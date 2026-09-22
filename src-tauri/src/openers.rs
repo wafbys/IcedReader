@@ -27,8 +27,8 @@ pub fn opener_for(path: &Path) -> Option<&'static dyn BookOpener> {
 
 /// Open any supported book. Unsupported files report the offending path.
 pub fn open_any(path: &Path) -> Result<Box<dyn Book>, CoreError> {
-    let opener = opener_for(path)
-        .ok_or_else(|| CoreError::UnsupportedFormat(path.display().to_string()))?;
+    let opener =
+        opener_for(path).ok_or_else(|| CoreError::UnsupportedFormat(path.display().to_string()))?;
     opener.open(path)
 }
 

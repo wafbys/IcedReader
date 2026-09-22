@@ -51,8 +51,6 @@ const CACHE_PAGES: usize = 16;
 /// Pages rendered ahead/behind the page being read.
 const PREFETCH_RADIUS: usize = 2;
 
-
-
 /// Requested raster widths are rounded **up** to this step.
 ///
 /// The shell derives the width from the container and the display scale, so a
@@ -154,7 +152,9 @@ impl PdfBook {
     /// Rasterise a page and put it in the cache (used by requests and the
     /// prefetch worker).
     fn render_into_cache(&self, page: usize, width: u32) -> Result<RenderedPage, PdfError> {
-        let rendered = self.doc.render_page(page - 1, &RenderOptions::webp(width))?;
+        let rendered = self
+            .doc
+            .render_page(page - 1, &RenderOptions::webp(width))?;
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.push_front((page_href(page), width, rendered.clone()));
         cache.truncate(CACHE_PAGES);
@@ -184,8 +184,6 @@ impl PdfBook {
             }
         }
     }
-
-
 }
 
 /// Long-lived worker rendering prefetch requests into the shared cache.
@@ -212,9 +210,9 @@ fn spawn_prefetch_worker(
                 let href = page_href(page);
                 let cached = {
                     let cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-                    cache
-                        .iter()
-                        .any(|(cached_href, cached_w, _)| cached_href == &href && *cached_w == width)
+                    cache.iter().any(|(cached_href, cached_w, _)| {
+                        cached_href == &href && *cached_w == width
+                    })
                 };
                 if !cached {
                     if let Ok(rendered) = doc.render_page(page - 1, &RenderOptions::webp(width)) {
@@ -547,7 +545,9 @@ mod tests {
         assert_eq!(res.media_type, "image/webp");
         assert_eq!(&res.data[..4], b"RIFF", "WebP container");
         assert_eq!(&res.data[8..12], b"WEBP", "WebP payload");
-        let again = book.resource("/page/0001.webp?w=400").expect("cached raster");
+        let again = book
+            .resource("/page/0001.webp?w=400")
+            .expect("cached raster");
         assert_eq!(again.data.len(), res.data.len());
 
         assert!(book.resource("page/9999.webp").is_err(), "out of range");
@@ -707,7 +707,9 @@ mod tests {
             if !path.is_file() {
                 continue;
             }
-            let book = PdfOpener.open(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let book = PdfOpener
+                .open(&path)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
             let doc = PdfDoc::open(&path).unwrap();
             let pages = doc.page_count();
             let spine = book.spine();

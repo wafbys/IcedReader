@@ -220,9 +220,8 @@ fn classify(sigs: &[&BookSignals]) -> (RelationKind, String) {
         );
     }
 
-    let pair_overlaps_without_nesting = |a: &Vec<String>, b: &Vec<String>| {
-        !disjoint(a, b) && !subset_of(a, b) && !subset_of(b, a)
-    };
+    let pair_overlaps_without_nesting =
+        |a: &Vec<String>, b: &Vec<String>| !disjoint(a, b) && !subset_of(a, b) && !subset_of(b, a);
     let any_unrelated = tocs.iter().enumerate().any(|(i, a)| {
         tocs.iter()
             .skip(i + 1)
@@ -230,11 +229,11 @@ fn classify(sigs: &[&BookSignals]) -> (RelationKind, String) {
     });
 
     if !any_unrelated {
-        if tocs
-            .iter()
-            .enumerate()
-            .any(|(i, a)| tocs.iter().skip(i + 1).any(|b| subset_of(a, b) || subset_of(b, a)))
-        {
+        if tocs.iter().enumerate().any(|(i, a)| {
+            tocs.iter()
+                .skip(i + 1)
+                .any(|b| subset_of(a, b) || subset_of(b, a))
+        }) {
             return (
                 RelationKind::Contained,
                 "一本的回目是另一本的子集——完整版与删节/选编（或分卷与合集）".to_string(),
@@ -290,6 +289,9 @@ impl Tolerance {
 
 /// Build one axis from already-extracted values. `values.len()` must equal the
 /// number of columns; missing inputs are handled by the caller (skip the axis).
+// A compact builder called from ten fixed sites; a spec struct would only add
+// boilerplate without naming anything the call sites do not already show.
+#[allow(clippy::too_many_arguments)]
 fn axis(
     key: &'static str,
     label: &'static str,
@@ -436,9 +438,9 @@ fn note_weight(s: &BookSignals) -> u64 {
 
 /// Compare two or more copies of one work. Callers must have established that
 /// they are copies (the shelf's 同书 grouping); this does not re-litigate that.
-pub fn compare(inputs: &[CompareInput]) -> Result<Comparison, String> {
+pub fn compare(inputs: &[CompareInput]) -> crate::error::Result<Comparison> {
     if inputs.len() < 2 {
-        return Err("至少需要两本才能对照".to_string());
+        return Err("至少需要两本才能对照".into());
     }
     let sigs: Vec<&BookSignals> = inputs.iter().map(|i| &i.signals).collect();
     let (kind, kind_note) = classify(&sigs);
@@ -450,7 +452,7 @@ pub fn compare(inputs: &[CompareInput]) -> Result<Comparison, String> {
     provenance_axes(&mut axes, inputs);
 
     let chapter_diff = if inputs.len() == 2 {
-        chapter_diff(&sigs[0], &sigs[1])
+        chapter_diff(sigs[0], sigs[1])
     } else {
         None
     };
@@ -505,7 +507,10 @@ fn content_axes(axes: &mut Vec<Axis>, inputs: &[CompareInput], kind: RelationKin
             "正文字数",
             AxisGroup::Content,
             Some("去空白后的正文字符数（长短不等于优劣）"),
-            &inputs.iter().map(|i| i.signals.chars as f64).collect::<Vec<_>>(),
+            &inputs
+                .iter()
+                .map(|i| i.signals.chars as f64)
+                .collect::<Vec<_>>(),
             inputs
                 .iter()
                 .map(|i| fmt_count(i.signals.chars as f64))
@@ -515,10 +520,7 @@ fn content_axes(axes: &mut Vec<Axis>, inputs: &[CompareInput], kind: RelationKin
         ));
     }
 
-    let mojibake: Vec<f64> = inputs
-        .iter()
-        .map(|i| i.signals.mojibake as f64)
-        .collect();
+    let mojibake: Vec<f64> = inputs.iter().map(|i| i.signals.mojibake as f64).collect();
     if mojibake.iter().any(|v| *v > 0.0) {
         axes.push(axis(
             "mojibake",
@@ -551,7 +553,10 @@ fn content_axes(axes: &mut Vec<Axis>, inputs: &[CompareInput], kind: RelationKin
 }
 
 fn apparatus_axes(axes: &mut Vec<Axis>, inputs: &[CompareInput]) {
-    let notes: Vec<f64> = inputs.iter().map(|i| note_weight(&i.signals) as f64).collect();
+    let notes: Vec<f64> = inputs
+        .iter()
+        .map(|i| note_weight(&i.signals) as f64)
+        .collect();
     axes.push(axis(
         "notes",
         "词注 / 注文",
@@ -780,7 +785,12 @@ fn conclude(
                         .filter(|(j, _)| *j != i)
                         .map(|(_, c)| c.display.clone())
                         .collect();
-                    format!("{} {}（另 {}）", a.label, a.cells[i].display, others.join(" / "))
+                    format!(
+                        "{} {}（另 {}）",
+                        a.label,
+                        a.cells[i].display,
+                        others.join(" / ")
+                    )
                 })
                 .collect();
         } else {
@@ -808,12 +818,7 @@ mod tests {
     use super::*;
     use crate::book_signals::{IdQuality, ANALYSIS_KIND};
 
-    fn signals(
-        shas: &[&str],
-        headings: &[&str],
-        chapter_chars: &[u64],
-        chars: u64,
-    ) -> BookSignals {
+    fn signals(shas: &[&str], headings: &[&str], chapter_chars: &[u64], chars: u64) -> BookSignals {
         BookSignals {
             rev: "r".into(),
             chars,
@@ -865,12 +870,7 @@ mod tests {
     /// worth ~1.7 MB. The panel must point at the smaller one.
     #[test]
     fn leftover_images_decide_between_two_identical_packings() {
-        let mut clean = signals(
-            &["a", "b"],
-            &["第一回", "第二回"],
-            &[100, 200],
-            300,
-        );
+        let mut clean = signals(&["a", "b"], &["第一回", "第二回"], &[100, 200], 300);
         clean.img_bytes = 14_432_056;
         clean.img_files = 58;
         clean.img_referenced = 53;
@@ -931,7 +931,10 @@ mod tests {
         let c = compare(&[input("a.epub", 1, a), input("b.epub", 1, b)]).unwrap();
         assert_eq!(c.kind, RelationKind::SameEdition);
         assert_eq!(axis_named(&c, "text").verdict, Verdict::Presented);
-        assert!(c.conclusion.iter().any(|l| l.contains("取决于你想要哪个版本")));
+        assert!(c
+            .conclusion
+            .iter()
+            .any(|l| l.contains("取决于你想要哪个版本")));
         let strip = c.chapter_diff.expect("same 回目 aligns");
         assert_eq!(strip.identical, vec![true, false]);
         assert_eq!(strip.deltas, vec![0, 60]);
@@ -973,7 +976,11 @@ mod tests {
         let c = compare(&[input("a.epub", 1, a.clone()), input("b.epub", 1, a)]).unwrap();
         assert_eq!(c.kind, RelationKind::SameTypesetting);
         assert_eq!(c.lean, None);
-        assert!(c.conclusion.iter().any(|l| l.contains("打平")), "{:?}", c.conclusion);
+        assert!(
+            c.conclusion.iter().any(|l| l.contains("打平")),
+            "{:?}",
+            c.conclusion
+        );
     }
 
     #[test]
@@ -1038,16 +1045,12 @@ mod tests {
             let Ok(read) = std::fs::read_dir(dir) else {
                 continue;
             };
-            paths.extend(
-                read.filter_map(|i| i.ok())
-                    .map(|i| i.path())
-                    .filter(|p| {
-                        p.is_file()
-                            && p.extension()
-                                .and_then(|e| e.to_str())
-                                .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
-                    }),
-            );
+            paths.extend(read.filter_map(|i| i.ok()).map(|i| i.path()).filter(|p| {
+                p.is_file()
+                    && p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+            }));
         }
         paths.sort();
         paths.dedup();
@@ -1098,8 +1101,7 @@ mod tests {
                     println!("  结论：{line}");
                 }
                 for a in &c.axes {
-                    let cells: Vec<String> =
-                        a.cells.iter().map(|x| x.display.clone()).collect();
+                    let cells: Vec<String> = a.cells.iter().map(|x| x.display.clone()).collect();
                     println!(
                         "  [{:?}] {} = {}  → {:?}",
                         a.group,

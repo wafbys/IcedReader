@@ -20,13 +20,12 @@
 //! folded into `quality_plus`/`quality_minus` and belongs to the 同书对照 panel
 //! (`docs/ideas/book-compare.md`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::sync::{Mutex, OnceLock};
 
 use iced_reader_core::Book;
-use iced_reader_epub::{
-    expand_word_notes, href_file_key, slice_chapter, split_href, ImageStats,
-};
+use iced_reader_epub::{expand_word_notes, href_file_key, slice_chapter, split_href, ImageStats};
 use serde::{Deserialize, Serialize};
 
 use crate::portable;
@@ -161,7 +160,7 @@ fn is_isbn13(d: &str) -> bool {
         };
         sum += n * if i % 2 == 0 { 1 } else { 3 };
     }
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 fn is_isbn10(d: &str) -> bool {
@@ -179,7 +178,7 @@ fn is_isbn10(d: &str) -> bool {
         };
         sum += n * (10 - i as u32);
     }
-    sum % 11 == 0
+    sum.is_multiple_of(11)
 }
 
 fn is_uuid(s: &str) -> bool {
@@ -468,7 +467,7 @@ fn scan_html(raw: &str) -> Scan {
                 "script" | "style" => {
                     skip_until = Some(name.clone());
                     i = j; // tag body will be skipped by the '>' walk below
-                    // consume tag until '>'
+                           // consume tag until '>'
                     while i < n && chars[i] != '>' {
                         i += 1;
                     }
@@ -560,7 +559,9 @@ fn scan_html(raw: &str) -> Scan {
                     }
                     continue;
                 }
-                h if h.len() == 2 && h.starts_with('h') && matches!(h.as_bytes()[1], b'1'..=b'6') =>
+                h if h.len() == 2
+                    && h.starts_with('h')
+                    && matches!(h.as_bytes()[1], b'1'..=b'6') =>
                 {
                     heading = Some(h.to_string());
                     heading_buf.clear();
@@ -708,7 +709,7 @@ pub fn analyze_book(
     has_creator: bool,
     rev: &str,
     images: ImageStats,
-) -> Result<BookSignals, String> {
+) -> crate::error::Result<BookSignals> {
     let spine = book.spine();
     let id_quality = best_id_quality(identifiers);
 
@@ -818,8 +819,22 @@ pub fn analyze_book(
 /// shelf shows the grade from its next listing, and the reader's `warnings` are
 /// read from that cache.
 pub fn analyze_in_background(path: std::path::PathBuf, file_name: String, rev: String) {
+    // One analysis per `(file, revision)`: reopening a book while its analysis
+    // is still running must not queue a second pass (and a second write).
+    let key = (file_name.clone(), rev.clone());
+    {
+        let Ok(mut pending) = in_flight().lock() else {
+            return;
+        };
+        if !pending.insert(key.clone()) {
+            return;
+        }
+    }
     std::thread::spawn(move || {
         analyze_path_now(&path, &file_name, &rev);
+        if let Ok(mut pending) = in_flight().lock() {
+            pending.remove(&key);
+        }
     });
 }
 
@@ -828,11 +843,7 @@ pub fn analyze_in_background(path: std::path::PathBuf, file_name: String, rev: S
 /// import path and the on-demand 同书对照 both go through it, so they can never
 /// disagree about what a book's signals are. Metadata is read from the book
 /// itself rather than passed in, for the same reason.
-pub fn analyze_path_now(
-    path: &std::path::Path,
-    file_name: &str,
-    rev: &str,
-) -> Option<BookSignals> {
+pub fn analyze_path_now(path: &std::path::Path, file_name: &str, rev: &str) -> Option<BookSignals> {
     let opener = crate::openers::opener_for(path)?;
     let signals = if opener.format_id() == iced_reader_core::PDF_FORMAT {
         analyze_pdf(path, rev).ok()?
@@ -853,7 +864,7 @@ pub fn analyze_path_now(
     Some(signals)
 }
 
-pub fn analyze_pdf(path: &std::path::Path, rev: &str) -> Result<BookSignals, String> {
+pub fn analyze_pdf(path: &std::path::Path, rev: &str) -> crate::error::Result<BookSignals> {
     let doc = iced_reader_pdf::PdfDoc::open(path).map_err(|e| e.to_string())?;
     let quality = iced_reader_pdf::analyze_quality(&doc);
     let info = doc.info();
@@ -1005,7 +1016,7 @@ pub fn grade_pdf(s: &BookSignals) -> Grade {
     Grade { label, plus, minus }
 }
 
-fn read_spine_html(book: &dyn Book, file: &str) -> Result<String, String> {
+fn read_spine_html(book: &dyn Book, file: &str) -> crate::error::Result<String> {
     let trimmed = file.trim().trim_start_matches('/');
     for candidate in [file.to_string(), format!("/{trimmed}"), trimmed.to_string()] {
         if candidate.is_empty() {
@@ -1015,18 +1026,17 @@ fn read_spine_html(book: &dyn Book, file: &str) -> Result<String, String> {
             return Ok(String::from_utf8_lossy(&res.data).into_owned());
         }
     }
-    Err(format!("read {file}"))
+    Err(format!("read {file}").into())
 }
 
 fn next_fragment_in_spine(spine: &[iced_reader_core::SpineItem], index: usize) -> Option<String> {
     let file = href_file_key(&spine[index].href);
-    for item in spine.iter().skip(index + 1) {
-        if href_file_key(&item.href) == file {
-            return split_href(&item.href).1.map(str::to_string);
-        }
-        return None;
+    let next = spine.get(index + 1)?;
+    if href_file_key(&next.href) == file {
+        split_href(&next.href).1.map(str::to_string)
+    } else {
+        None
     }
-    None
 }
 
 /// Result of [`grade`]: the grade label plus what speaks for the book
@@ -1045,8 +1055,7 @@ impl Grade {
     /// real paper ISBN on a Kindle/Calibre UUID file. Never grants 优.
     pub fn with_filename_isbn(mut self, id: IdQuality, file_name: &str) -> Self {
         if id != IdQuality::Isbn && text_has_isbn13(file_name) {
-            self.plus
-                .push("文件名含 ISBN，书内标识符未采用".into());
+            self.plus.push("文件名含 ISBN，书内标识符未采用".into());
         }
         self
     }
@@ -1054,7 +1063,11 @@ impl Grade {
 
 /// Grade 优/良/中 with plain-language reasons. Rules are conservative: only
 /// facts we measured, no invented criteria.
-pub fn grade(s: &BookSignals) -> Grade {
+///
+/// `id_quality` is passed separately because the shelf re-classifies from the
+/// live OPF, so a stale cached id cannot keep granting 优; taking it as an
+/// argument also avoids cloning the whole signals to change one field.
+pub fn grade_with_id(s: &BookSignals, id_quality: IdQuality) -> Grade {
     let mut plus: Vec<String> = Vec::new();
     let mut minus: Vec<String> = Vec::new();
     let mut bad = 0u8;
@@ -1127,14 +1140,12 @@ pub fn grade(s: &BookSignals) -> Grade {
         let per_k = s.missing_chars as f64 * 1000.0 / s.chars as f64;
         if per_k > MISSING_CHAR_PER_K {
             bad += 1;
-            minus.push(format!(
-                "缺字占位（□）偏多，约 {per_k:.1}/千字"
-            ));
+            minus.push(format!("缺字占位（□）偏多，约 {per_k:.1}/千字"));
         } else {
             minus.push(format!("正文含 {} 处缺字占位（□）", s.missing_chars));
         }
     }
-    match s.id_quality {
+    match id_quality {
         IdQuality::Isbn => {
             good += 2;
             plus.push("标识符为 ISBN，可溯源纸书版本".into());
@@ -1173,38 +1184,7 @@ pub fn grade(s: &BookSignals) -> Grade {
     } else {
         "中"
     };
-    Grade {
-        label,
-        plus,
-        minus,
-    }
-}
-
-// The three functions below are the relative-verdict axis used by the 同书对照
-// panel (`docs/ideas/book-compare.md`, step 3). They lost their only caller when
-// the relative lines were moved out of a book's own 依据, so they are dead until
-// `book_compare.rs` lands — kept, and covered by unit tests, on purpose.
-#[allow(dead_code)]
-fn note_weight(s: &BookSignals) -> u64 {
-    if s.word_notes > 0 {
-        s.word_notes
-    } else if s.analysis_kind >= 2 {
-        s.sup_count
-    } else {
-        0
-    }
-}
-
-#[allow(dead_code)]
-fn image_rank(s: &BookSignals) -> u64 {
-    // Same definition of "plates" as `grade`, so the panel and the badge can
-    // never disagree about which copy has more apparatus.
-    let (files, substantial) = plate_counts(s);
-    if s.img_truncated {
-        files.max(SUBSTANTIAL_IMAGE_MIN)
-    } else {
-        substantial
-    }
+    Grade { label, plus, minus }
 }
 
 /// How many images count as apparatus for one book: `(all referenced, of those
@@ -1219,80 +1199,21 @@ pub fn plate_counts(s: &BookSignals) -> (u64, u64) {
     }
 }
 
-/// Relative plus/minus for one copy against other copies of the same work.
-/// Empty when `peers` is empty or every axis ties. Does not change 优/良/中.
-///
-/// Not part of a book's own 依据 any more — the relative verdicts are shown by
-/// the 同书对照 panel, not in the badge tooltip (`docs/ideas/book-compare.md`
-/// §1.1). Known weakness that panel must fix: the image axis ranks on
-/// `img_substantial`, which counts covers and unreferenced leftovers too, and
-/// its thresholds swallow small real differences (46 vs 44 reads as a tie).
-#[allow(dead_code)]
-pub fn edition_vs_peers(this: &BookSignals, peers: &[&BookSignals]) -> (Vec<String>, Vec<String>) {
-    let mut plus = Vec::new();
-    let mut minus = Vec::new();
-    if peers.is_empty() {
-        return (plus, minus);
-    }
+// ---- persistence: data/book-signals.json (fileName → signals) ----
 
-    let my_img = image_rank(this);
-    let peer_img_max = peers.iter().map(|p| image_rank(p)).max().unwrap_or(0);
-    if my_img >= SUBSTANTIAL_IMAGE_MIN
-        && my_img > peer_img_max
-        && (peer_img_max == 0
-            || my_img >= peer_img_max.saturating_mul(2)
-            || my_img >= peer_img_max + SUBSTANTIAL_IMAGE_MIN)
-    {
-        plus.push("同书中插图更多".into());
-    } else if peer_img_max >= SUBSTANTIAL_IMAGE_MIN
-        && peer_img_max > my_img
-        && (my_img == 0
-            || peer_img_max >= my_img.saturating_mul(2)
-            || peer_img_max >= my_img + SUBSTANTIAL_IMAGE_MIN)
-    {
-        minus.push("同书另本插图更多".into());
-    }
-
-    let my_notes = note_weight(this);
-    let peer_notes_max = peers.iter().map(|p| note_weight(p)).max().unwrap_or(0);
-    if my_notes > 0 && peer_notes_max == 0 {
-        plus.push("同书中有注文，另本没有".into());
-    } else if my_notes == 0 && peer_notes_max > 0 {
-        minus.push("同书另本有注文".into());
-    } else if my_notes >= 20 && my_notes >= peer_notes_max.saturating_mul(2) && peer_notes_max > 0 {
-        plus.push("同书中注文明显更多".into());
-    } else if peer_notes_max >= 20 && peer_notes_max >= my_notes.saturating_mul(2) && my_notes > 0 {
-        minus.push("同书另本注文明显更多".into());
-    }
-
-    let my_id = this.id_quality.rank();
-    let peer_id_max = peers.iter().map(|p| p.id_quality.rank()).max().unwrap_or(0);
-    if my_id > peer_id_max && my_id >= IdQuality::Asin.rank() {
-        plus.push("同书中标识更可溯源".into());
-    } else if peer_id_max > my_id && peer_id_max >= IdQuality::Asin.rank() {
-        minus.push("同书另本标识更可溯源".into());
-    }
-
-    let peer_moji_min = peers.iter().map(|p| p.mojibake).min().unwrap_or(0);
-    let peer_moji_max = peers.iter().map(|p| p.mojibake).max().unwrap_or(0);
-    if this.mojibake == 0 && peer_moji_max > 0 {
-        plus.push("同书中无乱码".into());
-    } else if this.mojibake > 0 && peer_moji_min == 0 {
-        minus.push("同书另本无乱码".into());
-    }
-
-    let peer_miss_min = peers.iter().map(|p| p.missing_chars).min().unwrap_or(0);
-    let peer_miss_max = peers.iter().map(|p| p.missing_chars).max().unwrap_or(0);
-    if this.missing_chars == 0 && peer_miss_max > 0 {
-        plus.push("同书中无缺字占位".into());
-    } else if this.missing_chars > 0 && peer_miss_min == 0 {
-        minus.push("同书另本无缺字占位".into());
-    }
-
-    (plus, minus)
+/// Serialises read-modify-write of `book-signals.json` so two background
+/// analyses (of different books) cannot drop each other's entry. Readers need
+/// no lock: [`persist`] swaps the file in with an atomic rename.
+fn signals_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
-// ---- persistence: data/book-signals.json (fileName → signals) ----
+/// `(file_name, rev)` analyses currently running (see [`analyze_in_background`]).
+fn in_flight() -> &'static Mutex<HashSet<(String, String)>> {
+    static PENDING: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
 pub fn read_all() -> HashMap<String, BookSignals> {
     let Ok(path) = portable::signals_file() else {
@@ -1309,6 +1230,9 @@ pub fn read_from(path: &std::path::Path) -> HashMap<String, BookSignals> {
 }
 
 pub fn write_one(file_name: &str, signals: &BookSignals) {
+    let _guard = signals_write_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let Ok(path) = portable::signals_file() else {
         return;
     };
@@ -1318,6 +1242,9 @@ pub fn write_one(file_name: &str, signals: &BookSignals) {
 }
 
 pub fn remove(file_name: &str) {
+    let _guard = signals_write_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let Ok(path) = portable::signals_file() else {
         return;
     };
@@ -1334,6 +1261,9 @@ pub fn rename_key(old_file_name: &str, new_file_name: &str) {
     if old_file_name == new_file_name {
         return;
     }
+    let _guard = signals_write_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let Ok(path) = portable::signals_file() else {
         return;
     };
@@ -1365,20 +1295,33 @@ fn persist(path: &std::path::Path, all: &HashMap<String, BookSignals>) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced_reader_epub::EpubOpener;
     use iced_reader_core::BookOpener;
+    use iced_reader_epub::EpubOpener;
+
+    /// Grading without an id override, as these tests read it.
+    fn grade(s: &BookSignals) -> Grade {
+        grade_with_id(s, s.id_quality)
+    }
 
     #[test]
     fn classify_identifiers() {
-        assert_eq!(classify_identifier("urn:isbn:9787020058716"), IdQuality::Isbn);
+        assert_eq!(
+            classify_identifier("urn:isbn:9787020058716"),
+            IdQuality::Isbn
+        );
         assert_eq!(classify_identifier("9787020058716"), IdQuality::Isbn);
         assert_eq!(classify_identifier("B00PXVU09M"), IdQuality::Asin);
-        assert_eq!(classify_identifier("urn:uuid:fc167612-40a5-4d22-a912-dae048e3e9d1"), IdQuality::RandomUuid);
-        assert_eq!(classify_identifier("fc167612-40a5-4d22-a912-dae048e3e9d1"), IdQuality::RandomUuid);
+        assert_eq!(
+            classify_identifier("urn:uuid:fc167612-40a5-4d22-a912-dae048e3e9d1"),
+            IdQuality::RandomUuid
+        );
+        assert_eq!(
+            classify_identifier("fc167612-40a5-4d22-a912-dae048e3e9d1"),
+            IdQuality::RandomUuid
+        );
         assert_eq!(classify_identifier("mybook-v1"), IdQuality::Other);
         assert_eq!(classify_identifier(""), IdQuality::None);
         assert_eq!(
@@ -1395,7 +1338,10 @@ mod tests {
             "978 prefix without checksum is not ISBN"
         );
         assert_eq!(
-            best_id_quality(&["4239771336".into(), "urn:uuid:fc167612-40a5-4d22-a912-dae048e3e9d1".into()]),
+            best_id_quality(&[
+                "4239771336".into(),
+                "urn:uuid:fc167612-40a5-4d22-a912-dae048e3e9d1".into()
+            ]),
             IdQuality::Other,
         );
         assert_eq!(
@@ -1416,11 +1362,10 @@ mod tests {
             "哈利波特全集 (Rowling J.K., J.K.罗琳) (z-library.sk).epub"
         ));
         assert!(!text_has_isbn13("资治通鉴.epub"));
-        let g = grade(&sig(IdQuality::RandomUuid, true, 2, 2, false))
-            .with_filename_isbn(
-                IdQuality::RandomUuid,
-                "140亿年宇宙演化全史 - ISBN 9787559632487.epub",
-            );
+        let g = grade(&sig(IdQuality::RandomUuid, true, 2, 2, false)).with_filename_isbn(
+            IdQuality::RandomUuid,
+            "140亿年宇宙演化全史 - ISBN 9787559632487.epub",
+        );
         assert_eq!(g.label, "良", "filename ISBN must not promote to 优");
         assert!(g.plus.iter().any(|r| r.contains("文件名含 ISBN")));
     }
@@ -1473,7 +1418,8 @@ mod tests {
 
     #[test]
     fn analyze_and_grade_sample_epub() {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
         let book = EpubOpener.open(&path).expect("open sample");
         let meta = book.metadata();
         let signals = analyze_book(
@@ -1664,10 +1610,7 @@ mod tests {
         // Scan with OCR = 良; plain scan = 中 regardless of metadata.
         let ocr = pdf(TextLayer::OcrLayer, 17, 0, 0, true, false, vec![]);
         assert_eq!(grade_pdf(&ocr).label, "良");
-        assert!(grade_pdf(&ocr)
-            .minus
-            .iter()
-            .any(|r| r.contains("OCR")));
+        assert!(grade_pdf(&ocr).minus.iter().any(|r| r.contains("OCR")));
         let scan = pdf(TextLayer::ScanOnly, 0, 0, 71, true, true, vec![]);
         assert_eq!(grade_pdf(&scan).label, "中");
         assert!(grade_pdf(&scan)
@@ -1717,7 +1660,14 @@ mod tests {
         }
     }
 
-    fn sig(id: IdQuality, creator: bool, files: u64, substantial: u64, truncated: bool) -> BookSignals {        BookSignals {
+    fn sig(
+        id: IdQuality,
+        creator: bool,
+        files: u64,
+        substantial: u64,
+        truncated: bool,
+    ) -> BookSignals {
+        BookSignals {
             rev: "r".into(),
             chars: 50_000,
             chapter_shas: vec!["a".into()],
@@ -1755,13 +1705,19 @@ mod tests {
         let g = grade(&sig(IdQuality::RandomUuid, true, 2, 2, false));
         assert_eq!(g.label, "良");
         assert!(g.plus.iter().any(|r| r.contains("封面/插图")));
-        assert!(!g.plus.iter().any(|r| r.contains("较大插图") || r.contains("码率")));
+        assert!(!g
+            .plus
+            .iter()
+            .any(|r| r.contains("较大插图") || r.contains("码率")));
     }
 
     #[test]
     fn grade_truncated_scan_counts_as_illustrated() {
         let g = grade(&sig(IdQuality::RandomUuid, true, 300, 80, true));
-        assert_eq!(g.label, "优", "illustrated complete dump vs a bare text of the same work");
+        assert_eq!(
+            g.label, "优",
+            "illustrated complete dump vs a bare text of the same work"
+        );
         assert!(g.plus.iter().any(|r| r.contains("截断")), "{:?}", g.plus);
     }
 
@@ -1793,43 +1749,20 @@ mod tests {
         let mut s = sig(IdQuality::RandomUuid, true, 0, 0, false);
         s.word_notes = 179_509;
         let g = grade(&s);
-        assert_eq!(g.label, "优", "annotated edition vs a bare dump of the same work");
-        assert!(g.plus.iter().any(|r| r.contains("词注") && r.contains("万")));
+        assert_eq!(
+            g.label, "优",
+            "annotated edition vs a bare dump of the same work"
+        );
+        assert!(g
+            .plus
+            .iter()
+            .any(|r| r.contains("词注") && r.contains("万")));
     }
 
     #[test]
     fn grade_plain_calibre_conversion_stays_liang() {
         let g = grade(&sig(IdQuality::RandomUuid, true, 2, 2, false));
         assert_eq!(g.label, "良");
-    }
-
-    #[test]
-    fn edition_vs_peers_calls_out_the_stronger_copy() {
-        let annotated = {
-            let mut s = sig(IdQuality::RandomUuid, true, 0, 0, false);
-            s.word_notes = 10_000;
-            s
-        };
-        let bare = sig(IdQuality::RandomUuid, true, 0, 0, false);
-        let (p, m) = edition_vs_peers(&annotated, &[&bare]);
-        assert!(p.iter().any(|r| r.contains("注文")), "{p:?}");
-        assert!(m.is_empty(), "{m:?}");
-        let (p, m) = edition_vs_peers(&bare, &[&annotated]);
-        assert!(m.iter().any(|r| r.contains("注文")), "{m:?}");
-        assert!(p.is_empty(), "{p:?}");
-
-        let with_isbn = sig(IdQuality::Isbn, true, 0, 0, false);
-        let uuid = sig(IdQuality::RandomUuid, true, 0, 0, false);
-        let (p, _) = edition_vs_peers(&with_isbn, &[&uuid]);
-        assert!(p.iter().any(|r| r.contains("溯源")), "{p:?}");
-
-        let plates = sig(IdQuality::Other, true, 215, 60, false);
-        let covers = sig(IdQuality::Other, true, 2, 2, false);
-        let (p, _) = edition_vs_peers(&plates, &[&covers]);
-        assert!(p.iter().any(|r| r.contains("插图")), "{p:?}");
-
-        let (p, m) = edition_vs_peers(&bare, &[&bare]);
-        assert!(p.is_empty() && m.is_empty());
     }
 
     #[test]
@@ -1941,7 +1874,11 @@ mod tests {
         junk.img_orphan = 45;
         let g = grade(&junk);
         assert_eq!(g.label, "良");
-        assert!(g.plus.iter().any(|r| r.contains("正文未引用")), "{:?}", g.plus);
+        assert!(
+            g.plus.iter().any(|r| r.contains("正文未引用")),
+            "{:?}",
+            g.plus
+        );
         assert!(!g.plus.iter().any(|r| r.contains("较大插图")));
     }
 
@@ -1956,10 +1893,14 @@ mod tests {
         old.img_referenced = 0;
         old.img_referenced_substantial = 0;
         assert_eq!(grade(&old).label, "优");
-        assert!(grade(&old)
-            .plus
-            .iter()
-            .any(|r| r.contains("较大插图 46 张")), "{:?}", grade(&old).plus);
+        assert!(
+            grade(&old)
+                .plus
+                .iter()
+                .any(|r| r.contains("较大插图 46 张")),
+            "{:?}",
+            grade(&old).plus
+        );
     }
 
     /// Real-library diagnostic: image inventory per epub, split by who points
@@ -1979,16 +1920,12 @@ mod tests {
             let Ok(read) = std::fs::read_dir(dir) else {
                 continue;
             };
-            paths.extend(
-                read.filter_map(|i| i.ok())
-                    .map(|i| i.path())
-                    .filter(|p| {
-                        p.is_file()
-                            && p.extension()
-                                .and_then(|e| e.to_str())
-                                .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
-                    }),
-            );
+            paths.extend(read.filter_map(|i| i.ok()).map(|i| i.path()).filter(|p| {
+                p.is_file()
+                    && p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+            }));
         }
         paths.sort();
         for path in paths {
@@ -2034,4 +1971,3 @@ mod tests {
         }
     }
 }
-

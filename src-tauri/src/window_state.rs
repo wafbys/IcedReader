@@ -34,8 +34,10 @@ pub fn attach(window: &WebviewWindow) {
         set_last(saved);
     }
     let win = window.clone();
-    let _ = window.on_window_event(move |event| match event {
-        WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+    window.on_window_event(move |event| match event {
+        WindowEvent::Moved(_)
+        | WindowEvent::Resized(_)
+        | WindowEvent::ScaleFactorChanged { .. } => {
             schedule_save(&win);
         }
         WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
@@ -170,25 +172,39 @@ fn position_on_a_monitor(window: &WebviewWindow, x: i32, y: i32, width: u32, hei
     let py = (f64::from(y) * scale).round() as i32;
     let pw = (f64::from(width) * scale).round() as i32;
     let ph = (f64::from(height) * scale).round() as i32;
+    let window = Rect {
+        x: px,
+        y: py,
+        w: pw,
+        h: ph,
+    };
     monitors.iter().any(|m| {
-        rects_overlap(
-            px,
-            py,
-            pw,
-            ph,
-            m.position().x,
-            m.position().y,
-            m.size().width as i32,
-            m.size().height as i32,
-        )
+        let pos = m.position();
+        let size = m.size();
+        window.overlaps(&Rect {
+            x: pos.x,
+            y: pos.y,
+            w: size.width as i32,
+            h: size.height as i32,
+        })
     })
 }
 
-fn rects_overlap(ax: i32, ay: i32, aw: i32, ah: i32, bx: i32, by: i32, bw: i32, bh: i32) -> bool {
-    ax < bx.saturating_add(bw)
-        && ax.saturating_add(aw) > bx
-        && ay < by.saturating_add(bh)
-        && ay.saturating_add(ah) > by
+/// An axis-aligned rectangle in physical pixels.
+struct Rect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+impl Rect {
+    fn overlaps(&self, other: &Rect) -> bool {
+        self.x < other.x.saturating_add(other.w)
+            && self.x.saturating_add(self.w) > other.x
+            && self.y < other.y.saturating_add(other.h)
+            && self.y.saturating_add(self.h) > other.y
+    }
 }
 
 #[cfg(test)]
@@ -203,8 +219,24 @@ mod tests {
 
     #[test]
     fn overlap_detects_shared_area() {
-        assert!(rects_overlap(0, 0, 800, 600, 100, 100, 800, 600));
-        assert!(!rects_overlap(0, 0, 800, 600, 2000, 0, 800, 600));
+        let a = Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+        };
+        assert!(a.overlaps(&Rect {
+            x: 100,
+            y: 100,
+            w: 800,
+            h: 600
+        }));
+        assert!(!a.overlaps(&Rect {
+            x: 2000,
+            y: 0,
+            w: 800,
+            h: 600
+        }));
     }
 
     #[test]

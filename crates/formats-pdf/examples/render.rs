@@ -17,9 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use iced_reader_pdf::{
-    is_standard_font_name, FontAudit, PageFormat, PdfDoc, RenderOptions,
-};
+use iced_reader_pdf::{is_standard_font_name, FontAudit, PageFormat, PdfDoc, RenderOptions};
 
 struct Args {
     path: PathBuf,
@@ -341,7 +339,11 @@ fn run_single(path: &Path, args: &Args) {
         return;
     }
     let out_dir = spike_dir_for(path, args);
-    println!("render    : width={} px -> {}", args.width, out_dir.display());
+    println!(
+        "render    : width={} px -> {}",
+        args.width,
+        out_dir.display()
+    );
     let slowest = render_pages(&doc, args, &out_dir);
     println!("slowest   : {slowest:.1} ms/page");
 }
@@ -428,7 +430,11 @@ fn run_directory(dir: &Path, args: &Args) {
     }
 
     println!("\n=== 汇总 ===");
-    println!("共 {} 本；依赖系统字体（hayro 会缺字）的 {} 本", files.len(), dirty.len());
+    println!(
+        "共 {} 本；依赖系统字体（hayro 会缺字）的 {} 本",
+        files.len(),
+        dirty.len()
+    );
     for line in &dirty {
         println!("  {line}");
     }

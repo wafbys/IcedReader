@@ -1,7 +1,8 @@
-mod fonts;
 mod book_compare;
 mod book_meta;
 mod book_signals;
+mod error;
+mod fonts;
 mod library;
 mod notes;
 mod openers;
@@ -15,13 +16,15 @@ use std::sync::{Arc, Mutex};
 
 use iced_reader_core::{
     book_extension, clean_person_list, clean_title, collect_publisher_fonts, progress_key,
-    read_meta_file, resolved_title, write_meta_file, AnnotationStore, Book, BookMeta,
-    ChapterView, FontSettingsView, FontSlot, Highlight, Locator, Metadata, ProgressStore,
-    SettingsStore, SpineItem, TocNode, COLOR_GREEN, COLOR_YELLOW, PDF_FORMAT,
+    read_meta_file, resolved_title, write_meta_file, AnnotationStore, Book, BookMeta, ChapterView,
+    FontSettingsView, FontSlot, Highlight, Locator, Metadata, ProgressStore, SettingsStore,
+    SpineItem, TocNode, COLOR_GREEN, COLOR_YELLOW, PDF_FORMAT,
 };
 use serde::Serialize;
 use tauri::Manager;
 use uuid::Uuid;
+
+use crate::error::Error;
 
 pub fn prepare_portable() {
     portable::prepare_webview_env();
@@ -84,20 +87,18 @@ pub struct OpenedBook {
 }
 
 #[tauri::command]
-async fn open_book(path: String, state: tauri::State<'_, AppState>) -> Result<OpenedBook, String> {
+async fn open_book(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> crate::error::Result<OpenedBook> {
     let source = std::path::Path::new(&path);
-    let opener = openers::opener_for(source)
-        .ok_or_else(|| format!("unsupported file: {path}"))?;
+    let opener = openers::opener_for(source).ok_or_else(|| format!("unsupported file: {path}"))?;
     let is_pdf = opener.format_id() == PDF_FORMAT;
     let imported = portable::import_book(source).map_err(|e| e.to_string())?;
     let book = opener.open(&imported).map_err(|e| e.to_string())?;
     let mut metadata = book.metadata();
     let library = portable::library_dir().ok();
-    let key = progress_key(
-        &imported,
-        &metadata.identifiers,
-        library.as_deref(),
-    );
+    let key = progress_key(&imported, &metadata.identifiers, library.as_deref());
     let progress = state
         .progress
         .lock()
@@ -123,7 +124,9 @@ async fn open_book(path: String, state: tauri::State<'_, AppState>) -> Result<Op
                 s.rev != rev
                     || s.analysis_kind != book_signals::ANALYSIS_KIND
                     || (is_pdf && s.pdf.is_none())
-                    || (!is_pdf && (s.chapter_chars.is_empty() || s.chapter_chars_kind != book_signals::CHAPTER_CHARS_PER_SPINE))
+                    || (!is_pdf
+                        && (s.chapter_chars.is_empty()
+                            || s.chapter_chars_kind != book_signals::CHAPTER_CHARS_PER_SPINE))
             }
         };
         if need {
@@ -148,8 +151,10 @@ async fn open_book(path: String, state: tauri::State<'_, AppState>) -> Result<Op
     let chapter_chars = if is_pdf {
         vec![1u64; spine.len()]
     } else {
-        book_signals::read_all()
-            .get(&file_name)
+        // Reuse the signals read above instead of parsing book-signals.json a
+        // second time (the background analysis cannot finish before this returns).
+        cached_signals
+            .as_ref()
             .map(|s| s.chapter_chars.clone())
             .unwrap_or_default()
     };
@@ -218,7 +223,11 @@ fn unix_now() -> i64 {
 fn local_iso(secs: i64) -> String {
     use chrono::{DateTime, Local};
     DateTime::from_timestamp(secs, 0)
-        .map(|d| d.with_timezone(&Local).format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+        .map(|d| {
+            d.with_timezone(&Local)
+                .format("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string()
+        })
         .unwrap_or_default()
 }
 
@@ -269,7 +278,7 @@ fn read_notes_text(file_name: &str) -> String {
 }
 
 /// 写某本书的 notes.md；空内容 = 移除档案文件。
-fn write_notes_text(file_name: &str, text: &str) -> Result<(), String> {
+fn write_notes_text(file_name: &str, text: &str) -> crate::error::Result<()> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     let path = notes::notes_path_for(&dir, file_name)?;
     if text.trim().is_empty() {
@@ -296,14 +305,20 @@ struct NoteView {
 }
 
 #[tauri::command]
-fn list_annotations(key: String, state: tauri::State<'_, AppState>) -> Result<Vec<Highlight>, String> {
+fn list_annotations(
+    key: String,
+    state: tauri::State<'_, AppState>,
+) -> crate::error::Result<Vec<Highlight>> {
     state
         .annotations
         .lock()
-        .map_err(|e| e.to_string())
+        .map_err(|e| Error::msg(e.to_string()))
         .map(|store| store.list(&key))
 }
 
+// Flat IPC payload: the field names are the frontend contract, so they stay
+// individual arguments rather than being wrapped in a struct.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn add_annotation(
     key: String,
@@ -316,7 +331,7 @@ fn add_annotation(
     color: String,
     pos: f64,
     state: tauri::State<'_, AppState>,
-) -> Result<Highlight, String> {
+) -> crate::error::Result<Highlight> {
     // 颜色规范化：只认 yellow/green，其余归默认黄（存储 key 即 ::highlight 名）。
     let color = if color == COLOR_GREEN {
         COLOR_GREEN.to_string()
@@ -352,12 +367,11 @@ fn delete_annotation(
     key: String,
     id: String,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> crate::error::Result<()> {
     let text = read_notes_text(&file_name);
     if !text.is_empty() {
         let now = unix_now();
-        if let Some(updated) = notes::mark_deleted(&text, &id, &local_iso(now), &local_human(now))
-        {
+        if let Some(updated) = notes::mark_deleted(&text, &id, &local_iso(now), &local_human(now)) {
             write_notes_text(&file_name, &updated)?;
         }
     }
@@ -380,7 +394,7 @@ fn save_note(
     id: String,
     note: String,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> crate::error::Result<()> {
     // 划线必须在当前书里；章归属需要打开的书（spine 标题）。
     let rec = state
         .annotations
@@ -401,7 +415,8 @@ fn save_note(
                 .clone()
         };
         let spine = book.spine();
-        let idx = spine_index_for(&spine, &rec.href).ok_or_else(|| "无法定位划线章节".to_string())?;
+        let idx =
+            spine_index_for(&spine, &rec.href).ok_or_else(|| "无法定位划线章节".to_string())?;
         let total = spine.len();
         let title = spine[idx]
             .title
@@ -414,7 +429,13 @@ fn save_note(
         } else {
             title
         };
-        let section = format!("## 第 {} 章 · {}（{}/{}）", idx + 1, title_show, idx + 1, total);
+        let section = format!(
+            "## 第 {} 章 · {}（{}/{}）",
+            idx + 1,
+            title_show,
+            idx + 1,
+            total
+        );
         let created_iso = local_iso(rec.created_at);
         let created_human = local_human(rec.created_at);
         let excerpt = format!(
@@ -442,7 +463,10 @@ fn save_note(
         format!("color: {}", rec.color),
         format!("created: {created_iso}"),
         "deleted:".to_string(),
-        format!("posPct: {}", (rec.pos.clamp(0.0, 1.0) * 100.0).round() as u32),
+        format!(
+            "posPct: {}",
+            (rec.pos.clamp(0.0, 1.0) * 100.0).round() as u32
+        ),
         notes::NOTE_CLOSE.to_string(),
     ];
     let entry = notes::NoteEntry {
@@ -458,7 +482,7 @@ fn save_note(
 
 /// 读出整本 notes.md 的用户笔记（id → 笔记），供悬停浮层与划线列表。
 #[tauri::command]
-fn read_notes(file_name: String) -> Result<Vec<NoteView>, String> {
+fn read_notes(file_name: String) -> crate::error::Result<Vec<NoteView>> {
     let text = read_notes_text(&file_name);
     Ok(notes::notes_of(&text)
         .into_iter()
@@ -467,7 +491,11 @@ fn read_notes(file_name: String) -> Result<Vec<NoteView>, String> {
 }
 
 #[tauri::command]
-async fn get_chapter(id: String, href: String, state: tauri::State<'_, AppState>) -> Result<ChapterView, String> {
+async fn get_chapter(
+    id: String,
+    href: String,
+    state: tauri::State<'_, AppState>,
+) -> crate::error::Result<ChapterView> {
     // Take the book out of the map and drop the lock before laying out: for a
     // PDF this call rasterises a page (up to ~1.7 s on a heavy first page).
     let book = {
@@ -479,9 +507,7 @@ async fn get_chapter(id: String, href: String, state: tauri::State<'_, AppState>
     };
     let is_pdf = book.format_id() == PDF_FORMAT;
     let base = protocol::resource_base(&id);
-    let html = book
-        .chapter_html(&href, &base)
-        .map_err(|e| e.to_string())?;
+    let html = book.chapter_html(&href, &base).map_err(|e| e.to_string())?;
     // A PDF page document is our own and carries no CSS, so the publisher
     // font report comes back empty either way.
     let publisher_fonts = collect_publisher_fonts(&html, &base, &href, |res_href| {
@@ -528,7 +554,7 @@ fn save_progress(
     href: String,
     fraction: f64,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> crate::error::Result<()> {
     state
         .progress
         .lock()
@@ -541,7 +567,7 @@ fn save_progress(
                 cfi: None,
             },
         )
-        .map_err(|e| e.to_string())
+        .map_err(Error::from)
 }
 
 #[tauri::command]
@@ -550,7 +576,7 @@ fn resource_origin() -> String {
 }
 
 #[tauri::command]
-fn get_font_settings(state: tauri::State<'_, AppState>) -> Result<FontSettingsView, String> {
+fn get_font_settings(state: tauri::State<'_, AppState>) -> crate::error::Result<FontSettingsView> {
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
     Ok(settings.view())
 }
@@ -559,7 +585,7 @@ fn get_font_settings(state: tauri::State<'_, AppState>) -> Result<FontSettingsVi
 fn set_use_original_fonts(
     use_original_fonts: bool,
     state: tauri::State<'_, AppState>,
-) -> Result<FontSettingsView, String> {
+) -> crate::error::Result<FontSettingsView> {
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
     settings
         .set_use_original_fonts(use_original_fonts)
@@ -571,7 +597,7 @@ fn set_use_original_fonts(
 fn set_font_scale(
     font_scale: u32,
     state: tauri::State<'_, AppState>,
-) -> Result<FontSettingsView, String> {
+) -> crate::error::Result<FontSettingsView> {
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
     settings
         .set_font_scale(font_scale)
@@ -584,7 +610,7 @@ fn install_font(
     slot: String,
     path: String,
     state: tauri::State<'_, AppState>,
-) -> Result<FontSettingsView, String> {
+) -> crate::error::Result<FontSettingsView> {
     let slot = FontSlot::parse(&slot).ok_or_else(|| "未知字体槽位".to_string())?;
     let file = fonts::copy_into_slot(slot, std::path::Path::new(&path))?;
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
@@ -593,7 +619,10 @@ fn install_font(
 }
 
 #[tauri::command]
-fn clear_font(slot: String, state: tauri::State<'_, AppState>) -> Result<FontSettingsView, String> {
+fn clear_font(
+    slot: String,
+    state: tauri::State<'_, AppState>,
+) -> crate::error::Result<FontSettingsView> {
     let slot = FontSlot::parse(&slot).ok_or_else(|| "未知字体槽位".to_string())?;
     let view = {
         let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
@@ -608,7 +637,9 @@ fn clear_font(slot: String, state: tauri::State<'_, AppState>) -> Result<FontSet
 /// (the expensive open + flattened TOC happens once per changed file); only
 /// the progress fields come from the live store.
 #[tauri::command]
-async fn list_library(state: tauri::State<'_, AppState>) -> Result<Vec<library::LibraryEntry>, String> {
+async fn list_library(
+    state: tauri::State<'_, AppState>,
+) -> crate::error::Result<Vec<library::LibraryEntry>> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     let progress = {
         let store = state.progress.lock().map_err(|e| e.to_string())?;
@@ -645,7 +676,7 @@ async fn list_library(state: tauri::State<'_, AppState>) -> Result<Vec<library::
 fn compare_books(
     file_names: Vec<String>,
     state: tauri::State<'_, AppState>,
-) -> Result<book_compare::Comparison, String> {
+) -> crate::error::Result<book_compare::Comparison> {
     if file_names.len() < 2 {
         return Err("至少需要两本同书才能对照".into());
     }
@@ -657,10 +688,7 @@ fn compare_books(
         let store = state.progress.lock().map_err(|e| e.to_string())?;
         store.snapshot()
     };
-    let mut cache = state
-        .library_meta
-        .lock()
-        .map_err(|e| e.to_string())?;
+    let mut cache = state.library_meta.lock().map_err(|e| e.to_string())?;
     let entries =
         library::list_library_cached(&dir, &progress, &mut cache, &book_signals::read_all());
     drop(cache);
@@ -680,14 +708,14 @@ fn compare_books(
             return Err("PDF 暂不参与同书对照".into());
         }
         let Some(entry) = entries.iter().find(|e| &e.file_name == file_name) else {
-            return Err(format!("不在书库中：{file_name}"));
+            return Err(format!("不在书库中：{file_name}").into());
         };
         let path = dir.join(file_name);
         if !path.is_file() {
-            return Err(format!("不在书库中：{file_name}"));
+            return Err(format!("不在书库中：{file_name}").into());
         }
         if entry.open_error.is_some() {
-            return Err(format!("打不开：{file_name}"));
+            return Err(format!("打不开：{file_name}").into());
         }
 
         // Cached signals only count for the file revision they were computed
@@ -718,7 +746,7 @@ fn compare_books(
 fn get_book_meta(
     file_name: String,
     state: tauri::State<'_, AppState>,
-) -> Result<book_meta::BookMetaView, String> {
+) -> crate::error::Result<book_meta::BookMetaView> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     let md_path = library::meta_path_for(&dir, &file_name)?;
     let path = dir.join(&file_name);
@@ -740,7 +768,7 @@ fn get_book_meta(
 async fn reread_book_meta(
     file_name: String,
     state: tauri::State<'_, AppState>,
-) -> Result<book_meta::BookMetaView, String> {
+) -> crate::error::Result<book_meta::BookMetaView> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     let md_path = library::meta_path_for(&dir, &file_name)?;
     let path = dir.join(&file_name);
@@ -757,7 +785,11 @@ async fn reread_book_meta(
         .unwrap_or_else(|| profile.title.clone());
     let book = openers::open_any(&path).map_err(|e| e.to_string())?;
     let metadata = book.metadata();
-    Ok(book_meta::reread_view_for(&profile, &original_title, &metadata))
+    Ok(book_meta::reread_view_for(
+        &profile,
+        &original_title,
+        &metadata,
+    ))
 }
 
 /// Save one book's metadata to its companion md. Creates the md on first save
@@ -768,7 +800,7 @@ async fn set_book_meta(
     file_name: String,
     fields: book_meta::BookMetaFields,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> crate::error::Result<()> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     let md_path = library::meta_path_for(&dir, &file_name)?;
     let path = dir.join(&file_name);
@@ -871,7 +903,8 @@ async fn set_book_meta(
         isbn: clean_title(&fields.isbn),
         display_title: clean_title(&fields.display_title),
     };
-    write_meta_file(&final_md_path, &meta).map_err(|e| e.to_string())
+    write_meta_file(&final_md_path, &meta)?;
+    Ok(())
 }
 
 /// Remove a library book: its file first, then the progress and
@@ -881,7 +914,7 @@ fn delete_book(
     file_name: String,
     progress_key: String,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> crate::error::Result<()> {
     let dir = portable::library_dir().map_err(|e| e.to_string())?;
     library::delete_book_from(&dir, &file_name)?;
     state
@@ -910,16 +943,14 @@ fn delete_book(
 
 #[tauri::command]
 fn pending_book() -> Option<String> {
-    std::env::var("ICED_READER_OPEN").ok().filter(|p| !p.is_empty())
+    std::env::var("ICED_READER_OPEN")
+        .ok()
+        .filter(|p| !p.is_empty())
 }
 
 #[tauri::command]
-fn close_book(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state
-        .books
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(&id);
+fn close_book(id: String, state: tauri::State<'_, AppState>) -> crate::error::Result<()> {
+    state.books.lock().map_err(|e| e.to_string())?.remove(&id);
     Ok(())
 }
 
@@ -1033,7 +1064,10 @@ mod tests {
         let title = window_title("IcedReader");
         match option_env!("ICED_READER_GIT_HASH") {
             Some(hash) if !hash.is_empty() => {
-                assert_eq!(title, format!("IcedReader {} ({hash})", env!("CARGO_PKG_VERSION")));
+                assert_eq!(
+                    title,
+                    format!("IcedReader {} ({hash})", env!("CARGO_PKG_VERSION"))
+                );
             }
             _ => assert_eq!(title, format!("IcedReader {}", env!("CARGO_PKG_VERSION"))),
         }

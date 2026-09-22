@@ -21,7 +21,8 @@ pub const FAMILY_MONO: &str = "IcedReaderMono";
 const STYLE_MARKER: &str = "data-icedreader-fonts";
 
 /// Non-CJK codepoints so the serif/sans/mono files do not steal Han/kana/hangul.
-pub const LATIN_UNICODE_RANGE: &str = "U+0000-10FF, U+1200-2E7F, U+A000-A95F, U+A980-ABFF, U+FB00-FB4F, U+FE20-FE2F";
+pub const LATIN_UNICODE_RANGE: &str =
+    "U+0000-10FF, U+1200-2E7F, U+A000-A95F, U+A980-ABFF, U+FB00-FB4F, U+FE20-FE2F";
 
 /// Han, kana, hangul, CJK punctuation/fullwidth. No PUA, no Latin, no emoji.
 pub const CJK_UNICODE_RANGE: &str = "\
@@ -307,9 +308,7 @@ fn write_style_tag(html: &str, lower: &str, out: &mut String, from: usize, tag_a
     if html.as_bytes()[gt.saturating_sub(1)] == b'/' {
         return gt + 1;
     }
-    let close = lower[gt + 1..]
-        .find("</style>")
-        .map(|r| gt + 1 + r);
+    let close = lower[gt + 1..].find("</style>").map(|r| gt + 1 + r);
     let Some(close_at) = close else {
         let rewritten = rewrite_css_font_families(&html[gt + 1..]);
         out.push_str(&rewritten);
@@ -670,7 +669,10 @@ mod tests {
             .map(|part| {
                 let part = part.trim().trim_start_matches("U+");
                 if let Some((a, b)) = part.split_once('-') {
-                    (u32::from_str_radix(a, 16).unwrap(), u32::from_str_radix(b, 16).unwrap())
+                    (
+                        u32::from_str_radix(a, 16).unwrap(),
+                        u32::from_str_radix(b, 16).unwrap(),
+                    )
                 } else {
                     let v = u32::from_str_radix(part, 16).unwrap();
                     (v, v)
@@ -723,10 +725,22 @@ h1 { font-family: "PingFang SC", sans-serif !important; }
 "#;
         let out = rewrite_css_font_families(css);
         assert!(out.contains("/* font-family: serif; */"), "{out}");
-        assert!(out.contains("body { font-family: \"IcedReaderSerif\"; }"), "{out}");
-        assert!(out.contains(".ui { font-family: \"IcedReaderSans\"; }"), "{out}");
-        assert!(out.contains("code { font-family: \"IcedReaderMono\"; }"), "{out}");
-        assert!(out.contains("p { font-family: \"IcedReaderSerif\"; }"), "{out}");
+        assert!(
+            out.contains("body { font-family: \"IcedReaderSerif\"; }"),
+            "{out}"
+        );
+        assert!(
+            out.contains(".ui { font-family: \"IcedReaderSans\"; }"),
+            "{out}"
+        );
+        assert!(
+            out.contains("code { font-family: \"IcedReaderMono\"; }"),
+            "{out}"
+        );
+        assert!(
+            out.contains("p { font-family: \"IcedReaderSerif\"; }"),
+            "{out}"
+        );
         assert!(out.contains("em { font-family: inherit; }"), "{out}");
         assert!(
             out.contains("h1 { font-family: \"IcedReaderSans\" !important; }"),
@@ -741,7 +755,10 @@ h1 { font-family: "PingFang SC", sans-serif !important; }
         assert!(out.contains("font: 12px/1.5 \"IcedReaderSerif\""), "{out}");
         let css = r#"p { font: italic 700 14px sans-serif; }"#;
         let out = rewrite_css_font_families(css);
-        assert!(out.contains("font: italic 700 14px \"IcedReaderSans\""), "{out}");
+        assert!(
+            out.contains("font: italic 700 14px \"IcedReaderSans\""),
+            "{out}"
+        );
     }
 
     #[test]
@@ -751,8 +768,14 @@ h1 { font-family: "PingFang SC", sans-serif !important; }
 body { font-family: "MyEmb", serif; }
 "#;
         let out = rewrite_css_font_families(css);
-        assert!(out.contains("@font-face { font-family: \"MyEmb\"; src: url(x.ttf); }"), "{out}");
-        assert!(out.contains("body { font-family: \"IcedReaderSerif\"; }"), "{out}");
+        assert!(
+            out.contains("@font-face { font-family: \"MyEmb\"; src: url(x.ttf); }"),
+            "{out}"
+        );
+        assert!(
+            out.contains("body { font-family: \"IcedReaderSerif\"; }"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -761,7 +784,10 @@ body { font-family: "MyEmb", serif; }
         // 关键字探测不能切在多字节字符中间（史记曾在此 panic）。
         let css = "正文 { font-family: 宋体, serif; }\np { font: 12px 宋体, serif; }\n";
         let out = rewrite_css_font_families(css);
-        assert!(out.contains("正文 { font-family: \"IcedReaderSerif\"; }"), "{out}");
+        assert!(
+            out.contains("正文 { font-family: \"IcedReaderSerif\"; }"),
+            "{out}"
+        );
         assert!(out.contains("font: 12px \"IcedReaderSerif\""), "{out}");
         let html = format!("<html><head><style>{css}</style></head><body>正文</body></html>");
         assert!(rewrite_html_fonts(&html).contains("IcedReaderSerif"));
@@ -798,7 +824,12 @@ body { font-family: "MyEmb", serif; }
             &urls,
         );
         let ours = with_book.find(STYLE_MARKER).expect("injected");
-        let book = with_book.find("IcedReaderSans").expect("rewritten book css");
-        assert!(ours < book, "reader @font-face must precede publisher CSS so body sans still wins");
+        let book = with_book
+            .find("IcedReaderSans")
+            .expect("rewritten book css");
+        assert!(
+            ours < book,
+            "reader @font-face must precede publisher CSS so body sans still wins"
+        );
     }
 }

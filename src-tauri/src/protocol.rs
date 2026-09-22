@@ -94,11 +94,18 @@ pub fn handle<R: tauri::Runtime>(
     match fetched {
         Ok(Fetch::Html(html)) => {
             let html = apply_html(html, &state);
-            cors(StatusCode::OK, "text/html; charset=utf-8", html.into_bytes())
+            cors(
+                StatusCode::OK,
+                "text/html; charset=utf-8",
+                html.into_bytes(),
+            )
         }
         Ok(Fetch::Resource { media, data, href }) => {
             let data = if media.to_ascii_lowercase().contains("css")
-                || href.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("css"))
+                || href
+                    .rsplit('.')
+                    .next()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("css"))
             {
                 apply_css(data, &state)
             } else {
@@ -166,10 +173,7 @@ fn serve_font<R: tauri::Runtime>(
     }
 }
 
-fn serve_library_cover(
-    file_name: &str,
-    state: &AppState,
-) -> tauri::http::Response<Vec<u8>> {
+fn serve_library_cover(file_name: &str, state: &AppState) -> tauri::http::Response<Vec<u8>> {
     let name = file_name.split(['#', '?']).next().unwrap_or(file_name);
     let path = match crate::library::library_cover_path(name) {
         Ok(p) => p,
@@ -177,14 +181,16 @@ fn serve_library_cover(
             return cors(
                 StatusCode::NOT_FOUND,
                 "text/plain; charset=utf-8",
-                err.into_bytes(),
+                err.to_string().into_bytes(),
             );
         }
     };
     let rev = crate::library::file_rev(&path);
     // Cache hit: serve the bytes.
     let cached = match state.covers.lock() {
-        Ok(cache) => cache.get(name, &rev).map(|(media, data)| (media.to_string(), data.to_vec())),
+        Ok(cache) => cache
+            .get(name, &rev)
+            .map(|(media, data)| (media.to_string(), data.to_vec())),
         Err(_) => None,
     };
     if let Some((media, data)) = cached {
@@ -275,8 +281,17 @@ fn cors(status: StatusCode, content_type: &str, body: Vec<u8>) -> tauri::http::R
     cors_cache(status, content_type, body, "no-store")
 }
 
-fn cors_cached(status: StatusCode, content_type: &str, body: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
-    cors_cache(status, content_type, body, "private, max-age=31536000, immutable")
+fn cors_cached(
+    status: StatusCode,
+    content_type: &str,
+    body: Vec<u8>,
+) -> tauri::http::Response<Vec<u8>> {
+    cors_cache(
+        status,
+        content_type,
+        body,
+        "private, max-age=31536000, immutable",
+    )
 }
 
 fn cors_cache(

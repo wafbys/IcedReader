@@ -81,11 +81,7 @@ impl AnnotationStore {
         if !key.starts_with("lib:") {
             return self.by_book.get(key).cloned().unwrap_or_default();
         }
-        let mut keys: Vec<&String> = self
-            .by_book
-            .keys()
-            .filter(|k| same_book(k, key))
-            .collect();
+        let mut keys: Vec<&String> = self.by_book.keys().filter(|k| same_book(k, key)).collect();
         keys.sort();
         let mut out = Vec::new();
         for k in keys {
@@ -313,7 +309,9 @@ mod tests {
         store.add("lib:bar.epub".into(), hl("c", 2, 0)).unwrap();
         store.add("id:x".into(), hl("d", 3, 0)).unwrap();
 
-        store.rename_book("lib:foo.epub", "lib:新书名.epub").unwrap();
+        store
+            .rename_book("lib:foo.epub", "lib:新书名.epub")
+            .unwrap();
         let mut ids: Vec<String> = store
             .list("lib:新书名.epub")
             .iter()
@@ -327,7 +325,9 @@ mod tests {
         assert_eq!(store.list("id:x").len(), 1);
 
         // Missing key → no-op.
-        store.rename_book("lib:missing.epub", "lib:new.epub").unwrap();
+        store
+            .rename_book("lib:missing.epub", "lib:new.epub")
+            .unwrap();
         // Non-lib keys untouched (callers should skip them anyway).
         store.rename_book("id:x", "id:y").unwrap();
         assert!(store.list("id:x").len() == 1);

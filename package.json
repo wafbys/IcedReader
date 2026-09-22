@@ -1,13 +1,19 @@
 {
   "name": "iced-reader",
   "private": true,
-  "version": "0.11.0",
+  "version": "0.14.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "typecheck": "tsc --noEmit",
+    "check:ui": "node ui/src/pdfPaging.check.ts",
+    "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",
+    "lint": "npm run typecheck && npm run lint:rust",
+    "test:rust": "cargo test --workspace",
+    "test": "npm run check:ui && npm run test:rust"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
