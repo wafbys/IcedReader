@@ -983,9 +983,17 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             doc.addEventListener("mouseover", onDocMouseOver);
             doc.addEventListener("mousemove", onDocMouseMove);
 
+            // Coalesce resize ticks to one relayout per frame: `paint` forces
+            // layout (`offsetHeight`, Range.getBoundingClientRect), and dragging
+            // a window fires many observer callbacks per frame.
+            let roRaf: number | null = null;
             const ro = new ResizeObserver(() => {
-              if (!live()) return;
-              paint(true);
+              if (!live() || roRaf !== null) return;
+              roRaf = requestAnimationFrame(() => {
+                roRaf = null;
+                if (!live()) return;
+                paint(true);
+              });
             });
             ro.observe(box);
             if (hostRef.current) ro.observe(hostRef.current);
@@ -995,6 +1003,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
                 cancelAnimationFrame(hlCheckRaf.current);
                 hlCheckRaf.current = null;
               }
+              if (roRaf !== null) cancelAnimationFrame(roRaf);
               ro.disconnect();
               doc.removeEventListener("wheel", onDocWheel);
               doc.removeEventListener("mouseup", onDocMouseUp);

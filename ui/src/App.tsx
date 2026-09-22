@@ -1085,7 +1085,7 @@ export default function App() {
                 给纸带的 spread 恒为 single——不然在适应页面选了双页、再切过来，
                 会得到控制项看不见却已经并排的两张纸。 */}
             {pdfFit === "page" && (
-              <div className="zoom-mode" role="group" aria-label="PDF 张数">
+              <div className="zoom-mode chrome-more" role="group" aria-label="PDF 张数">
                 <button
                   type="button"
                   className={`btn ghost small${pdfSpread === "auto" ? " on" : ""}`}
@@ -1188,6 +1188,35 @@ export default function App() {
                 >
                   目录
                 </button>
+                {/* 窄窗时顶栏放不下 PDF 张数（自动/单页/双页），收进这里；
+                    宽窗顶栏直接显示，这组菜单项由 CSS 隐藏。 */}
+                {isPdf && pdfFit === "page" && (
+                  <div className="top-menu-group" role="group" aria-label="PDF 张数">
+                    <span className="top-menu-cap">张数</span>
+                    {(
+                      [
+                        ["auto", "自动", "按页面比例自动：横向空间够就并排两页"],
+                        ["single", "单页", "一次一张纸"],
+                        ["double", "双页", "书式跨页：封面单独，之后 2-3、4-5 成对"],
+                      ] as const
+                    ).map(([mode, label, hint]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        role="menuitem"
+                        aria-pressed={pdfSpread === mode}
+                        className={pdfSpread === mode ? "on" : ""}
+                        title={hint}
+                        onClick={() => {
+                          setPdfSpread(mode);
+                          setTopMenuOpen(false);
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {!isPdf && (
                   <button
                     type="button"
