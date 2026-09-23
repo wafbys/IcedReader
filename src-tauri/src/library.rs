@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::book_signals;
 use crate::openers;
 use crate::portable;
+use crate::recycle;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -613,6 +614,9 @@ pub fn rename_book_files(
 /// Delete one library book file. Only a plain file name inside `dir` is
 /// accepted (no separators / `..`), mirroring `library_cover_path`. The caller
 /// is responsible for clearing the book's progress/annotation records.
+///
+/// The book, its companion `.md` metadata and its `.notes.md` archive are moved
+/// to the OS Recycle Bin (not hard-deleted), so the removal stays recoverable.
 pub fn delete_book_from(dir: &Path, file_name: &str) -> crate::error::Result<PathBuf> {
     let as_path = Path::new(file_name);
     if file_name.is_empty()
@@ -626,11 +630,11 @@ pub fn delete_book_from(dir: &Path, file_name: &str) -> crate::error::Result<Pat
     if !path.is_file() {
         return Err("书不在书库中".into());
     }
-    fs::remove_file(&path)?;
-    // The companion md (user metadata) dies with the book; missing is fine.
-    let _ = fs::remove_file(meta_path_for(dir, file_name)?);
-    // The notes archive (划线+备注) dies with the book too.
-    let _ = fs::remove_file(notes_path_for(dir, file_name)?);
+    recycle::send(&path)?;
+    // The companion md (user metadata) goes to the bin with the book; missing is fine.
+    let _ = recycle::send(&meta_path_for(dir, file_name)?);
+    // The notes archive (划线+备注) goes to the bin too — it holds user notes.
+    let _ = recycle::send(&notes_path_for(dir, file_name)?);
     Ok(path)
 }
 

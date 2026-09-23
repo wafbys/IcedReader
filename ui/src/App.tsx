@@ -512,7 +512,7 @@ export default function App() {
   const deleteBook = useCallback(
     async (entry: LibraryEntry) => {
       const confirmed = await ask(
-        `确定从书库删除《${entry.title}》吗？\n将同时删除这本书的阅读进度和划线。`,
+        `确定从书库删除《${entry.title}》吗？\n书文件（含元数据、备注）会移到系统回收站，\n阅读进度与划线会一并清除。`,
         {
           title: "删除书籍",
           kind: "warning",

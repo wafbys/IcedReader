@@ -8,6 +8,7 @@ mod notes;
 mod openers;
 mod portable;
 mod protocol;
+mod recycle;
 mod window_state;
 
 use std::collections::HashMap;
