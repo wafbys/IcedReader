@@ -96,8 +96,10 @@ type Props = {
     href: string,
     anchor: HighlightAnchor,
     color: string,
-    pos: number,
+    pos: number | null,
   ) => Promise<void>;
+  /** Backfill a highlight's `pos` once the chapter weights are known. */
+  onUpdateHighlightPos: (id: string, pos: number) => void;
   onDeleteHighlight: (id: string) => Promise<void>;
   /** 备注正文 (notes.md 用户区) id → 文本；供 hover 浮层与列表。 */
   notesById: Record<string, string>;
@@ -192,6 +194,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     highlights,
     chapterHref,
     onCreateHighlight,
+    onUpdateHighlightPos,
     onDeleteHighlight,
     notesById,
     onSaveNote,
@@ -238,6 +241,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   highlightsRef.current = highlights;
   const onCreateHighlightRef = useRef(onCreateHighlight);
   onCreateHighlightRef.current = onCreateHighlight;
+  const onUpdateHighlightPosRef = useRef(onUpdateHighlightPos);
+  onUpdateHighlightPosRef.current = onUpdateHighlightPos;
   const onDeleteHighlightRef = useRef(onDeleteHighlight);
   onDeleteHighlightRef.current = onDeleteHighlight;
   const onSaveNoteRef = useRef(onSaveNote);
@@ -260,6 +265,9 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
 
   const wheelLock = useRef(false);
   const appliedRef = useRef<AppliedSpan[]>([]);
+  /** Highlight ids whose `pos` backfill was already requested: the write is
+   *  async, so without this a repaint would re-issue it every render. */
+  const reconciledPos = useRef<Set<string>>(new Set());
   const paintedRef = useRef<{ doc: Document | null; hl: readonly HighlightRecord[] | null }>({
     doc: null,
     hl: null,
@@ -617,6 +625,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       : 0;
     applyPage(page, false);
     tryLocate();
+    reconcilePositions();
     const frag = pendingFragRef.current;
     if (frag) {
       jumpToFragment(doc, frag);
@@ -672,6 +681,12 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     const f = docForRef.current;
     if (f.href === chapterHref) paintDoc();
   }, [highlights, chapterHref]);
+
+  // 权重（bookPos）或划线变化时，给还没有 pos 的划线补上全书位置。
+  useEffect(() => {
+    reconcilePositions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlights, bookPos, chapterHref]);
 
   useEffect(() => {
     if (pendingHighlight) {
@@ -751,15 +766,40 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   /** Whole-book position (0–1) of an anchor's start char, from this
    *  chapter's first char offset (`bookPos.start`) and the chapter's own text
    *  node chars — the same raw-visible-text regime as the Rust weights. */
-  const computeAnchorPos = (anchor: HighlightAnchor): number => {
+  const computeAnchorPos = (anchor: HighlightAnchor): number | null => {
     const doc = iframeRef.current?.contentDocument;
     const bp = bookPosRef.current;
-    if (!doc || !bp || bp.total <= 0) return 0;
+    if (!doc || !bp || bp.total <= 0) return null;
     const texts = collectTexts(doc);
     const prefix = textPrefix(texts);
+    if (anchor.start.seq < 0 || anchor.start.seq >= texts.length) return null;
     const from = charOfPoint(prefix, anchor.start);
-    if (from === null) return 0;
     return Math.min(1, Math.max(0, (bp.start + from) / bp.total));
+  };
+
+  /**
+   * Backfill `pos` for highlights of this chapter that were stroked before the
+   * chapter weights arrived (`pos: null`, a fresh import's first open). Runs
+   * after each relayout and whenever the weights or the highlight list change.
+   * Ids are remembered so the async round-trip cannot re-issue the write.
+   */
+  const reconcilePositions = () => {
+    const bp = bookPosRef.current;
+    const doc = docForRef.current.doc;
+    if (!bp || bp.total <= 0 || !doc?.body || !layout.current.metrics) return;
+    const texts = collectTexts(doc);
+    const prefix = textPrefix(texts);
+    for (const rec of highlightsRef.current) {
+      if (rec.pos !== null || reconciledPos.current.has(rec.id)) continue;
+      if (rec.startText < 0 || rec.startText >= texts.length) continue;
+      const node = texts[rec.startText];
+      const from =
+        prefix[rec.startText] +
+        Math.min(Math.max(0, rec.startOffset), node.data.length);
+      const pos = Math.min(1, Math.max(0, (bp.start + from) / bp.total));
+      reconciledPos.current.add(rec.id);
+      onUpdateHighlightPosRef.current(rec.id, pos);
+    }
   };
 
   const doCreate = async (href: string, anchor: HighlightAnchor) => {

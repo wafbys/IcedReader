@@ -34,8 +34,9 @@ export type Locator = {
  * `color` is chosen at stroke time and never edited afterwards (换色 = 删除
  * 重划): yellow = 重点 (default), green = 摘抄. `pos` is the whole-book
  * position 0–1 from per-chapter raw visible-text char weights (same char
- * regime as the front-end text nodes), written into notes.md and used by
- * 按位置跳转.
+ * regime as the front-end text nodes), written into notes.md. It is `null`
+ * when the weights are not known yet (a fresh import's first open) and is
+ * backfilled by `set_annotation_pos` once they arrive — never faked as 0.
  */
 export type HighlightRecord = {
   id: string;
@@ -46,7 +47,7 @@ export type HighlightRecord = {
   endOffset: number;
   text: string;
   color: string;
-  pos: number;
+  pos: number | null;
   createdAt: number;
 };
 

@@ -35,9 +35,11 @@ pub struct Highlight {
     pub color: String,
     /// Whole-book position 0–1 computed by the caller from per-chapter raw
     /// visible-text char weights (same char regime as the front-end text
-    /// nodes). Written into notes.md and used by 按位置跳转.
+    /// nodes). `None` while those weights are unknown (a freshly imported
+    /// book's first-open analysis still running) — never invent `0.0`, which
+    /// would read as "at the very start". Written into notes.md.
     #[serde(default)]
-    pub pos: f64,
+    pub pos: Option<f64>,
     pub created_at: i64,
 }
 
@@ -139,6 +141,41 @@ impl AnnotationStore {
             self.persist()?;
         }
         Ok(removed)
+    }
+
+    /// Fill in one highlight's whole-book position once the weights are known
+    /// (a stroke made before the first-import analysis finished). `lib:` looks
+    /// across stem aliases, mirroring [`Self::remove`]. Returns whether any
+    /// record changed; a record that already has the value is a no-op.
+    pub fn set_pos(&mut self, key: &str, id: &str, pos: f64) -> Result<bool, CoreError> {
+        let pos = pos.clamp(0.0, 1.0);
+        let keys: Vec<String> = if key.starts_with("lib:") {
+            self.by_book
+                .keys()
+                .filter(|k| same_book(k, key))
+                .cloned()
+                .collect()
+        } else if self.by_book.contains_key(key) {
+            vec![key.to_string()]
+        } else {
+            return Ok(false);
+        };
+        let mut changed = false;
+        for k in keys {
+            let Some(list) = self.by_book.get_mut(&k) else {
+                continue;
+            };
+            if let Some(h) = list.iter_mut().find(|h| h.id == id) {
+                if h.pos != Some(pos) {
+                    h.pos = Some(pos);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.persist()?;
+        }
+        Ok(changed)
     }
 
     fn fold_lib_aliases_into(&mut self, canonical: &str) {
@@ -251,7 +288,7 @@ mod tests {
             end_offset: start_offset + 5,
             text: "示例摘录……".into(),
             color: COLOR_YELLOW.into(),
-            pos: 0.25,
+            pos: Some(0.25),
             created_at: 100 + start_offset as i64,
         }
     }
@@ -409,7 +446,7 @@ mod tests {
     #[test]
     fn legacy_records_without_color_or_pos_read_with_defaults() {
         // Old annotations.json rows (pre colour/pos) must deserialise to
-        // yellow at position 0 rather than failing the whole store.
+        // yellow with no position rather than failing the whole store.
         let json = r#"{
   "lib:old.epub": [
     {
@@ -428,7 +465,33 @@ mod tests {
         let list = by_book.get("lib:old.epub").unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].color, COLOR_YELLOW);
-        assert_eq!(list[0].pos, 0.0);
+        assert_eq!(list[0].pos, None);
+    }
+
+    #[test]
+    fn set_pos_fills_a_highlight_once_weights_are_known() {
+        let mut store = AnnotationStore::in_memory();
+        store.add("lib:foo.epub".into(), hl("a", 0, 0)).unwrap();
+        let mut no_pos = hl("b", 1, 0);
+        no_pos.pos = None;
+        store.add("lib:foo.epub".into(), no_pos).unwrap();
+
+        assert!(store.set_pos("lib:foo.epub", "b", 0.42).unwrap());
+        let listed = store.list("lib:foo.epub");
+        assert_eq!(listed.iter().find(|h| h.id == "b").unwrap().pos, Some(0.42));
+        // Idempotent, and an unknown id is a no-op.
+        assert!(!store.set_pos("lib:foo.epub", "b", 0.42).unwrap());
+        assert!(!store.set_pos("lib:foo.epub", "missing", 0.5).unwrap());
+        // The `lib:` alias writes through to the canonical list.
+        assert_eq!(
+            store
+                .list("lib:foo-2.epub")
+                .iter()
+                .find(|h| h.id == "b")
+                .unwrap()
+                .pos,
+            Some(0.42)
+        );
     }
 
     #[test]
@@ -441,13 +504,13 @@ mod tests {
         let mut store = AnnotationStore::open(path.clone()).unwrap();
         let mut h = hl("a", 1, 2);
         h.color = COLOR_GREEN.into();
-        h.pos = 0.618;
+        h.pos = Some(0.618);
         store.add("k".into(), h.clone()).unwrap();
 
         let reloaded = AnnotationStore::open(path).unwrap();
         let got = &reloaded.list("k")[0];
         assert_eq!(got.color, COLOR_GREEN);
-        assert_eq!(got.pos, 0.618);
+        assert_eq!(got.pos, Some(0.618));
         assert_eq!(got.created_at, h.created_at);
     }
 }

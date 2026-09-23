@@ -718,9 +718,16 @@ fn provenance_axes(axes: &mut Vec<Axis>, inputs: &[CompareInput]) {
 
 /// Per-chapter table for the strip view. Needs the same 回目 and the same number
 /// of units; anything else and the alignment would be a guess.
+///
+/// `chapter_shas` is per **unique file** (a repeated file is hashed once) while
+/// `chapter_chars` is per **spine unit**. They only line up when every spine
+/// unit is its own file; a TOC-as-chapters book slices one file into many
+/// units, so zipping the two would mislabel the strip (F: 天津往事). Refuse
+/// rather than show a wrong alignment.
 fn chapter_diff(a: &BookSignals, b: &BookSignals) -> Option<ChapterDiff> {
     if a.chapter_shas.len() != b.chapter_shas.len()
         || a.chapter_chars.len() != b.chapter_chars.len()
+        || a.chapter_shas.len() != a.chapter_chars.len()
         || a.chapter_shas.is_empty()
         || toc_key(a) != toc_key(b)
     {
@@ -938,6 +945,22 @@ mod tests {
         let strip = c.chapter_diff.expect("same 回目 aligns");
         assert_eq!(strip.identical, vec![true, false]);
         assert_eq!(strip.deltas, vec![0, 60]);
+    }
+
+    /// TOC-as-chapters books reuse one file across many spine units, so
+    /// `chapter_shas` (per file) is shorter than `chapter_chars` (per unit).
+    /// The strip must be omitted instead of zipping misaligned arrays.
+    #[test]
+    fn chapter_strip_is_omitted_when_one_file_covers_many_spine_units() {
+        // One file sliced into three units: shas = 1, chars = 3.
+        let a = signals(&["a"], &["一"], &[10, 20, 30], 60);
+        let b = signals(&["b"], &["一"], &[10, 20, 35], 65);
+        let c = compare(&[input("a.epub", 1, a), input("b.epub", 1, b)]).unwrap();
+        assert_eq!(c.kind, RelationKind::SameEdition);
+        assert!(
+            c.chapter_diff.is_none(),
+            "per-file shas cannot align with per-unit chars"
+        );
     }
 
     /// One 回目 set inside the other = full vs abridged.

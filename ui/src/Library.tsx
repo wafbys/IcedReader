@@ -31,6 +31,15 @@ function bookTip(entry: LibraryEntry): string {
   return `${entry.title}\n大小 ${fmtBytes(entry.sizeBytes)}`;
 }
 
+/**
+ * `compare_books` 只支持 EPUB（PDF 的正文对照尚未实现，见 AGENTS「PDF（第一期：
+ * 只读）」）。PDF 的同书提示仍然有用（告诉你书架里还有同一本），但不能再当作
+ * 对照入口——点开会直接报错。判定与后端一致，按扩展名。
+ */
+function isPdfEntry(entry: LibraryEntry): boolean {
+  return entry.fileName.toLowerCase().endsWith(".pdf");
+}
+
 function progressLabel(entry: LibraryEntry): string {
   if (entry.openError) return "无法打开";
   const pct =
@@ -320,17 +329,25 @@ export default function Library({
             </button>
             {/* 同书提示做成面板入口。它必须是 .lib-info 的**兄弟**而不是子节点：
                 外面那个是 <button>，按钮里不能再嵌可点控件。 */}
-            {entry.duplicates.length > 0 && (
-              <button
-                type="button"
-                className="lib-dup"
-                disabled={busy}
-                title={`与以下书为同一本：\n${entry.duplicates.join("\n")}\n\n点开对照两版差别`}
-                onClick={() => onCompare(entry)}
-              >
-                同书 · 另有 {entry.duplicates.length} 本
-              </button>
-            )}
+            {entry.duplicates.length > 0 &&
+              (isPdfEntry(entry) ? (
+                <span
+                  className="lib-dup lib-dup-static"
+                  title={`与以下书为同一本：\n${entry.duplicates.join("\n")}\n\nPDF 暂不支持同书对照`}
+                >
+                  同书 · 另有 {entry.duplicates.length} 本
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="lib-dup"
+                  disabled={busy}
+                  title={`与以下书为同一本：\n${entry.duplicates.join("\n")}\n\n点开对照两版差别`}
+                  onClick={() => onCompare(entry)}
+                >
+                  同书 · 另有 {entry.duplicates.length} 本
+                </button>
+              ))}
           </li>
         ))}
       </ul>

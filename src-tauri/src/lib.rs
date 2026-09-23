@@ -329,7 +329,10 @@ fn add_annotation(
     end_offset: usize,
     text: String,
     color: String,
-    pos: f64,
+    // Whole-book position 0–1; `null` when the book's chapter weights are not
+    // known yet (first open of a fresh import). Never fake a `0.0` — the
+    // position is backfilled by `set_annotation_pos` once the weights arrive.
+    pos: Option<f64>,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<Highlight> {
     // 颜色规范化：只认 yellow/green，其余归默认黄（存储 key 即 ::highlight 名）。
@@ -347,11 +350,25 @@ fn add_annotation(
         end_offset,
         text,
         color,
-        pos: pos.clamp(0.0, 1.0),
+        pos: pos.map(|p| p.clamp(0.0, 1.0)),
         created_at: unix_now(),
     };
     state.annotations.lock()?.add(key, highlight.clone())?;
     Ok(highlight)
+}
+
+/// Backfill one highlight's whole-book position once the chapter weights have
+/// arrived (a stroke made while the first-import analysis was still running
+/// was stored with `pos: null`). Idempotent.
+#[tauri::command]
+fn set_annotation_pos(
+    key: String,
+    id: String,
+    pos: f64,
+    state: tauri::State<'_, AppState>,
+) -> crate::error::Result<()> {
+    state.annotations.lock()?.set_pos(&key, &id, pos)?;
+    Ok(())
 }
 
 /// 删除划线：正文记录移除；notes.md 里该条若存在（写过备注）则打删除时间
@@ -452,10 +469,7 @@ fn save_note(
         format!("color: {}", rec.color),
         format!("created: {created_iso}"),
         "deleted:".to_string(),
-        format!(
-            "posPct: {}",
-            (rec.pos.clamp(0.0, 1.0) * 100.0).round() as u32
-        ),
+        format!("posPct: {}", notes::pos_pct(rec.pos)),
         notes::NOTE_CLOSE.to_string(),
     ];
     let entry = notes::NoteEntry {
@@ -921,6 +935,37 @@ fn pending_book() -> Option<String> {
         .filter(|p| !p.is_empty())
 }
 
+/// Whole-book chapter weights for an EPUB whose first-import analysis was still
+/// running when it was opened. `open_book` reads them from the signals cache, so
+/// a freshly imported book comes back with none (its analysis runs in the
+/// background). The shelf's analysis fills `book-signals.json` a moment later;
+/// this returns the per-spine char counts then, and empty while it is still in
+/// flight. PDFs never need it (one page = one unit, weights set in `open_book`).
+#[tauri::command]
+fn chapter_weights(file_name: String) -> crate::error::Result<Vec<u64>> {
+    let as_path = std::path::Path::new(&file_name);
+    if file_name.is_empty()
+        || as_path
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err("无效的书名".into());
+    }
+    let dir = portable::library_dir()?;
+    let path = dir.join(as_path);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    // Only the current file revision counts, exactly like the shelf's grading.
+    let rev = library::file_rev(&path);
+    let all = book_signals::read_all();
+    Ok(all
+        .get(&file_name)
+        .filter(|s| s.rev == rev && s.chapter_chars_kind == book_signals::CHAPTER_CHARS_PER_SPINE)
+        .map(|s| s.chapter_chars.clone())
+        .unwrap_or_default())
+}
+
 #[tauri::command]
 fn close_book(id: String, state: tauri::State<'_, AppState>) -> crate::error::Result<()> {
     state.books.lock()?.remove(&id);
@@ -1004,10 +1049,12 @@ pub fn run() {
             delete_book,
             resource_origin,
             pending_book,
+            chapter_weights,
             get_chapter,
             save_progress,
             list_annotations,
             add_annotation,
+            set_annotation_pos,
             delete_annotation,
             save_note,
             read_notes,

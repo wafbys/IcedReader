@@ -155,10 +155,18 @@ export default function App() {
     cum[chars.length] = acc;
     return cum;
   }, [book?.chapterChars]);
-  const bookPos =
-    bookCum.length > 1 && bookCum[bookCum.length - 1] > 0
-      ? { start: bookCum[Math.min(index, bookCum.length - 2)], total: bookCum[bookCum.length - 1] }
-      : undefined;
+  // 稳定身份：否则每次 App 重渲染都会给 ChapterFrame 传一个新对象，
+  // 让它的「回填 pos」effect 白跑。
+  const bookPos = useMemo(
+    () =>
+      bookCum.length > 1 && bookCum[bookCum.length - 1] > 0
+        ? {
+            start: bookCum[Math.min(index, bookCum.length - 2)],
+            total: bookCum[bookCum.length - 1],
+          }
+        : undefined,
+    [bookCum, index],
+  );
   /** 当前阅读位置的全书百分比（页比例近似章内字符比例，用于显示与跳转）。 */
   const bookPercent = (() => {
     const total = bookCum.length > 1 ? bookCum[bookCum.length - 1] : 0;
@@ -194,7 +202,7 @@ export default function App() {
   }, [highlights, spine]);
 
   const createHighlight = useCallback(
-    async (href: string, anchor: HighlightAnchor, color: string, pos: number) => {
+    async (href: string, anchor: HighlightAnchor, color: string, pos: number | null) => {
       const b = bookRef.current;
       if (!b) return;
       try {
@@ -216,6 +224,18 @@ export default function App() {
     },
     [],
   );
+
+  /** 权重到齐后回填划线 pos（首开新书时的划线先以 null 落库，见 chapter_weights）。 */
+  const updateHighlightPos = useCallback(async (id: string, pos: number) => {
+    const b = bookRef.current;
+    if (!b) return;
+    try {
+      await invoke("set_annotation_pos", { key: b.progressKey, id, pos });
+      setHighlights((prev) => prev.map((h) => (h.id === id ? { ...h, pos } : h)));
+    } catch {
+      /* 回填失败不致命：下次打开这本书时仍可再试 */
+    }
+  }, []);
 
   const deleteHighlight = useCallback(async (id: string) => {
     const b = bookRef.current;
@@ -409,7 +429,48 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [book, requestHref, settingsRev]);
+    // 依赖 `book?.id`（而非整个 `book`）：下面回填 `chapterChars` 时 `book`
+    // 会换新对象，若依赖整个 `book` 会重新拉一次当前章（闪一下）。
+  }, [book?.id, requestHref, settingsRev]);
+
+  /**
+   * 首次导入的 EPUB 打开时后台分析还没跑完，`open_book` 读不到 `chapterChars`
+   * （全书% 与划线 pos 都靠它）。等 `book-signals.json` 写好后再取一次，期间
+   * 每 600ms 重试，最多约 8 秒；长度必须与当前 spine 对齐才采用。已在缓存里的
+   * 书首帧就有权重，这里直接返回。
+   */
+  useEffect(() => {
+    if (!book || book.format !== "epub" || book.chapterChars.length > 0) return;
+    const id = book.id;
+    const fileName = fileNameOf(book);
+    const spineLen = book.spine.length;
+    let cancelled = false;
+    let timer: number | null = null;
+    let tries = 0;
+    const tick = async () => {
+      tries += 1;
+      try {
+        const weights = await invoke<number[]>("chapter_weights", { fileName });
+        if (cancelled) return;
+        if (weights.length > 0 && weights.length === spineLen) {
+          setBook((prev) =>
+            prev && prev.id === id ? { ...prev, chapterChars: weights } : prev,
+          );
+          return;
+        }
+      } catch {
+        /* 分析还没写完 / 暂时读不到：继续等 */
+      }
+      if (cancelled || tries >= 12) return;
+      timer = window.setTimeout(() => void tick(), 600);
+    };
+    timer = window.setTimeout(() => void tick(), 400);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [book?.id]);
 
   const applyFonts = useCallback((next: FontSettings) => {
     setFonts(next);
@@ -1486,6 +1547,7 @@ export default function App() {
                 highlights={chapterHighlights}
                 chapterHref={current.href}
                 onCreateHighlight={createHighlight}
+                onUpdateHighlightPos={updateHighlightPos}
                 onDeleteHighlight={deleteHighlight}
                 notesById={notesById}
                 onSaveNote={saveNote}

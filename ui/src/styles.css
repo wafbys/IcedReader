@@ -976,6 +976,12 @@ body {
   opacity: 0.55;
 }
 
+/* PDF 的同书提示：保留「另有 N 本」的信息，但它不是对照入口
+   （compare_books 暂不支持 PDF），所以按静态文本呈现。 */
+.lib-dup-static {
+  cursor: default;
+}
+
 /* First-import analysis feedback (shown while open_book analyzes signals). */
 .lib-busy {
   padding: 10px 14px;

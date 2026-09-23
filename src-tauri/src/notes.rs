@@ -25,10 +25,24 @@ pub fn color_label(color: &str) -> &'static str {
     }
 }
 
-/// `pos` 0–1 → 「全书 N%」。
-pub fn pos_label(pos: f64) -> String {
-    let pct = (pos.clamp(0.0, 1.0) * 100.0).round() as u32;
-    format!("全书 {pct}%")
+/// `pos` 0–1 → 「全书 N%」；未知（权重还没算出来就划了线）→「位置未知」。
+pub fn pos_label(pos: Option<f64>) -> String {
+    match pos {
+        Some(pos) => {
+            let pct = (pos.clamp(0.0, 1.0) * 100.0).round() as u32;
+            format!("全书 {pct}%")
+        }
+        None => "位置未知".into(),
+    }
+}
+
+/// `pos` 0–1 → 整数百分比字符串（notes.md 注释块的机器字段 `posPct`）；
+/// 未知则空串，不写一个假的 0。
+pub fn pos_pct(pos: Option<f64>) -> String {
+    match pos {
+        Some(pos) => ((pos.clamp(0.0, 1.0) * 100.0).round() as u32).to_string(),
+        None => String::new(),
+    }
 }
 
 /// 一条划线的档案条目。`comment_lines` 是保护区注释块（首行
@@ -392,10 +406,11 @@ mod tests {
         assert_eq!(color_label("green"), "摘抄");
         assert_eq!(color_label("yellow"), "重点");
         assert_eq!(color_label("unknown"), "重点");
-        assert_eq!(pos_label(0.0), "全书 0%");
-        assert_eq!(pos_label(0.342), "全书 34%");
-        assert_eq!(pos_label(0.995), "全书 100%");
-        assert_eq!(pos_label(1.5), "全书 100%");
+        assert_eq!(pos_label(Some(0.0)), "全书 0%");
+        assert_eq!(pos_label(Some(0.342)), "全书 34%");
+        assert_eq!(pos_label(Some(0.995)), "全书 100%");
+        assert_eq!(pos_label(Some(1.5)), "全书 100%");
+        assert_eq!(pos_label(None), "位置未知");
     }
 
     #[test]
