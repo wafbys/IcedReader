@@ -17,10 +17,11 @@
 //!
 //! ## Cost
 //!
-//! Page rasters are served as **JPEG**: a page is a picture of text, PNG costs
-//! about as much as rasterising it and 5–10× the bytes. Every page request also
-//! queues its neighbours on a prefetch worker, so turning the page is a cache
-//! hit instead of 15–90 ms of rasterising plus encoding.
+//! Page rasters are served as **lossless WebP**: a page is a picture of text,
+//! so it must stay lossless, and WebP is 55–69% smaller than PNG for 5–8 ms
+//! more encode time. Every page request also queues its neighbours on a
+//! prefetch worker, so turning the page is a cache hit instead of 15–90 ms of
+//! rasterising plus encoding (JPEG was rejected: 6–9× slower *and* more bytes).
 //!
 //! The page HTML this adapter produces is deliberately bare — a single
 //! `<div id="iced-reader-pdf-page">` holding one or more `<img>` with their

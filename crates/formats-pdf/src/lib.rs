@@ -1,17 +1,18 @@
-//! PDF adapter — **spike stage** (see `docs/ideas/pdf.md`).
+//! PDF adapter — rasters pages with `hayro`, reads structure with `lopdf`
+//! (see `docs/ideas/pdf.md`).
 //!
-//! This crate deliberately does **not** implement `Book` / `BookOpener` yet.
-//! Before wiring PDF into the reader we have to answer three questions on real
-//! files, and this crate exists to answer them:
+//! [`PdfOpener`] implements `Book` / `BookOpener`: **one PDF page = one spine
+//! unit** (`page/NNNN`), and the reading shell lays the pages out as a
+//! continuous strip. This crate owns the parts the shell must not do itself:
+//! page count, Info metadata, outline tree, per-font embedding audit, page
+//! rasterisation (lossless WebP) with timing, and the in-memory raster cache /
+//! prefetcher.
 //!
-//! 1. does `hayro` build and render acceptably on Windows/MSVC (quality),
-//! 2. how often do real PDFs rely on **non-embedded** fonts (hayro cannot
-//!    resolve those: `FontQuery::Fallback` is not implemented upstream),
-//! 3. how long does one page take, and how big is the PNG (cache design).
-//!
-//! Everything the reader will eventually need is already here in seed form:
-//! page count, Info metadata, outline tree, per-font embedding audit, and
-//! page rasterisation with timing.
+//! The one real limitation is non-embedded fonts: `hayro` cannot resolve a
+//! font the file does not carry (`FontQuery::Fallback` is not implemented
+//! upstream), so [`PdfDoc::visible_text_risk`] tells the shell which pages may
+//! come out blank. Rasterisation quality and timings are recorded in
+//! `docs/ideas/pdf.md`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -139,12 +140,13 @@ pub struct PageContentStats {
 
 /// Encoding of a rasterised page.
 ///
-/// **PNG is the default, and measurably the right one.** The obvious guess —
-/// "a page is a picture, so use JPEG" — is wrong with this encoder: measured on
-/// the sample books at 1440 px, PNG encoding costs 4–21 ms while baseline JPEG
-/// costs **65–95 ms** (6–9× slower) for only ~2× fewer bytes. The reader is
-/// served by an in-process protocol, so bytes are cheap and encoder time is
-/// not. JPEG stays available for experiments.
+/// The reader serves **lossless WebP** (`RenderOptions::webp`). Measured at
+/// 1440 px on the sample books, encoding costs 5–8 ms more than PNG (20.3 vs
+/// 15.6 ms on a text page, 27.5 vs 19.8 ms on a scan) but produces 55–69% fewer
+/// bytes (498→224 KB, 1042→324 KB) — and those bytes are what the webview has
+/// to move and cache. The obvious guess — "a page is a picture, so use JPEG" —
+/// is wrong with this encoder: baseline JPEG costs **65–95 ms** (6–9× slower)
+/// for *more* bytes. PNG and JPEG stay available for experiments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PageFormat {
     #[default]
@@ -727,9 +729,10 @@ impl PdfDoc {
         let rgba = pixmap.data_as_u8_slice();
         let ink = ink_ratio(rgba);
 
-        // Encoding is not free: for a 1440×2159 page the PNG encoder is in the
-        // same order of magnitude as the rasteriser, which is why the reader
-        // serves JPEG by default (see `book.rs`) and why both halves are timed.
+        // Encoding is not free: for a 1440×2159 page the encoder is in the same
+        // order of magnitude as the rasteriser, which is why the reader serves
+        // lossless WebP by default (see `book.rs`) and why both halves are
+        // timed.
         let t_encode = Instant::now();
         let (data, format) = match opts.format {
             PageFormat::Png => {
@@ -944,7 +947,7 @@ fn pdf_text(obj: &Object) -> Option<String> {
 }
 
 #[cfg(test)]
-// Shared with ook.rs tests: the synthetic PDFs keep the suite runnable
+// Shared with `book.rs` tests: the synthetic PDFs keep the suite runnable
 // without committing any binary fixture.
 pub(crate) mod tests {
     use super::*;

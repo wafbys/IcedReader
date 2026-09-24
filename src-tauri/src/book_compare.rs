@@ -419,8 +419,15 @@ fn cover_bytes(s: &BookSignals) -> u64 {
         .saturating_sub(s.img_orphan_bytes)
 }
 
+/// True when the image reference breakdown is present **and trustworthy**: a
+/// pre-kind-3 cache has no breakdown at all, and a truncated scan (too many /
+/// too-large images) leaves the referenced/orphan split partial. Either way the
+/// per-copy numbers must not be scored — a missing measurement would otherwise
+/// read as zero and "win".
 fn has_breakdown(s: &BookSignals) -> bool {
     s.analysis_kind >= book_signals::REFERENCED_IMAGE_KIND
+        && !s.img_truncated
+        && !s.img_refs_truncated
 }
 
 /// Apparatus weight: 词注 if the book has them, else 上标注文.
@@ -586,35 +593,86 @@ fn apparatus_axes(axes: &mut Vec<Axis>, inputs: &[CompareInput]) {
     ));
 }
 
-fn packaging_axes(axes: &mut Vec<Axis>, inputs: &[CompareInput]) {
-    let orphan_bytes: Vec<f64> = inputs
-        .iter()
-        .map(|i| i.signals.img_orphan_bytes as f64)
-        .collect();
-    axes.push(axis(
-        "orphan_images",
-        "包内残留图",
-        AxisGroup::Packaging,
-        Some("没有任何文档引用的图（换掉的旧封面、推广图）——不是长处"),
-        &orphan_bytes,
-        inputs
+/// An "incomparable" packaging axis: one copy's measurement is missing (old
+/// cache) or partial (scan truncated). Show what the measured copies have,
+/// "—" for the rest, and mark every cell `Unknown` so nothing reads as a
+/// verdict. Built from partial data, never scored.
+fn incomparable_axis(
+    key: &'static str,
+    label: &'static str,
+    note: &str,
+    inputs: &[CompareInput],
+    display: impl Fn(&BookSignals) -> String,
+) -> Axis {
+    Axis {
+        key,
+        label,
+        group: AxisGroup::Packaging,
+        note: Some(note.to_string()),
+        cells: inputs
             .iter()
             .map(|i| {
-                format!(
-                    "{} 张 · {}",
-                    i.signals.img_orphan,
-                    fmt_bytes(i.signals.img_orphan_bytes)
-                )
+                let text = if has_breakdown(&i.signals) {
+                    display(&i.signals)
+                } else {
+                    "—".to_string()
+                };
+                Cell {
+                    display: text,
+                    num: None,
+                    mark: CellMark::Unknown,
+                }
             })
             .collect(),
-        Direction::Lower,
-        // Under 64KB is packaging noise; above it is a real difference.
-        Tolerance::Absolute(64.0 * 1024.0),
-    ));
+        verdict: Verdict::Incomparable,
+        winners: Vec::new(),
+    }
+}
+
+fn packaging_axes(axes: &mut Vec<Axis>, inputs: &[CompareInput]) {
+    // A copy whose image scan was truncated or whose cache predates the
+    // reference breakdown has partial / zeroed orphan & cover numbers; scoring
+    // those would let a missing measurement "win". Only judge when every copy
+    // is measured, else say "can't compare" (silent when none is).
+    let measured = inputs.iter().filter(|i| has_breakdown(&i.signals)).count();
+
+    if measured == inputs.len() {
+        let orphan_bytes: Vec<f64> = inputs
+            .iter()
+            .map(|i| i.signals.img_orphan_bytes as f64)
+            .collect();
+        axes.push(axis(
+            "orphan_images",
+            "包内残留图",
+            AxisGroup::Packaging,
+            Some("没有任何文档引用的图（换掉的旧封面、推广图）——不是长处"),
+            &orphan_bytes,
+            inputs
+                .iter()
+                .map(|i| {
+                    format!(
+                        "{} 张 · {}",
+                        i.signals.img_orphan,
+                        fmt_bytes(i.signals.img_orphan_bytes)
+                    )
+                })
+                .collect(),
+            Direction::Lower,
+            // Under 64KB is packaging noise; above it is a real difference.
+            Tolerance::Absolute(64.0 * 1024.0),
+        ));
+    } else if measured > 0 {
+        axes.push(incomparable_axis(
+            "orphan_images",
+            "包内残留图",
+            "没有任何文档引用的图（换掉的旧封面、推广图）——不是长处；有一本的图像测量不可用（旧版缓存或图像过多被截断）",
+            inputs,
+            |s| format!("{} 张 · {}", s.img_orphan, fmt_bytes(s.img_orphan_bytes)),
+        ));
+    }
 
     // Cover art is a packaging choice, not a merit — show it, never score it.
-    let with_breakdown = inputs.iter().filter(|i| has_breakdown(&i.signals)).count();
-    if with_breakdown == inputs.len() {
+    if measured == inputs.len() {
         let covers: Vec<f64> = inputs
             .iter()
             .map(|i| cover_bytes(&i.signals) as f64)
@@ -629,36 +687,14 @@ fn packaging_axes(axes: &mut Vec<Axis>, inputs: &[CompareInput]) {
             Direction::Presented,
             Tolerance::Exact,
         ));
-    } else if with_breakdown > 0 {
-        // Mixed cache generations (e.g. right after an upgrade): one copy has
-        // the measurement and the other does not. Say that, rather than
-        // printing a zero that would read as "no cover art".
-        axes.push(Axis {
-            key: "cover_bytes",
-            label: "封面 / 装帧图",
-            group: AxisGroup::Packaging,
-            note: Some("只被样式表引用的图；有一本的测量数据来自旧版缓存，无法比较".to_string()),
-            cells: inputs
-                .iter()
-                .map(|i| {
-                    if has_breakdown(&i.signals) {
-                        Cell {
-                            display: fmt_bytes(cover_bytes(&i.signals)),
-                            num: Some(cover_bytes(&i.signals) as f64),
-                            mark: CellMark::Unknown,
-                        }
-                    } else {
-                        Cell {
-                            display: "—".to_string(),
-                            num: None,
-                            mark: CellMark::Unknown,
-                        }
-                    }
-                })
-                .collect(),
-            verdict: Verdict::Incomparable,
-            winners: Vec::new(),
-        });
+    } else if measured > 0 {
+        axes.push(incomparable_axis(
+            "cover_bytes",
+            "封面 / 装帧图",
+            "只被样式表引用的图；有一本的图像测量不可用（旧版缓存或图像过多被截断），无法比较",
+            inputs,
+            |s| fmt_bytes(cover_bytes(s)),
+        ));
     }
 
     let sizes: Vec<f64> = inputs.iter().map(|i| i.size_bytes as f64).collect();

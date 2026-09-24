@@ -160,7 +160,7 @@ async fn open_book(
             .unwrap_or_default()
     };
     let warnings = if is_pdf {
-        pdf_warnings(&file_name, &rev, cached_signals.as_ref())
+        pdf_warnings(&rev, cached_signals.as_ref())
     } else {
         Vec::new()
     };
@@ -193,11 +193,7 @@ async fn open_book(
 /// Reads the **cached** analysis instead of opening the document again: the
 /// census costs ~1 s on a big book, and opening a book must not wait for it
 /// (the background analysis fills the cache; the next open shows the banner).
-fn pdf_warnings(
-    file_name: &str,
-    rev: &str,
-    cached: Option<&book_signals::BookSignals>,
-) -> Vec<String> {
+fn pdf_warnings(rev: &str, cached: Option<&book_signals::BookSignals>) -> Vec<String> {
     let fonts = cached
         .filter(|s| s.rev == rev)
         .and_then(|s| s.pdf.as_ref())
@@ -206,7 +202,6 @@ fn pdf_warnings(
     if fonts.is_empty() {
         return Vec::new();
     }
-    let _ = file_name;
     vec![format!(
         "此 PDF 的正文使用了未嵌入的字体（{}），这些页可能显示不全。",
         fonts.join("、")
@@ -726,12 +721,16 @@ fn compare_books(
         // Cached signals only count for the file revision they were computed
         // from — the same rule the shelf grades by.
         let rev = library::file_rev(&path);
-        let signals = book_signals::read_all()
+        let mut signals = book_signals::read_all()
             .get(file_name)
             .filter(|s| s.rev == rev && s.analysis_kind == book_signals::ANALYSIS_KIND)
             .cloned()
             .or_else(|| book_signals::analyze_path_now(&path, file_name, &rev))
             .ok_or_else(|| format!("无法分析：{file_name}"))?;
+        // Use the shelf's live identifier class, not the cache's: the shelf
+        // re-classifies from the current OPF (`library.rs`), so an old cache
+        // must not make the 标识符 axis disagree with the badge next to it.
+        signals.id_quality = entry.id_quality;
 
         inputs.push(book_compare::CompareInput {
             file_name: file_name.clone(),

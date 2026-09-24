@@ -230,9 +230,18 @@ fn enrich_and_sort(
     // sequence and near-equal total length (repacks that moved files around).
     // Group by heading sequence first, so this is O(bucket²) instead of O(shelf²)
     // — only books that already share a heading sequence are ever compared.
+    //
+    // `headings` is per unique file, so a single-file / TOC-as-chapters book
+    // has one entry (often a generic 第一章): a 1–2 entry "sequence" would
+    // bucket unrelated books together. Require a real TOC; such books still
+    // group by the primary chapter-text fingerprint above.
+    const MIN_HEADING_SEQUENCE: usize = 3;
     let mut by_headings: HashMap<&[String], Vec<(&book_signals::BookSignals, usize)>> =
         HashMap::new();
     for (i, s) in &valid {
+        if s.headings.len() < MIN_HEADING_SEQUENCE {
+            continue;
+        }
         by_headings
             .entry(s.headings.as_slice())
             .or_default()
@@ -1002,7 +1011,7 @@ mod tests {
         let mut a = empty_signals("rev".into());
         a.fingerprint = "fp-a".into();
         a.chars = 100_000;
-        a.headings = vec!["第一章".into(), "第二章".into()];
+        a.headings = vec!["第一章".into(), "第二章".into(), "第三章".into()];
         let mut b = empty_signals("rev".into());
         b.fingerprint = "fp-b".into();
         b.chars = 100_500; // within 2%
@@ -1010,7 +1019,7 @@ mod tests {
         let mut c = empty_signals("rev".into());
         c.fingerprint = "fp-c".into();
         c.chars = 100_000;
-        c.headings = vec!["另一本".into()]; // different headings: never hinted
+        c.headings = vec!["甲".into(), "乙".into(), "丙".into()]; // different headings: never hinted
 
         let mut signals = HashMap::new();
         signals.insert("a.epub".to_string(), a);
@@ -1035,6 +1044,30 @@ mod tests {
         assert_eq!(dup("a.epub"), vec!["b.epub".to_string()]);
         assert_eq!(dup("b.epub"), vec!["a.epub".to_string()]);
         assert!(dup("c.epub").is_empty());
+    }
+
+    #[test]
+    fn single_heading_book_is_not_hinted_across_unrelated_books() {
+        // A single-file / TOC-as-chapters book yields one heading (here the
+        // generic 第一章). Two unrelated books must not be grouped by it, even
+        // with near-equal length and different fingerprints.
+        let mut a = empty_signals("rev".into());
+        a.fingerprint = "fp-a".into();
+        a.chars = 100_000;
+        a.headings = vec!["第一章".into()];
+        let mut b = empty_signals("rev".into());
+        b.fingerprint = "fp-b".into();
+        b.chars = 100_000;
+        b.headings = vec!["第一章".into()];
+
+        let mut signals = HashMap::new();
+        signals.insert("a.epub".to_string(), a);
+        signals.insert("b.epub".to_string(), b);
+        let out = enrich_and_sort(
+            vec![entry("a.epub", "rev"), entry("b.epub", "rev")],
+            &signals,
+        );
+        assert!(out.iter().all(|e| e.duplicates.is_empty()), "{out:?}");
     }
 
     #[test]

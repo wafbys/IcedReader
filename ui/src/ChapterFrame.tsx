@@ -872,7 +872,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
           title="chapter"
           scrolling="no"
           srcDoc={ensureHtmlLang(html, documentLang)}
-          sandbox="allow-same-origin allow-popups-to-escape-sandbox"
+          sandbox="allow-same-origin"
           onLoad={() => {
             const iframe = iframeRef.current;
             const box = containerRef.current;
