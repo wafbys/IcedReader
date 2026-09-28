@@ -261,6 +261,91 @@ fn spine_index_for(spine: &[SpineItem], href: &str) -> Option<usize> {
         .or_else(|| spine.iter().position(|s| key(&s.href).0 == file))
 }
 
+/// 划线 href → notes.md 章标题行（`## 第 N 章 · 标题（N/M）`）。
+fn highlight_section_title(book: &Arc<dyn Book>, href: &str) -> crate::error::Result<String> {
+    let spine = book.spine();
+    let idx = spine_index_for(&spine, href).ok_or_else(|| "无法定位划线章节".to_string())?;
+    let total = spine.len();
+    let title = spine[idx].title.clone().unwrap_or_default().trim().to_string();
+    let title_show = if title.is_empty() {
+        href.to_string()
+    } else {
+        title
+    };
+    Ok(format!(
+        "## 第 {} 章 · {}（{}/{}）",
+        idx + 1,
+        title_show,
+        idx + 1,
+        total
+    ))
+}
+
+/// 划线 → notes.md 保护区注释块各行。
+fn highlight_comment_lines(rec: &Highlight) -> Vec<String> {
+    vec![
+        notes::NOTE_OPEN.to_string(),
+        format!("id: {}", rec.id),
+        format!("color: {}", rec.color),
+        format!("created: {}", local_iso(rec.created_at)),
+        "deleted:".to_string(),
+        format!("posPct: {}", notes::pos_pct(rec.pos)),
+        notes::NOTE_CLOSE.to_string(),
+    ]
+}
+
+/// 划线 → notes.md 摘抄行（`> 【重点|摘抄】…（全书 N% · 划于 …）`）。
+fn highlight_excerpt(rec: &Highlight) -> String {
+    format!(
+        "> 【{}】{}（{} · 划于 {}）",
+        notes::color_label(&rec.color),
+        rec.text,
+        notes::pos_label(rec.pos),
+        local_human(rec.created_at)
+    )
+}
+
+/// 把一条划线写进它的 notes.md 条目。
+///
+/// `note = None`（新建划线、位置回填）：条目已在则只换保护区与摘抄行、用户区
+/// 逐字保留；不在则新建空用户区条目（此时才需要书来定章标题）。
+/// `note = Some`（UI 保存备注）：整条原位替换，用户区覆盖为最新意图（空串 =
+/// 清空备注但保留划线条目）。
+fn write_highlight_entry(
+    state: &tauri::State<'_, AppState>,
+    file_name: &str,
+    book_id: &str,
+    rec: &Highlight,
+    note: Option<&str>,
+) -> crate::error::Result<()> {
+    let text = read_notes_text(file_name);
+    if note.is_none() {
+        if let Some(updated) = notes::update_pos(
+            &text,
+            &rec.id,
+            highlight_comment_lines(rec),
+            highlight_excerpt(rec),
+        ) {
+            return write_notes_text(file_name, &updated);
+        }
+    }
+    let book = {
+        let books = state.books.lock()?;
+        books
+            .get(book_id)
+            .ok_or_else(|| "book not open".to_string())?
+            .clone()
+    };
+    let entry = notes::NoteEntry {
+        id: rec.id.clone(),
+        section_title: highlight_section_title(&book, &rec.href)?,
+        comment_lines: highlight_comment_lines(rec),
+        excerpt: highlight_excerpt(rec),
+        note: note.unwrap_or_default().to_string(),
+    };
+    write_notes_text(file_name, &notes::upsert(&text, &entry))
+}
+
 /// 读某本书的 notes.md（不存在/无档案返回空串）。
 fn read_notes_text(file_name: &str) -> String {
     let Ok(dir) = portable::library_dir() else {
@@ -316,6 +401,8 @@ fn list_annotations(
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn add_annotation(
+    file_name: String,
+    book_id: String,
     key: String,
     href: String,
     start_text: usize,
@@ -349,6 +436,12 @@ fn add_annotation(
         created_at: unix_now(),
     };
     state.annotations.lock()?.add(key, highlight.clone())?;
+    // 每次划线都往 notes.md 落一条（保护区 + 摘录行）。这是配套档案动作，
+    // 失败不回滚划线本身：正文高亮以 annotations.json 为准，下次写备注会
+    // 补回条目。
+    if let Err(err) = write_highlight_entry(&state, &file_name, &book_id, &highlight, None) {
+        eprintln!("notes.md 写入失败（{file_name}）：{err}");
+    }
     Ok(highlight)
 }
 
@@ -357,17 +450,34 @@ fn add_annotation(
 /// was stored with `pos: null`). Idempotent.
 #[tauri::command]
 fn set_annotation_pos(
+    file_name: String,
+    book_id: String,
     key: String,
     id: String,
     pos: f64,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<()> {
-    state.annotations.lock()?.set_pos(&key, &id, pos)?;
+    let changed = state.annotations.lock()?.set_pos(&key, &id, pos)?;
+    if !changed {
+        return Ok(());
+    }
+    // 位置进 notes.md 的摘抄行与 posPct（该条一般在，走原位替换，用户区不动）。
+    let rec = state
+        .annotations
+        .lock()?
+        .list(&key)
+        .into_iter()
+        .find(|h| h.id == id);
+    if let Some(rec) = rec {
+        if let Err(err) = write_highlight_entry(&state, &file_name, &book_id, &rec, None) {
+            eprintln!("notes.md 位置回填失败（{file_name}）：{err}");
+        }
+    }
     Ok(())
 }
 
-/// 删除划线：正文记录移除；notes.md 里该条若存在（写过备注）则打删除时间
-/// 留痕、用户笔记保留。纯划线（从未写备注）删除后档案无痕。
+/// 删除划线：正文记录移除；notes.md 里该条若写过备注则打删除时间留痕、用户
+/// 笔记保留（像会计不涂改）；纯划线（从未写备注）整条移除、档案无痕。
 #[tauri::command]
 fn delete_annotation(
     file_name: String,
@@ -377,8 +487,15 @@ fn delete_annotation(
 ) -> crate::error::Result<()> {
     let text = read_notes_text(&file_name);
     if !text.is_empty() {
-        let now = unix_now();
-        if let Some(updated) = notes::mark_deleted(&text, &id, &local_iso(now), &local_human(now)) {
+        // notes_of 只返回非空用户区：有备注 = 该 id 出现在里面。
+        let has_note = notes::notes_of(&text).iter().any(|(nid, _)| nid == &id);
+        let updated = if has_note {
+            let now = unix_now();
+            notes::mark_deleted(&text, &id, &local_iso(now), &local_human(now))
+        } else {
+            notes::remove_note(&text, &id)
+        };
+        if let Some(updated) = updated {
             write_notes_text(&file_name, &updated)?;
         }
     }
@@ -386,8 +503,8 @@ fn delete_annotation(
     Ok(())
 }
 
-/// 写/改一条划线的备注（notes.md 用户区）。空串 = 撤掉该备注：移除程序
-/// 保护区，用户区文字转普通文本保留（外部编辑器写的不丢）。
+/// 写/改一条划线的备注（notes.md 用户区）。空串 = 清空备注：划线条目（保护区
+/// + 摘录行）留下，只把用户区清掉（划线还在，档案不该消失）。
 #[tauri::command]
 fn save_note(
     file_name: String,
@@ -405,77 +522,7 @@ fn save_note(
         .into_iter()
         .find(|h| h.id == id)
         .ok_or_else(|| "划线不存在".to_string())?;
-    let (section_title, created_iso, excerpt) = {
-        // Clone the `Arc` out and drop the map lock before asking the book for
-        // its spine (an EPUB spine read touches the archive).
-        let book = {
-            let books = state.books.lock()?;
-            books
-                .get(&book_id)
-                .ok_or_else(|| "book not open".to_string())?
-                .clone()
-        };
-        let spine = book.spine();
-        let idx =
-            spine_index_for(&spine, &rec.href).ok_or_else(|| "无法定位划线章节".to_string())?;
-        let total = spine.len();
-        let title = spine[idx]
-            .title
-            .clone()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let title_show = if title.is_empty() {
-            rec.href.clone()
-        } else {
-            title
-        };
-        let section = format!(
-            "## 第 {} 章 · {}（{}/{}）",
-            idx + 1,
-            title_show,
-            idx + 1,
-            total
-        );
-        let created_iso = local_iso(rec.created_at);
-        let created_human = local_human(rec.created_at);
-        let excerpt = format!(
-            "> 【{}】{}（{} · 划于 {}）",
-            notes::color_label(&rec.color),
-            rec.text,
-            notes::pos_label(rec.pos),
-            created_human
-        );
-        (section, created_iso, excerpt)
-    };
-
-    let text = read_notes_text(&file_name);
-    if note.trim().is_empty() {
-        if !text.is_empty() {
-            if let Some(updated) = notes::remove_note(&text, &id) {
-                write_notes_text(&file_name, &updated)?;
-            }
-        }
-        return Ok(());
-    }
-    let comment_lines = vec![
-        notes::NOTE_OPEN.to_string(),
-        format!("id: {id}"),
-        format!("color: {}", rec.color),
-        format!("created: {created_iso}"),
-        "deleted:".to_string(),
-        format!("posPct: {}", notes::pos_pct(rec.pos)),
-        notes::NOTE_CLOSE.to_string(),
-    ];
-    let entry = notes::NoteEntry {
-        id,
-        section_title,
-        comment_lines,
-        excerpt,
-        note,
-    };
-    let updated = notes::upsert(&text, &entry);
-    write_notes_text(&file_name, &updated)
+    write_highlight_entry(&state, &file_name, &book_id, &rec, Some(note.trim()))
 }
 
 /// 读出整本 notes.md 的用户笔记（id → 笔记），供悬停浮层与划线列表。

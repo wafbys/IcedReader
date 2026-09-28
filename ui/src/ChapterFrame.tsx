@@ -1182,8 +1182,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
                 disabled={toolbarBusy}
                 title={
                   notesById[toolbar.id]
-                    ? "编辑备注（与划线一起存在 notes.md）"
-                    : "写备注（保存后与划线一起存入 notes.md）"
+                    ? "编辑备注（notes.md 该划线条目的用户区）"
+                    : "写备注（追加到 notes.md 该划线条目）"
                 }
                 onClick={() => openNoteEditor(toolbar.id)}
               >
@@ -1249,7 +1249,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             </button>
           </div>
           <p className="hl-note-hint">
-            备注与划线一起存入 notes.md，可在外部 md 软件继续编辑；划线删除后备注仍保留在档案里。
+            划线连同摘录已存入 notes.md；备注写进该条目的用户区，可在外部 md 软件继续编辑；有备注的划线删除后备注仍保留在档案里。
           </p>
         </div>
       )}

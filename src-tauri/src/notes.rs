@@ -1,4 +1,5 @@
-//! `<stem>.notes.md` — 划线备注档案。只有写过备注的划线才落这个文件。
+//! `<stem>.notes.md` — 划线档案。每次划线都落一条（程序保护区 + 摘录行），
+//! 写过备注再往用户区加字。
 //!
 //! 程序保护区：`<!-- icedreader-note` 注释块（`id` / `color` / `created` /
 //! `deleted` / `posPct`，后者是全书位置整数 0–100，不是 0–1）+ **紧跟其后
@@ -8,7 +9,8 @@
 //! 以 `> ` 开头的行」认摘抄行。缺 `id:` 的块与手写无块段落原样保留。
 //!
 //! 删除：有备注则保护区记 `deleted:`、摘抄行加删除线并附（已删于 …）；
-//! 纯划线（从未写备注）删除即 md 无痕。同一处再划 = 新 id。
+//! 纯划线（从未写备注）删除即整条移除、md 无痕（若用户区被外部写过，
+//! 转成普通文本保留；因此变空的章标题一并清掉）。同一处再划 = 新 id。
 //!
 //! 时间/位置等人类文本由调用方格式化后经 [`NoteEntry`] 传入。
 
@@ -330,8 +332,9 @@ pub fn mark_deleted(
     Some(serialize(&segs))
 }
 
-/// 撤掉备注：移除该条的注释块与摘抄行，用户笔记区转成普通文本留在原位
-/// （外部编辑器写进的内容绝不丢）。id 不在档案里返回 `None`。
+/// 移除该条的注释块与摘抄行（纯划线删除：整条不留痕）。用户笔记区若被外部
+/// 编辑器写过则转成普通文本留在原位（绝不丢字）；因此变空的章标题一并清掉。
+/// id 不在档案里返回 `None`。
 pub fn remove_note(text: &str, id: &str) -> Option<String> {
     let mut segs = parse(text);
     let pos = segs.iter().position(|s| s.id() == Some(id))?;
@@ -339,6 +342,10 @@ pub fn remove_note(text: &str, id: &str) -> Option<String> {
         return None;
     };
     let mut orphan = note.note;
+    if orphan.iter().all(|l| is_blank_line(l)) {
+        // 没有用户文字：直接移除，不留下空段。
+        return Some(serialize(&prune_empty_sections(segs)));
+    }
     // 前面若不是空行，补一个让孤立的用户区与上方内容分开。
     let need_lead = match segs.get(pos.wrapping_sub(1)) {
         Some(Seg::Text(lines)) => !lines.last().is_some_and(|l| is_blank_line(l)),
@@ -349,7 +356,79 @@ pub fn remove_note(text: &str, id: &str) -> Option<String> {
         orphan.insert(0, String::new());
     }
     segs.insert(pos, Seg::Text(orphan));
+    Some(serialize(&prune_empty_sections(segs)))
+}
+
+/// 回填全书位置：只重写该条的注释块与摘抄行，用户笔记区逐字保留。
+/// id 不在档案里返回 `None`。
+pub fn update_pos(
+    text: &str,
+    id: &str,
+    comment_lines: Vec<String>,
+    excerpt: String,
+) -> Option<String> {
+    let mut segs = parse(text);
+    let pos = segs.iter().position(|s| s.id() == Some(id))?;
+    let Seg::Note(note) = &mut segs[pos] else {
+        return None;
+    };
+    note.open_lines = comment_lines;
+    note.excerpt = if excerpt.is_empty() {
+        None
+    } else {
+        Some(excerpt)
+    };
     Some(serialize(&segs))
+}
+
+/// 清掉因此变空的自动建章标题（标题下到下一个 `## ` 或文尾之间既无 Note 也
+/// 无用户非空文本）。用户自己写的非空内容会让章保留。
+fn prune_empty_sections(mut segs: Vec<Seg>) -> Vec<Seg> {
+    let mut i = 0;
+    while i < segs.len() {
+        let is_heading = matches!(&segs[i], Seg::Text(lines)
+            if lines.first().is_some_and(|l| l.starts_with("## ")));
+        if !is_heading {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        let mut filled = false;
+        while j < segs.len() {
+            match &segs[j] {
+                Seg::Note(_) => {
+                    filled = true;
+                    break;
+                }
+                Seg::Text(t) => {
+                    if t.first().is_some_and(|l| l.starts_with("## ")) {
+                        break;
+                    }
+                    if t.iter().any(|l| !is_blank_line(l)) {
+                        filled = true;
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+        }
+        if filled {
+            i += 1;
+            continue;
+        }
+        segs.remove(i);
+        // 吃掉标题后连着的光秃空行段。
+        while i < segs.len() {
+            let blank =
+                matches!(&segs[i], Seg::Text(t) if t.iter().all(|l| is_blank_line(l)));
+            if blank {
+                segs.remove(i);
+            } else {
+                break;
+            }
+        }
+    }
+    segs
 }
 
 /// 读出档案里每条划线的用户笔记（id → 笔记文本），供悬停浮层与列表。
@@ -487,6 +566,64 @@ mod tests {
         assert!(!out.contains("> 【重点】摘录一"));
         assert!(out.contains("我手写的笔记"), "用户文字不丢");
         assert!(notes_of(&out).is_empty());
+    }
+
+    #[test]
+    fn plain_highlight_delete_leaves_no_trace() {
+        // 没写备注的划线删除 = 整条移除；自动建的章标题也一并清掉。
+        let v1 = upsert("", &entry("a", ""));
+        assert!(v1.contains("## 第 1 章"));
+        assert!(v1.contains("> 【重点】"));
+        let out = remove_note(&v1, "a").unwrap();
+        assert_eq!(out, "", "md 无痕（连章标题都不剩）");
+    }
+
+    #[test]
+    fn plain_delete_keeps_section_with_other_entries() {
+        let v1 = upsert("", &entry("a", ""));
+        let v2 = upsert(&v1, &entry("b", ""));
+        let out = remove_note(&v2, "a").unwrap();
+        assert!(out.contains("## 第 1 章"), "还有 b，章标题保留");
+        assert!(!out.contains("id: a"));
+        assert!(out.contains("id: b"));
+        assert_eq!(serialize(&parse(&out)), out);
+    }
+
+    #[test]
+    fn clearing_note_keeps_block_and_excerpt() {
+        let v1 = upsert("", &entry("a", "旧备注"));
+        // 清空备注 = 用空用户区覆盖，保护区与摘抄行留下（划线还在）。
+        let out = upsert(&v1, &entry("a", ""));
+        assert!(out.contains("id: a"));
+        assert!(out.contains("> 【重点】摘录一"));
+        assert!(!out.contains("旧备注"));
+        assert!(notes_of(&out).is_empty());
+    }
+
+    #[test]
+    fn update_pos_rewrites_block_and_keeps_user_note() {
+        let mut e = entry("a", "我的备注");
+        e.comment_lines = comment_lines("a", "yellow");
+        let v1 = upsert("", &e);
+        let mut back = comment_lines("a", "yellow");
+        // posPct 由空变 42。
+        for line in back.iter_mut() {
+            if line.starts_with("posPct:") {
+                *line = "posPct: 42".to_string();
+            }
+        }
+        let out = update_pos(
+            &v1,
+            "a",
+            back,
+            "> 【重点】摘录一（全书 42% · 划于 2026-09-05 14:30）".into(),
+        )
+        .unwrap();
+        assert!(out.contains("posPct: 42"));
+        assert!(out.contains("全书 42%"));
+        assert!(out.contains("我的备注"), "用户区逐字保留");
+        // 不存在的 id → None。
+        assert!(update_pos(&v1, "missing", vec![], String::new()).is_none());
     }
 
     #[test]

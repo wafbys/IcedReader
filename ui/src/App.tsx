@@ -207,6 +207,8 @@ export default function App() {
       if (!b) return;
       try {
         const rec = await invoke<HighlightRecord>("add_annotation", {
+          fileName: fileNameOf(b),
+          bookId: b.id,
           key: b.progressKey,
           href,
           startText: anchor.start.seq,
@@ -230,7 +232,13 @@ export default function App() {
     const b = bookRef.current;
     if (!b) return;
     try {
-      await invoke("set_annotation_pos", { key: b.progressKey, id, pos });
+      await invoke("set_annotation_pos", {
+        fileName: fileNameOf(b),
+        bookId: b.id,
+        key: b.progressKey,
+        id,
+        pos,
+      });
       setHighlights((prev) => prev.map((h) => (h.id === id ? { ...h, pos } : h)));
     } catch {
       /* 回填失败不致命：下次打开这本书时仍可再试 */
