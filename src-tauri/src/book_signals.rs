@@ -1241,27 +1241,97 @@ pub fn read_from(path: &std::path::Path) -> HashMap<String, BookSignals> {
 }
 
 pub fn write_one(file_name: &str, signals: &BookSignals) {
-    let _guard = signals_write_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let Ok(path) = portable::signals_file() else {
         return;
     };
-    let mut all = read_from(&path);
+    let library = portable::library_dir().ok();
+    write_one_at(&path, library.as_deref(), file_name, signals);
+}
+
+/// [`write_one`] against explicit paths.
+///
+/// A book's first-import analysis runs on a background thread, so a book that
+/// was deleted (moved to the Recycle Bin) while its analysis was still running
+/// must not reappear in `book-signals.json`. The library check runs **under the
+/// write lock**, so it cannot race a concurrent delete's [`remove`]: by the time
+/// the guard re-reads the directory the file is already gone and the write is
+/// dropped. The same guard stops a rename from leaving a stale entry under the
+/// old name.
+fn write_one_at(
+    signals_path: &std::path::Path,
+    library_dir: Option<&std::path::Path>,
+    file_name: &str,
+    signals: &BookSignals,
+) {
+    let _guard = signals_write_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if !book_in_library(library_dir, file_name) {
+        return;
+    }
+    let mut all = read_from(signals_path);
     all.insert(file_name.to_string(), signals.clone());
-    persist(&path, &all);
+    persist(signals_path, &all);
+}
+
+/// True when `file_name` is a plain name of a file that still sits in the shelf
+/// directory.
+fn book_in_library(library_dir: Option<&std::path::Path>, file_name: &str) -> bool {
+    let Some(dir) = library_dir else {
+        return false;
+    };
+    let as_path = std::path::Path::new(file_name);
+    if file_name.is_empty()
+        || as_path
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return false;
+    }
+    dir.join(as_path).is_file()
+}
+
+/// Drop cached signals for files that are no longer in the shelf. A book can
+/// leave `data/library/` without going through [`crate::library::delete_book_from`]
+/// — moved aside in Explorer, removed by an external tool, or left over by a
+/// version that predates in-app cache cleanup — and the shelf must not keep
+/// paying for a fingerprint nobody can see. Called from the shelf listing (which
+/// already read the cache); a no-op with **no write** when nothing is stale.
+pub fn prune_missing(present: &HashSet<String>) {
+    let Ok(path) = portable::signals_file() else {
+        return;
+    };
+    prune_missing_from(&path, present);
+}
+
+/// [`prune_missing`] against an explicit path; shared by the app and the tests.
+pub fn prune_missing_from(path: &std::path::Path, present: &HashSet<String>) {
+    let _guard = signals_write_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut all = read_from(path);
+    let before = all.len();
+    all.retain(|name, _| present.contains(name));
+    if all.len() != before {
+        persist(path, &all);
+    }
 }
 
 pub fn remove(file_name: &str) {
-    let _guard = signals_write_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let Ok(path) = portable::signals_file() else {
         return;
     };
-    let mut all = read_from(&path);
+    remove_from(&path, file_name);
+}
+
+/// [`remove`] against an explicit path; shared by the app and the tests.
+pub fn remove_from(path: &std::path::Path, file_name: &str) {
+    let _guard = signals_write_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut all = read_from(path);
     if all.remove(file_name).is_some() {
-        persist(&path, &all);
+        persist(path, &all);
     }
 }
 
@@ -1535,6 +1605,81 @@ mod tests {
         persist(&file, &all);
         let back = read_from(&file);
         assert_eq!(back.get("a.epub").unwrap().fingerprint, "f");
+    }
+
+    /// Deleting a book drops its cached signals, and a first-import analysis
+    /// that finishes after the book left the library must not resurrect it.
+    #[test]
+    fn signals_are_removed_on_delete_and_not_resurrected() {
+        let dir = std::env::temp_dir().join("icedreader-signals-delete");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let signals_path = dir.join("book-signals.json");
+        // Two real files stand in for the shelf library.
+        std::fs::write(dir.join("a.epub"), b"a").unwrap();
+        std::fs::write(dir.join("b.epub"), b"b").unwrap();
+
+        let mut a = sig(IdQuality::None, false, 0, 0, false);
+        a.rev = "ra".into();
+        let mut b = sig(IdQuality::None, false, 0, 0, false);
+        b.rev = "rb".into();
+        write_one_at(&signals_path, Some(&dir), "a.epub", &a);
+        write_one_at(&signals_path, Some(&dir), "b.epub", &b);
+        assert_eq!(read_from(&signals_path).len(), 2);
+
+        // Delete a: its entry goes, b stays.
+        remove_from(&signals_path, "a.epub");
+        let all = read_from(&signals_path);
+        assert!(!all.contains_key("a.epub"));
+        assert_eq!(all.get("b.epub").unwrap().rev, "rb");
+
+        // A late analysis of the deleted a must not bring it back.
+        std::fs::remove_file(dir.join("a.epub")).unwrap();
+        let mut late = sig(IdQuality::None, false, 0, 0, false);
+        late.rev = "late".into();
+        write_one_at(&signals_path, Some(&dir), "a.epub", &late);
+        assert!(!read_from(&signals_path).contains_key("a.epub"));
+
+        // A name that never sat in the library is ignored entirely, and with no
+        // library dir at all nothing is written.
+        write_one_at(&signals_path, Some(&dir), "never.epub", &late);
+        write_one_at(&signals_path, None, "b.epub", &late);
+        let all = read_from(&signals_path);
+        assert!(!all.contains_key("never.epub"));
+        assert_eq!(all.get("b.epub").unwrap().rev, "rb");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shelf listing self-heals leftovers: a cache entry whose file is no
+    /// longer on the shelf is dropped, and one whose file is still there stays.
+    #[test]
+    fn prune_missing_drops_stale_entries() {
+        let dir = std::env::temp_dir().join("icedreader-signals-prune");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("book-signals.json");
+        let sig = sig(IdQuality::None, false, 0, 0, false);
+
+        std::fs::write(dir.join("keep.epub"), b"k").unwrap();
+        std::fs::write(dir.join("stale.epub"), b"s").unwrap();
+        write_one_at(&path, Some(&dir), "keep.epub", &sig);
+        write_one_at(&path, Some(&dir), "stale.epub", &sig);
+        // The stale file is removed outside the app, as Explorer would.
+        std::fs::remove_file(dir.join("stale.epub")).unwrap();
+
+        let present: HashSet<String> = ["keep.epub".to_string()].into_iter().collect();
+        prune_missing_from(&path, &present);
+        let all = read_from(&path);
+        assert_eq!(all.len(), 1);
+        assert!(all.contains_key("keep.epub"));
+        assert!(!all.contains_key("stale.epub"));
+
+        // Idempotent: nothing left to prune, contents unchanged.
+        prune_missing_from(&path, &present);
+        assert_eq!(read_from(&path).len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// PDF grades answer "what can the reader do with this file?" (用户口径

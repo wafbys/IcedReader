@@ -11,7 +11,7 @@ mod protocol;
 mod recycle;
 mod window_state;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::{Arc, Mutex};
 
@@ -690,6 +690,12 @@ async fn list_library(
     let signals = book_signals::read_all();
     let entries = library::list_library_cached(&dir, &progress, &mut cache, &signals);
     drop(cache);
+    // Self-heal the signals cache: a book that left `data/library/` outside the
+    // app (moved aside, removed by another tool) or under a version that
+    // predated in-app cache cleanup must not keep a fingerprint forever. No
+    // write unless something is actually stale.
+    let present: HashSet<String> = entries.iter().map(|e| e.file_name.clone()).collect();
+    book_signals::prune_missing(&present);
     // Warm covers for this shelf **off** the listing path: a PDF cover costs
     // real CPU, and a protocol request must never do it (see
     // `serve_library_cover`). With this the first cover request usually hits and
