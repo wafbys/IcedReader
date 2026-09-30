@@ -96,15 +96,10 @@ pub struct StoredHighlight {
 /// that book's companion md, addressed by the book's `file_name`. There is no
 /// book-keyed state to migrate — renaming or deleting a book moves/deletes the
 /// md with it — so the store stays a pure per-file view.
+#[derive(Default)]
 pub struct AnnotationStore {
     /// Library directory (`data/library/`). `None` = in-memory only.
     dir: Option<PathBuf>,
-}
-
-impl Default for AnnotationStore {
-    fn default() -> Self {
-        Self { dir: None }
-    }
 }
 
 impl AnnotationStore {
@@ -322,8 +317,8 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let mut store = store_in(&dir);
-        store.add("三体.epub".into(), hl("a", 0, 0)).unwrap();
-        store.add("三体.epub".into(), hl("b", 3, 7)).unwrap();
+        store.add("三体.epub", hl("a", 0, 0)).unwrap();
+        store.add("三体.epub", hl("b", 3, 7)).unwrap();
 
         // A fresh store reads them back out of the same file.
         let reloaded = store_in(&dir);
@@ -347,7 +342,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut store = store_in(&dir);
-        store.add("书.epub".into(), h.clone()).unwrap();
+        store.add("书.epub", h.clone()).unwrap();
 
         let back = store_in(&dir).list("书.epub");
         assert_eq!(back.len(), 1);
@@ -365,8 +360,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut store = store_in(&dir);
-        store.add("书.epub".into(), hl("a", 0, 0)).unwrap();
-        store.add("书-2.epub".into(), hl("b", 1, 1)).unwrap();
+        store.add("书.epub", hl("a", 0, 0)).unwrap();
+        store.add("书-2.epub", hl("b", 1, 1)).unwrap();
         let list = store_in(&dir).list("书.epub");
         assert_eq!(list.len(), 2);
         assert!(list.iter().any(|h| h.id == "b"));
@@ -380,12 +375,12 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut store = store_in(&dir);
-        store.add("书.epub".into(), hl("a", 0, 0)).unwrap();
+        store.add("书.epub", hl("a", 0, 0)).unwrap();
         store
             .remove("书.epub", "a")
             .expect("remove returns a result");
         // Re-add, then backfill the position.
-        store.add("书.epub".into(), hl("a", 0, 0)).unwrap();
+        store.add("书.epub", hl("a", 0, 0)).unwrap();
         let changed = store.set_pos("书.epub", "a", 0.8).unwrap();
         assert!(changed);
         // Second call is a no-op.
@@ -403,7 +398,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut store = store_in(&dir);
-        store.add("书.epub".into(), hl("a", 0, 0)).unwrap();
+        store.add("书.epub", hl("a", 0, 0)).unwrap();
         let path = store.md_path("书.epub").unwrap();
         let text = fs::read_to_string(&path).unwrap();
         let with_note = notes::upsert(
@@ -436,7 +431,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut store = store_in(&dir);
-        store.add("书.epub".into(), hl("a", 0, 0)).unwrap();
+        store.add("书.epub", hl("a", 0, 0)).unwrap();
         // A note makes the deletion leave a trace.
         let path = store.md_path("书.epub").unwrap();
         let text = fs::read_to_string(&path).unwrap();

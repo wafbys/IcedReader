@@ -48,11 +48,18 @@
 
 1. ✅ **UI 面板**：`Library.tsx` 三点菜单加「编辑元数据…」，模态面板含 title/subtitle/volume 输入、拼接预览与「自动填充」按钮、displayTitle 手改框（自动填充不覆盖手改）、originalTitle 只读展示；保存 → `set_book_meta` → 重新 `list_library` 刷新书架。
    - 交互关键设计：手改框初值 = md 里用户确认过的 displayTitle（未确认过则为空）；空 = 派生模式。`BookMetaView.confirmedTitle`（md 原始值）与 `displayTitle`（裁决结果）分开，避免首次保存把旧名锁死。自动填充仅在手改框为空时可点，把字段拼接写入框内；手改非空即锁定（编辑字段也不会覆盖）。
+   - **已作废（2026-09-30）**：手改框与「自动填充」按钮随「去掉手填显示名」一起删除（见「已拍板决策 12」与「已完成 7」），本条只作 v1 交互的记录。
 2. ✅ **AGENTS.md 同步**：新增「书元数据（书名规范）」小节（裁决链、伴生 md 约定、全角禁则与 `" _ "`/`" - "` 符号分工、删书联动）；Tauri 命令表补 `get_book_meta`/`set_book_meta`；书架菜单描述与验证段更新。
 3. ✅ **验证**：`cargo test`（core 37 / lib 22 / epub 18+2 ignored 全过）、`npx tsc --noEmit` 无错。手工核对（书架/顶栏标题一致、删书连带删 md、面板交互手感）需桌面窗口。
 4. ✅ **md v2：字段扩展 + 新拼接模板**（用户 2026-09-04 拍板）：加 `author` / `year` / `publisher` / `isbn`；拼接模板 `书名 _ 副标题 - 卷册 - 作者 - 出版年份 - 出版社 - ISBN`（下划线仅书名↔副标题一处，卷册起全用 ` - `）；空段整体跳过不产生连续分隔符；书名必填（UI 禁保存）；ISBN 自动补 ASCII `ISBN ` 前缀；作者预填原书 dc:creator。
 5. ✅ **译者字段 + 保存即改名**（用户 2026-09-04 拍板 C 方案与「书籍/md文件名应按保存后的拼接文件名；显示名到 md 里取」）：加 `translator`，模板插到作者后 `- 译者 阳曦`（自动补标签）；`set_book_meta` 保存成功后把 epub+md 按最终显示名（手改或拼接）改名，Windows 禁作清洗、同名 `-2`…、`lib:` 进度/划线/质量信号键自动迁移、`id:` 书天然不受影响。原书名/原副标题/原ISBN 不拆（用户收止）。
 6. ✅ **译者改结尾「译」+ 原文书名写括号**（用户 2026-09-30）：译者段改成 `- 宋文伟 译`（补结尾，不重复）；原文书名不单列字段，改由用户在主书名/副标题里写括号，面板两处各加一行说明（见「已拍板决策 11」）。
+7. ✅ **伴生文件合一 + 去掉手填显示名**（用户 2026-09-30，破坏性，见「已拍板决策 12」）——本提交：
+   - 一本一书只剩一个伴生 md：`data/library/<文件名>.md`（`三体.epub.md` / `三体.pdf.md`，扩展名是身份的一部分），元数据块与划线块同文件，`split_meta`/`join_meta` 保证两侧写入互不碰；旧的 `<stem>.md` / `<stem>.notes.md` / `annotations.json` 一律当不存在，不迁移也不删。
+   - 划线解析/写回从 `src-tauri/src/notes.rs` 下沉到 `crates/core/src/notes.rs`（`core` 不能依赖 `src-tauri`），Tauri 侧只转发路径；`AnnotationStore` 从「`annotations.json` + 内存 HashMap，按 `id:`/`lib:` 键寻址」改为「按**书文件名**寻址伴生 md」的读写门面（`list`/`remove`/`set_pos`）；创建仍只走 `write_highlight_entry`，因为只有它拿到打开的书、能定该条的 `## 第 N 章 · …` 归属。
+   - `displayTitle` 从 md 键、`BookMetaFields`、`BookMetaView`（`confirmedTitle`/`displayTitle`/`suggestedTitle` 三个字段并成 `joinedTitle`）与面板（手改框 + 「自动填充」按钮）一起删除；裁决链只剩 `字段拼接 → dc:title/文件名`。
+   - 顺带修两处真问题：① `AnnotationStore::set_pos` 改走 `notes::update_pos` —— 位置回填只重写保护区与摘抄行，用户笔记区逐字保留（原走 `upsert` 会把 `stored_highlights` 读回来的 `trim()` 副本写回盘，吃掉用户笔记的行首缩进/行尾空格）；② `set_annotation_pos` 不再声明前端根本没发的 `bookId`（Tauri 对缺失的必填参报 `missing required key`，整次调用失败又被前端 `catch {}` 吞掉 —— 首次开书那批 `pos: null` 划线的位置回填会静默失效）。
+   - 验证：`cargo test`（core 69 / lib 60 / epub 33+2 ignored / pdf 17+3 ignored）、`npx tsc --noEmit`、`npm run check:ui` 全过；`set_pos` 的保真修复有回归单测 `set_pos_leaves_the_user_note_byte_for_byte`（换回 `upsert` 会红）。桌面窗口手工核对（划线仍按章归组、位置回填真的落盘、改名后伴生 md 随书更名、删书置回收站可还原）仍待做。
 
 ## AGENTS.md 同步（已完成，原草案存档）
 
