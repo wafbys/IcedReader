@@ -3,15 +3,17 @@
 //!
 //! ```text
 //! data/
-//!   library/          *.epub / *.pdf, <stem>.md, <stem>.notes.md
+//!   library/          *.epub / *.pdf, <文件名>.md（元数据 + 划线同文件）
 //!   fonts/            serif/sans/mono/cjk + sniffed extension
 //!   settings.json     阅读设置（含四槽登记）
 //!   window.json       位置 / 大小 / 最大化（不含全屏）
 //!   progress.json
-//!   annotations.json  划线（键同进度键）
 //!   book-signals.json 指纹与质量（键=文件名，文件变才重算）
 //!   webview/          WebView2 用户数据
 //! ```
+//!
+//! 划线不再有单独的 `annotations.json`：每条划线的坐标就写在书的伴生 md 里
+//! （见 `crates/core/src/annotations.rs` 与 `notes.rs`）。
 
 use std::fs;
 use std::io;
@@ -39,10 +41,6 @@ pub fn library_dir() -> io::Result<PathBuf> {
 
 pub fn progress_file() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("progress.json"))
-}
-
-pub fn annotations_file() -> io::Result<PathBuf> {
-    Ok(data_dir()?.join("annotations.json"))
 }
 
 pub fn settings_file() -> io::Result<PathBuf> {

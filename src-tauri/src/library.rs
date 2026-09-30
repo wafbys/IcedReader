@@ -130,9 +130,9 @@ pub fn list_library_cached(
         .into_iter()
         .map(|path| {
             let mut entry = entry_from(&path, &cache.profile(&path, dir), progress);
-            // Companion md overlays the file-bound title (displayTitle → joined
-            // fields → dc:title/file name). Read per listing so a metadata edit
-            // shows up immediately without touching the epub-rev profile cache.
+            // Companion md overlays the file-bound title (joined fields →
+            // dc:title/file name). Read per listing so a metadata edit shows up
+            // immediately without touching the epub-rev profile cache.
             if let Ok(meta_path) = meta_path_for(dir, &entry.file_name) {
                 if let Some(meta) = read_meta_file(&meta_path) {
                     entry.title = resolved_title(Some(&meta), &entry.title);
@@ -464,9 +464,12 @@ pub fn library_cover_path(file_name: &str) -> crate::error::Result<PathBuf> {
     Ok(path)
 }
 
-/// Companion metadata path for a library book (`三体.epub` → `三体.md`). Only
-/// a plain file name inside `dir` is accepted (no separators / `..`), mirroring
-/// [`delete_book_from`] and [`library_cover_path`].
+/// Companion metadata path for a library book — the book's **full file name**
+/// plus `.md` (`三体.epub` → `三体.epub.md`, `三体.pdf` → `三体.pdf.md`), so the
+/// two formats never collide. That one file holds both the metadata block and
+/// the highlight archive (see `notes.rs`); there is no separate `.notes.md`.
+/// Only a plain file name inside `dir` is accepted (no separators / `..`),
+/// mirroring [`delete_book_from`] and [`library_cover_path`].
 pub fn meta_path_for(dir: &Path, file_name: &str) -> crate::error::Result<PathBuf> {
     let as_path = Path::new(file_name);
     if file_name.is_empty()
@@ -476,22 +479,7 @@ pub fn meta_path_for(dir: &Path, file_name: &str) -> crate::error::Result<PathBu
     {
         return Err("无效的书名".into());
     }
-    Ok(dir.join(as_path).with_extension("md"))
-}
-
-/// Companion notes archive `<stem>.notes.md` (划线+备注档案，删除留痕)。
-/// Same name guard as [`meta_path_for`]: plain file name only, and the
-/// extension swap keeps `<stem>.epub → <stem>.notes.md`.
-pub fn notes_path_for(dir: &Path, file_name: &str) -> crate::error::Result<PathBuf> {
-    let as_path = Path::new(file_name);
-    if file_name.is_empty()
-        || as_path
-            .components()
-            .any(|c| !matches!(c, std::path::Component::Normal(_)))
-    {
-        return Err("无效的书名".into());
-    }
-    Ok(dir.join(as_path).with_extension("notes.md"))
+    Ok(dir.join(format!("{file_name}.md")))
 }
 
 /// Turn a display title into a usable file stem for the library directory:
@@ -552,15 +540,14 @@ pub fn unique_stem_ignoring(dir: &Path, preferred: &str, ignore: &[&str]) -> Str
     }
 }
 
-/// A stem counts as taken when any format's book file, companion md or notes
-/// archive already uses it.
+/// A stem counts as taken when any format's book file or its companion md is
+/// already using it. The md is named after the full book file name
+/// (`三体.epub.md`), so book files are what the check really ranges over.
 fn stem_taken(taken: &std::collections::HashSet<String>, stem: &str) -> bool {
     let s = stem.to_lowercase();
-    taken.contains(&format!("{s}.md"))
-        || taken.contains(&format!("{s}.notes.md"))
-        || iced_reader_core::BOOK_EXTENSIONS
-            .iter()
-            .any(|ext| taken.contains(&format!("{s}.{ext}")))
+    iced_reader_core::BOOK_EXTENSIONS
+        .iter()
+        .any(|ext| taken.contains(&format!("{s}.{ext}")) || taken.contains(&format!("{s}.{ext}.md")))
 }
 
 /// File stem of a library book name (`Foo.EPUB` → `Foo`, `Foo.pdf` → `Foo`).
@@ -569,11 +556,15 @@ pub fn epub_stem(file_name: &str) -> &str {
 }
 
 /// Rename a library book's file to `new_stem` (already clean + unique), keeping
-/// the format's extension, and drop its old companion md — the caller writes
-/// the md under the new name right after, so moving the old md first would only
-/// add a second failing rename point. Returns the new file name. Missing old md
-/// is fine; unrelated files are untouched. A rename that fails after the book
-/// file moved leaves a half-renamed state (book under the new name, no md) —
+/// the format's extension, and carry its companion md along to the matching new
+/// name (`三体.epub.md` → `新名.epub.md`). Returns the new file name. A missing
+/// old md is fine; unrelated files are untouched.
+///
+/// The md is **renamed, not recreated**: it now holds the highlight archive and
+/// the user's own prose beside the metadata block, so letting the caller write a
+/// fresh one would throw that text away. The caller only rewrites the metadata
+/// block inside it afterwards. A rename that fails after the book file moved
+/// leaves a half-renamed state (book under the new name, old md still on disk) —
 /// extremely unlikely, reported as an error so the shelf reload reflects
 /// reality.
 pub fn rename_book_files(
@@ -604,17 +595,14 @@ pub fn rename_book_files(
         return Err(format!("同名文件已存在：{new_name}").into());
     }
     fs::rename(&book_old, &book_new)?;
+    // The companion md travels with the book, renamed rather than dropped: it
+    // now holds the highlight archive and the user's own notes, so re-creating
+    // it from the metadata alone would throw that text away. Best-effort — the
+    // caller writes the metadata block right after this returns.
     let md_old = meta_path_for(dir, old_file_name)?;
     if md_old.is_file() {
-        // Best-effort: the new md is written right after this returns.
-        let _ = fs::remove_file(&md_old);
-    }
-    // The notes archive travels with the stem (rename, not drop — it holds
-    // the user's notes). Best-effort like the md above.
-    let notes_old = notes_path_for(dir, old_file_name)?;
-    if notes_old.is_file() {
-        if let Ok(notes_new) = notes_path_for(dir, &new_name) {
-            let _ = fs::rename(&notes_old, &notes_new);
+        if let Ok(md_new) = meta_path_for(dir, &new_name) {
+            let _ = fs::rename(&md_old, &md_new);
         }
     }
     Ok(new_name)
@@ -624,7 +612,7 @@ pub fn rename_book_files(
 /// accepted (no separators / `..`), mirroring `library_cover_path`. The caller
 /// is responsible for clearing the book's progress/annotation records.
 ///
-/// The book, its companion `.md` metadata and its `.notes.md` archive are moved
+/// The book and its companion md (metadata + highlights + user notes) are moved
 /// to the OS Recycle Bin (not hard-deleted), so the removal stays recoverable.
 pub fn delete_book_from(dir: &Path, file_name: &str) -> crate::error::Result<PathBuf> {
     let as_path = Path::new(file_name);
@@ -640,10 +628,9 @@ pub fn delete_book_from(dir: &Path, file_name: &str) -> crate::error::Result<Pat
         return Err("书不在书库中".into());
     }
     recycle::send(&path)?;
-    // The companion md (user metadata) goes to the bin with the book; missing is fine.
+    // The companion md goes to the bin with the book; it holds the metadata,
+    // the highlights and the user's notes, so it must not be left behind.
     let _ = recycle::send(&meta_path_for(dir, file_name)?);
-    // The notes archive (划线+备注) goes to the bin too — it holds user notes.
-    let _ = recycle::send(&notes_path_for(dir, file_name)?);
     Ok(path)
 }
 
@@ -1176,20 +1163,23 @@ mod tests {
     }
 
     #[test]
-    fn rename_book_files_moves_epub_and_drops_old_md() {
+    fn rename_book_files_moves_the_book_and_its_md() {
         let root = std::env::temp_dir().join("icedreader-library-rename");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
         fs::copy(&sample, root.join("旧名.epub")).unwrap();
-        fs::write(root.join("旧名.md"), b"<!-- icedreader-meta\n-->").unwrap();
+        // The companion md holds the highlights and the user's notes now, so a
+        // rename must carry it along instead of dropping it.
+        fs::write(root.join("旧名.epub.md"), b"<!-- icedreader-meta\n-->").unwrap();
         fs::write(root.join("无关.txt"), b"x").unwrap();
 
         let new_name = rename_book_files(&root, "旧名.epub", "新名 - 作者").unwrap();
         assert_eq!(new_name, "新名 - 作者.epub");
         assert!(root.join("新名 - 作者.epub").is_file());
+        assert!(root.join("新名 - 作者.epub.md").is_file(), "md travels");
         assert!(!root.join("旧名.epub").exists());
-        assert!(!root.join("旧名.md").exists(), "old companion md removed");
+        assert!(!root.join("旧名.epub.md").exists(), "old md gone");
         assert!(root.join("无关.txt").is_file());
 
         // Refuses non-plain names and missing files.
@@ -1245,20 +1235,26 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
         fs::copy(&sample, root.join("sample.epub")).unwrap();
-        fs::write(root.join("sample.md"), b"<!-- icedreader-meta\n-->").unwrap();
+        fs::write(root.join("sample.epub.md"), b"<!-- icedreader-meta\n-->").unwrap();
         fs::write(root.join("other.md"), b"keep me").unwrap();
 
         delete_book_from(&root, "sample.epub").unwrap();
         assert!(!root.join("sample.epub").exists());
         assert!(
-            !root.join("sample.md").exists(),
+            !root.join("sample.epub.md").exists(),
             "companion md must be deleted with the book"
         );
         assert!(root.join("other.md").exists(), "unrelated md files stay");
         assert!(meta_path_for(&root, "../x.epub").is_err());
+        // The md is named after the *full* file name, so `三体.epub.md` and
+        // `三体.pdf.md` never collide.
         assert_eq!(
             meta_path_for(&root, "三体.epub").unwrap(),
-            root.join("三体.md")
+            root.join("三体.epub.md")
+        );
+        assert_eq!(
+            meta_path_for(&root, "三体.pdf").unwrap(),
+            root.join("三体.pdf.md")
         );
     }
 

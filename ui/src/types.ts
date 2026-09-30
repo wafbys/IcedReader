@@ -34,7 +34,7 @@ export type Locator = {
  * `color` is chosen at stroke time and never edited afterwards (换色 = 删除
  * 重划): yellow = 重点 (default), green = 摘抄. `pos` is the whole-book
  * position 0–1 from per-chapter raw visible-text char weights (same char
- * regime as the front-end text nodes), written into notes.md. It is `null`
+ * regime as the front-end text nodes), written into the companion md. It is `null`
  * when the weights are not known yet (a fresh import's first open) and is
  * backfilled by `set_annotation_pos` once they arrive — never faked as 0.
  */
@@ -88,21 +88,18 @@ export type BookMetaView = {
   volume: string;
   /** 作者 — 预填伴生 md 值或原书 dc:creator（多名用、连接）。 */
   author: string;
-  /** 译者 — 拼入标题时自动补「译者 」标签。 */
+  /** 译者 — 拼入标题时自动补结尾「译」。 */
   translator: string;
   /** 出版年份。 */
   year: string;
   publisher: string;
   isbn: string;
-  /** 手改框初值：md 里用户确认过的 displayTitle；空 = 未确认，由字段拼接接管。 */
-  confirmedTitle: string;
-  /** 当前裁决结果（书架/阅读正在显示的名字，永远非空）。 */
-  displayTitle: string;
-  /** 由当前字段拼出的候选（“自动填充”把此值写入手改框）。 */
-  suggestedTitle: string;
+  /** 这本书现在的名字（上方字段的拼接结果；字段都空时为基准书名）。
+   *  面板预览与书架/文件名用的都是它。 */
+  joinedTitle: string;
 };
 
-/** 保存到 set_book_meta 的字段（displayTitle 空 = 派生模式）。 */
+/** 保存到 set_book_meta 的字段（名字永远是这些字段的拼接结果）。 */
 export type BookMetaFields = {
   title: string;
   subtitle: string;
@@ -112,7 +109,6 @@ export type BookMetaFields = {
   year: string;
   publisher: string;
   isbn: string;
-  displayTitle: string;
 };
 
 export type OpenedBook = {
@@ -126,7 +122,7 @@ export type OpenedBook = {
   toc: TocNode[];
   spine: SpineItem[];
   /** Per-chapter raw visible-text char counts (spine order). Whole-book
-   *  position weights for notes.md 全书% and 按位置跳转. */
+   *  position weights for the 全书% readout and 按位置跳转. */
   chapterChars: number[];
   /** 打开时的格式特有提示（中文，可直接显示）。EPUB 恒为空数组；PDF 正文若用了
    *  未嵌入的非标准字体，这里有一条「可能缺字」提示。 */

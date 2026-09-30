@@ -22,14 +22,20 @@
    - **作者/译者多名分隔禁顿号**（用户 2026-09-04：`、` 违反约定，书名中不应出现中文标点）：预填与保存/拼接时 U+3001 一律折成 ASCII `, `（`clean_person_list`）。`dc:title` 自带字符（含全角冒号）不在此范围，仍原样保留。
 9. **保存即按显示名改名**（用户 2026-09-04 拍板「书籍/md文件名应按保存后的拼接文件名；显示名到 md 里取」）：`set_book_meta` 成功后把 `data/library/` 里的 epub + 伴生 md 按“保存后的显示名（手改或拼接）”改名（Windows 禁用作清洗、同名冲突 `-2`/`-3`…）；有 `id:` 键（有 identifier）的书进度/划线不受影响，`lib:` 键的书把进度/划线/质量信号缓存迁到新键；改名失败整次保存报错。
 10. **重新读取原书元数据**（用户 2026-09-04）：面板原书名区旁有按钮，清空所有手填（含显示名）后重新打开 epub，用原书 `dc:title`（清洗空白）/`dc:creator`（多名 ASCII 逗号）/`dc:publisher`/identifier 里的 ISBN 填表；副标题/卷册/译者/年份无原书来源置空；originalTitle 定格不动；**不自动保存**，是否保存由用户决定。
+11. **译者后缀 + 原文书名写括号**（用户 2026-09-30 拍板）：译者段由「译者 」前缀改为结尾「译」，即 `… - 宋文伟 译 - …`（`TRANSLATOR_LABEL` → `TRANSLATOR_SUFFIX`，值已以「译」结尾则原样、不重复）；**原文书名不单列字段**，用户自己在主书名/副标题里写括号（例：`性政治 (Sexual Politics)`），括号原样进显示名与文件名（`clean_file_stem` 不替换括号），面板主书名/副标题下各有一行说明。决策 8 的「译者 」标签写法随本次作废，保留原文作记录。
+12. **伴生文件合并为一个 + 去掉手填显示名**（用户 2026-09-30 拍板，破坏性：旧文件一律当不存在，可删库重来）：
+    - 一本 `X.epub` / `X.pdf` 只有**一个**伴生 md：`data/library/X.epub.md`（**文件名.扩展名.md**，扩展名是身份的一部分，同名 epub/pdf 不再互撞）。旧 `<stem>.md` 与 `<stem>.notes.md` 不再读、不迁移、不删。
+    - 该文件同时装 `<!-- icedreader-meta -->` 元数据块与 `<!-- icedreader-note -->` 划线块（块的机器字段补上渲染高亮必需的 `href`/`startText`/`startOffset`/`endText`/`endOffset` 与 `text`）。两侧各管各的块，其余（含文件头散文与用户笔记区）逐字保留：`split_meta` / `join_meta`。
+    - **`data/annotations.json` 废弃**：划线随书走，删书随之进回收站。解析器从 `src-tauri/src/notes.rs` 下沉到 `crates/core/src/notes.rs`（`core` 不能依赖 `src-tauri`），`src-tauri/src/notes.rs` 只转发。
+    - **去掉 `displayTitle`**（md 键与面板输入框一起删）：裁决链只剩 `字段拼接 → dc:title/文件名`，书架显示名与库内文件名恒等，不再有两个名字打架。问题起点是「显示名」留空即自动、填了就锁定，与「文件名跟随拼接结果」冲突。
 
 ## 实现现状（v1 已提交 `e498e8f`；md v2/拼接模板/译者/保存改名已提交；ASCII 分隔与重读在本提交）
 
-- `crates/core/src/book_meta.rs`：`BookMeta` 结构 + `<stem>.md` 读写（v2 字段 author/translator/year/publisher/isbn；宽容解析、v1 md 读入为空不丢）；`clean_title`；`clean_person_list`（顿号 U+3001 → ASCII `, `）；`join_title`（拼接模板，作者/译者段过 `clean_person_list`，译者/ISBN 自动补标签）；`resolved_title`；带单测。
+- `crates/core/src/book_meta.rs`：`BookMeta` 结构 + `<文件名>.md`（`三体.epub` → `三体.epub.md`）读写（v2 字段 author/translator/year/publisher/isbn；宽容解析、v1 md 读入为空不丢；`split_meta`/`join_meta` 让元数据块与划线区互不碰）；`clean_title`；`clean_person_list`（顿号 U+3001 → ASCII `, `）；`join_title`（拼接模板，作者/译者段过 `clean_person_list`，译者补结尾「译」/ISBN 补 ASCII 前缀）；`resolved_title`；带单测。
 - `crates/core/src/lib.rs`：导出 `book_meta`（含 `clean_person_list`）。
 - `crates/core/src/progress.rs`：`rename_key`；`crates/core/src/annotations.rs`：`rename_book`（均仅 `lib:` 键）。
 - `src-tauri/src/book_meta.rs`：`BookMetaFields`/`BookMetaView` + `view_for`（作者预填原书 dc:creator，多名 ASCII 逗号）；`reread_view_for`（重读原书建视图）+ `extract_isbn`（identifier 里取 ISBN-like 并剥前缀）；带单测。
-- `src-tauri/src/lib.rs`：命令 `get_book_meta`/`reread_book_meta`/`set_book_meta`；`set_book_meta` 编排「保存即改名」（改 epub/删旧 md → `lib:` 进度/划线/质量信号键迁移 + 缓存清理 → 写新 md）。
+- `src-tauri/src/lib.rs`：命令 `get_book_meta`/`reread_book_meta`/`set_book_meta`；`set_book_meta` 编排「保存即改名」（改 epub + 伴生 md → `lib:` 进度/质量信号键迁移 + 缓存清理 → 写新 md）。
 - `src-tauri/src/library.rs`：`clean_file_stem`/`unique_stem`/`rename_book_files`；`book_signals.rs`：`rename_key`；均带单测。
 - `ui/src/BookMetaPanel.tsx`：v2+ 全字段布局 + 主书名必填 + 「重新读取原书元数据」按钮（清空手填/显示名、填充原书字段、不自动保存）+ 预览镜像 join_title + 操作行常驻底部 + 文件改名提示；模板说明在预览框外。
 - `AGENTS.md`：书元数据小节（ASCII 逗号分隔、重读命令、保存改名语义）；验证段同步。
@@ -46,6 +52,7 @@
 3. ✅ **验证**：`cargo test`（core 37 / lib 22 / epub 18+2 ignored 全过）、`npx tsc --noEmit` 无错。手工核对（书架/顶栏标题一致、删书连带删 md、面板交互手感）需桌面窗口。
 4. ✅ **md v2：字段扩展 + 新拼接模板**（用户 2026-09-04 拍板）：加 `author` / `year` / `publisher` / `isbn`；拼接模板 `书名 _ 副标题 - 卷册 - 作者 - 出版年份 - 出版社 - ISBN`（下划线仅书名↔副标题一处，卷册起全用 ` - `）；空段整体跳过不产生连续分隔符；书名必填（UI 禁保存）；ISBN 自动补 ASCII `ISBN ` 前缀；作者预填原书 dc:creator。
 5. ✅ **译者字段 + 保存即改名**（用户 2026-09-04 拍板 C 方案与「书籍/md文件名应按保存后的拼接文件名；显示名到 md 里取」）：加 `translator`，模板插到作者后 `- 译者 阳曦`（自动补标签）；`set_book_meta` 保存成功后把 epub+md 按最终显示名（手改或拼接）改名，Windows 禁作清洗、同名 `-2`…、`lib:` 进度/划线/质量信号键自动迁移、`id:` 书天然不受影响。原书名/原副标题/原ISBN 不拆（用户收止）。
+6. ✅ **译者改结尾「译」+ 原文书名写括号**（用户 2026-09-30）：译者段改成 `- 宋文伟 译`（补结尾，不重复）；原文书名不单列字段，改由用户在主书名/副标题里写括号，面板两处各加一行说明（见「已拍板决策 11」）。
 
 ## AGENTS.md 同步（已完成，原草案存档）
 

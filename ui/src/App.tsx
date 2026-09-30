@@ -33,7 +33,7 @@ import {
   toggleAppFullscreen,
 } from "./fullscreen";
 
-/** 库内 epub 文件名（书命令与 notes.md 档案用）。 */
+/** 库内 epub 文件名（书命令与伴生 md 档案用）。 */
 function fileNameOf(b: OpenedBook): string {
   return b.path.split(/[\\/]/).pop() ?? "";
 }
@@ -80,7 +80,7 @@ export default function App() {
   const [usedFonts, setUsedFonts] = useState<UsedFontReport | null>(null);
   /** Highlights of the open book (filtered per chapter when handed to the frame). */
   const [highlights, setHighlights] = useState<HighlightRecord[]>([]);
-  /** 备注正文（notes.md 用户区）id → 文本；hover 浮层与划线列表的数据源。 */
+  /** 备注正文（伴生 md 用户区）id → 文本；hover 浮层与划线列表的数据源。 */
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const notesRef = useRef(notesById);
   notesRef.current = notesById;
@@ -209,7 +209,6 @@ export default function App() {
         const rec = await invoke<HighlightRecord>("add_annotation", {
           fileName: fileNameOf(b),
           bookId: b.id,
-          key: b.progressKey,
           href,
           startText: anchor.start.seq,
           startOffset: anchor.start.offset,
@@ -234,8 +233,6 @@ export default function App() {
     try {
       await invoke("set_annotation_pos", {
         fileName: fileNameOf(b),
-        bookId: b.id,
-        key: b.progressKey,
         id,
         pos,
       });
@@ -252,14 +249,13 @@ export default function App() {
     if (note !== undefined) {
       const preview = note.length > 60 ? `${note.slice(0, 60)}…` : note;
       const ok = window.confirm(
-        `这条划线有备注：\n「${preview}」\n\n删除后正文高亮消失；划线内容与备注保留在 notes.md 并记删除时间。\n确定删除这条划线？`,
+        `这条划线有备注：\n「${preview}」\n\n删除后正文高亮消失；划线内容与备注保留在书的伴生 md 里并记删除时间。\n确定删除这条划线？`,
       );
       if (!ok) return;
     }
     try {
       await invoke("delete_annotation", {
         fileName: fileNameOf(b),
-        key: b.progressKey,
         id,
       });
       setHighlights((prev) => prev.filter((h) => h.id !== id));
@@ -273,7 +269,7 @@ export default function App() {
     }
   }, []);
 
-  /** 写/清一条划线的备注（notes.md 是备注的唯一真相源）。 */
+  /** 写/清一条划线的备注（伴生 md 是备注的唯一真相源）。 */
   const saveNote = useCallback(async (id: string, note: string) => {
     const b = bookRef.current;
     if (!b) return;
@@ -282,7 +278,6 @@ export default function App() {
       await invoke("save_note", {
         fileName: fileNameOf(b),
         bookId: b.id,
-        key: b.progressKey,
         id,
         note: cleaned,
       });
@@ -297,7 +292,7 @@ export default function App() {
     }
   }, []);
 
-  /** 读回 notes.md 的备注（打开书后调用；书外改过的备注在此刷新）。 */
+  /** 读回伴生 md 的备注（打开书后调用；书外改过的备注在此刷新）。 */
   const notesGen = useRef(0);
   const loadNotes = useCallback(async (fileName: string) => {
     const gen = ++notesGen.current;
@@ -636,7 +631,9 @@ export default function App() {
         const opened = await invoke<OpenedBook>("open_book", { path: selected });
         setHighlights([]);
         setNotesById({});
-        void invoke<HighlightRecord[]>("list_annotations", { key: opened.progressKey })
+        void invoke<HighlightRecord[]>("list_annotations", {
+          fileName: fileNameOf(opened),
+        })
           .then((list) => {
             // Ignore stale results when another book was opened meanwhile.
             if (bookRef.current?.id === opened.id) setHighlights(list);

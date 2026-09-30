@@ -1760,7 +1760,6 @@ dependencies = [
 name = "iced-reader"
 version = "0.15.1"
 dependencies = [
- "chrono",
  "iced-reader-core",
  "iced-reader-epub",
  "iced-reader-pdf",
@@ -1780,6 +1779,7 @@ dependencies = [
 name = "iced-reader-core"
 version = "0.15.1"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

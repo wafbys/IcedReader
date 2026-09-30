@@ -5,7 +5,7 @@ type Props = {
   highlights: HighlightRecord[];
   spine: SpineItem[];
   currentHref: string;
-  /** 备注正文（notes.md 用户区）id → 文本；有备注的划线显示 ✎ 预览。 */
+  /** 备注正文（伴生 md 用户区）id → 文本；有备注的划线显示 ✎ 预览。 */
   notesById: Record<string, string>;
   onSelect: (rec: HighlightRecord) => void;
   onDelete: (id: string) => void;
@@ -75,7 +75,7 @@ export default function HighlightsPanel({
                     </span>
                     <span className="hl-text">{rec.text}</span>
                     {note !== undefined && note !== "" && (
-                      <span className="hl-note" title="备注（完整内容见 notes.md）">
+                      <span className="hl-note" title="备注（完整内容见伴生 md）">
                         ✎ {note}
                       </span>
                     )}
@@ -84,7 +84,7 @@ export default function HighlightsPanel({
                   <button
                     type="button"
                     className="hl-del"
-                    title={note ? "删除划线（notes.md 保留内容并记删除时间）" : "删除划线"}
+                    title={note ? "删除划线（伴生 md 保留内容并记删除时间）" : "删除划线"}
                     aria-label="删除划线"
                     onClick={() => onDelete(rec.id)}
                   >

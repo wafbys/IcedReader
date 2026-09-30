@@ -1,14 +1,19 @@
 //! User-editable per-book metadata, persisted as a companion Markdown file
-//! next to the epub in `data/library/` (`<stem>.md`, e.g. `三体.epub` ↔
-//! `三体.md`).
+//! next to the book in `data/library/` (full file name + `.md`, e.g.
+//! `三体.epub` ↔ `三体.epub.md`, `三体.pdf` ↔ `三体.pdf.md`).
 //!
-//! The md file is **maintained by the program, not hand-edited by the user**
-//! (the UI panel is the editing surface). Format:
+//! That one file carries **everything the reader keeps beside a book**: the
+//! metadata block below and the highlight archive (see `src-tauri/src/notes.rs`).
+//! The file is a real Markdown document the user may open and edit; the program
+//! only owns the marked regions and rewrites them in place — everything else is
+//! preserved verbatim (`split_meta` / `join_meta`).
+//!
+//! Format:
 //!
 //! ```markdown
 //! <!-- icedreader-meta
 //! bookFile: 140亿年宇宙演化全史.epub
-//! originalTitle: 140亿年宇宙演化全史…
+//! originalTitle: 140亿年宇宙演化全史
 //! title: 140亿年宇宙演化全史
 //! subtitle:
 //! volume:
@@ -17,23 +22,30 @@
 //! year: 2019
 //! publisher: 北京联合出版公司
 //! isbn: 9787559632487
-//! displayTitle:
 //! -->
+//!
+//! ## 第 1 章 · 开头
+//!
+//! <!-- icedreader-note
+//! id: …
+//! -->
+//! > 【重点】摘录一（全书 34% · 划于 …）
+//!
+//! 用户的自由笔记。
 //! ```
 //!
 //! - `bookFile` / `originalTitle`: captured on first save (the file name and
 //!   the title the program first saw, before any user edit).
 //! - `title` / `subtitle` / `volume` / `author` / `translator` / `year` /
-//!   `publisher` / `isbn`: structured fields edited in the panel (md v2).
+//!   `publisher` / `isbn`: structured fields edited in the panel.
 //!   Author/translator lists use ASCII separators — a full-width 、 typed in
 //!   those fields is folded to `, ` on save and inside the join, so the
 //!   rendered title never carries a Chinese punctuation mark it generated.
-//! - `displayTitle`: the title the user confirmed for display. Empty means
-//!   "derive it"; when non-empty it wins over everything else (never silently
-//!   overwritten by auto-generation).
+//!   There is no hand-written display title: the name is always the derived
+//!   join, so the on-disk file name follows the fields.
 //!
 //! Display-title join template: `书名 [ _ 副标题] [ - 卷册]
-//! [ - 作者] [ - 译者] [ - 出版年份] [ - 出版社] [ - ISBN…]`. Auto-generated
+//! [ - 作者] [ - 译者 译] [ - 出版年份] [ - 出版社] [ - ISBN…]`. Auto-generated
 //! separators are ASCII only — `" _ "` appears **only** between 书名 and
 //! 副标题; every later segment (卷册 and the bibliographic data) is joined
 //! with `" - "`. Empty segments are skipped (never an empty segment between
@@ -59,10 +71,10 @@ pub const FIELD_SEP: &str = " - ";
 /// with `ISBN` (so the join reads `… - ISBN 978-7-…`, never `- ISBN-…`).
 pub const ISBN_LABEL: &str = "ISBN ";
 
-/// Label prepended when a non-empty translator value does not already start
-/// with 译者, so the join reads `… - 译者 阳曦` (ASCII space, never a
-/// full-width colon).
-pub const TRANSLATOR_LABEL: &str = "译者 ";
+/// Suffix appended when a non-empty translator value does not already end with
+/// 译, so the join reads `… - 阳曦 译` (ASCII space, never a full-width colon).
+/// The value keeps whatever the user typed; only the closing 译 is added.
+pub const TRANSLATOR_SUFFIX: &str = " 译";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BookMeta {
@@ -86,8 +98,6 @@ pub struct BookMeta {
     pub publisher: String,
     /// ISBN（号码本身；拼接时自动补 ASCII 前缀，见 [`ISBN_LABEL`]）。
     pub isbn: String,
-    /// User-confirmed display title; empty = derive from the fields.
-    pub display_title: String,
 }
 
 impl BookMeta {
@@ -100,7 +110,6 @@ impl BookMeta {
             && self.year.trim().is_empty()
             && self.publisher.trim().is_empty()
             && self.isbn.trim().is_empty()
-            && self.display_title.trim().is_empty()
     }
 }
 
@@ -134,14 +143,14 @@ pub fn clean_title(s: &str) -> String {
 }
 
 /// Render the display-title per the join template (module doc):
-/// `书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 译者] [ - 出版年份]
+/// `书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 译者 译] [ - 出版年份]
 /// [ - 出版社] [ - ISBN…]`. Empty segments are skipped entirely — no empty
 /// segment between two separators ever appears. 书名 is required: with no
 /// title the function returns `""` and the resolution chain falls back to
 /// the base title. An ISBN value not already starting with `ISBN` gets the
-/// ASCII [`ISBN_LABEL`] prefix; a translator value not already starting with
-/// 译者 gets [`TRANSLATOR_LABEL`] — both so the segments read e.g.
-/// `… - 译者 阳曦 - … - ISBN 978-7-…`.
+/// ASCII [`ISBN_LABEL`] prefix; a translator value not already ending with
+/// 译 gets [`TRANSLATOR_SUFFIX`] — so the segments read e.g.
+/// `… - 阳曦 译 - … - ISBN 978-7-…`.
 // Eight metadata fields, each optional and independent; bundling them into a
 // struct would only move the same positional arguments to every call site.
 #[allow(clippy::too_many_arguments)]
@@ -179,7 +188,7 @@ pub fn join_title(
     }
     let translator = clean_person_list(translator);
     if !translator.is_empty() {
-        parts.push(with_label(&translator, TRANSLATOR_LABEL));
+        parts.push(with_suffix(&translator, TRANSLATOR_SUFFIX));
     }
     for p in [year, publisher] {
         let p = p.trim();
@@ -194,6 +203,18 @@ pub fn join_title(
     parts.join(FIELD_SEP)
 }
 
+/// Append `suffix` (trimmed for the check) unless `value` already ends with
+/// it, case-insensitively. Used for the translator: the name keeps whatever the
+/// user typed and only the closing ` 译` is added (`阳曦` → `阳曦 译`).
+fn with_suffix(value: &str, suffix: &str) -> String {
+    let tail = suffix.trim();
+    if value.to_lowercase().ends_with(&tail.to_lowercase()) {
+        value.to_string()
+    } else {
+        format!("{value}{suffix}")
+    }
+}
+
 /// Prepend `label` (trimmed for the prefix check) unless `value` already
 /// starts with it, case-insensitively. ASCII labels keep the join ASCII-only.
 fn with_label(value: &str, label: &str) -> String {
@@ -205,12 +226,14 @@ fn with_label(value: &str, label: &str) -> String {
 }
 
 /// Display-title resolution chain (single source of truth):
-/// user-confirmed `displayTitle` → derived join of the edited
-/// fields → whatever the book previously resolved to (`dc:title` or the file
-/// name fallback, passed in as `base`).
+/// derived join of the edited fields → whatever the book previously resolved
+/// to (`dc:title` or the file name fallback, passed in as `base`).
+///
+/// There is deliberately no user-confirmed override: the shelf name, the
+/// reader chrome and the file on disk must always be the same string, so the
+/// fields are the only way to change it.
 pub fn resolved_title(overlay: Option<&BookMeta>, base: &str) -> String {
     match overlay {
-        Some(m) if !m.display_title.trim().is_empty() => m.display_title.trim().to_string(),
         Some(m) => {
             let joined = join_title(
                 &m.title,
@@ -262,7 +285,6 @@ pub fn parse_meta(text: &str) -> Option<BookMeta> {
             "year" => meta.year = value,
             "publisher" => meta.publisher = value,
             "isbn" => meta.isbn = value,
-            "displayTitle" => meta.display_title = value,
             _ => {}
         }
     }
@@ -282,7 +304,8 @@ fn write_field(out: &mut String, key: &str, value: &str) {
     out.push('\n');
 }
 
-/// Serialize a [`BookMeta`] to the companion md text.
+/// Serialize a [`BookMeta`] into its md comment block (no trailing blank line;
+/// use [`join_meta`] to place it above the file body).
 pub fn format_meta(meta: &BookMeta) -> String {
     let mut out = String::from("<!-- icedreader-meta\n");
     if let Some(book_file) = &meta.book_file {
@@ -299,18 +322,75 @@ pub fn format_meta(meta: &BookMeta) -> String {
     write_field(&mut out, "year", &meta.year);
     write_field(&mut out, "publisher", &meta.publisher);
     write_field(&mut out, "isbn", &meta.isbn);
-    write_field(&mut out, "displayTitle", &meta.display_title);
     out.push_str("-->\n");
     out
 }
 
+/// Split a companion md into its metadata block and everything else. The block
+/// is `<!-- icedreader-meta … -->` plus the blank run that follows it; `body` is
+/// the rest of the file **verbatim** — that is where the highlight archive and
+/// the user's own prose live. A file without the marker yields `("", text)`.
+///
+/// Every writer (metadata save, highlight upsert) keeps the other half byte for
+/// byte; only the marked region is rewritten.
+pub fn split_meta(text: &str) -> (String, String) {
+    let Some(start) = text.find(META_OPEN) else {
+        return (String::new(), text.to_string());
+    };
+    let after = &text[start + META_OPEN.len()..];
+    let Some(end) = after.find("-->") else {
+        // Unterminated block: treat the whole file as user content rather than
+        // truncating it (the reader parses no metadata in this case either).
+        return (String::new(), text.to_string());
+    };
+    let block_end = start + META_OPEN.len() + end + "-->".len();
+    let mut body_start = block_end;
+    // Swallow the newline that ends the `-->` line, then any blank lines, so a
+    // rewritten block does not accumulate whitespace on every save.
+    let bytes = text.as_bytes();
+    while body_start < bytes.len() && (bytes[body_start] == b'\n' || bytes[body_start] == b'\r') {
+        body_start += 1;
+    }
+    while body_start < bytes.len()
+        && (bytes[body_start] == b'\n' || bytes[body_start] == b'\r' || bytes[body_start] == b' ')
+    {
+        body_start += 1;
+    }
+    let mut block = text[..block_end].to_string();
+    if !block.ends_with('\n') {
+        block.push('\n');
+    }
+    (block, text[body_start..].to_string())
+}
+
+/// Put a metadata block back on top of a file body. An empty `block` leaves the
+/// body untouched (a book with no edited metadata keeps a pure highlight file).
+pub fn join_meta(block: &str, body: &str) -> String {
+    if block.trim().is_empty() {
+        return body.to_string();
+    }
+    let mut out = block.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if !body.trim().is_empty() {
+        out.push('\n');
+        out.push_str(body);
+    }
+    out
+}
+
 /// Atomically write the companion md (tmp + rename), creating parents if needed.
+/// The file body (highlight archive + user prose) is preserved verbatim; only
+/// the metadata block is replaced.
 pub fn write_meta_file(path: &Path, meta: &BookMeta) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
+    let existing = fs::read_to_string(path).unwrap_or_default();
+    let (_, body) = split_meta(&existing);
     let tmp = path.with_extension("md.tmp");
-    fs::write(&tmp, format_meta(meta))?;
+    fs::write(&tmp, join_meta(&format_meta(meta), &body))?;
     fs::rename(&tmp, path)
 }
 
@@ -366,20 +446,26 @@ mod tests {
             "三体 _ 黑暗森林 - 第二部"
         );
 
-        // 译者 sits between 作者 and 出版年份, and gets an ASCII label.
+        // 译者 sits between 作者 and 出版年份, and gets a closing 译.
         assert_eq!(
             join_title("三体", "", "", "刘慈欣", "阳曦", "2008", "", ""),
-            "三体 - 刘慈欣 - 译者 阳曦 - 2008"
+            "三体 - 刘慈欣 - 阳曦 译 - 2008"
         );
-        // A value already labelled 译者 is kept as-is.
+        // A value that already ends with 译 is kept as-is (no doubled 译).
         assert_eq!(
             join_title("三体", "", "", "", "译者: 阳曦", "", "", ""),
-            "三体 - 译者: 阳曦"
+            "三体 - 译者: 阳曦 译"
+        );
+        // Program-added 译 precedes anything the user wrote themselves, rather
+        // than trying to punctuate a list of names.
+        assert_eq!(
+            join_title("三体", "", "", "", "阳曦、李明", "", "", ""),
+            "三体 - 阳曦, 李明 译"
         );
         // No author, only translator → no doubled separator.
         assert_eq!(
             join_title("三体", "", "", "", "阳曦", "", "", ""),
-            "三体 - 译者 阳曦"
+            "三体 - 阳曦 译"
         );
 
         // Full template with a missing publisher in the middle: no empty
@@ -395,7 +481,7 @@ mod tests {
                 "",
                 "978-7-5366-9293-0"
             ),
-            "三体 _ 黑暗森林 - 第二部 - 刘慈欣 - 译者 阳曦 - 2008 - ISBN 978-7-5366-9293-0"
+            "三体 _ 黑暗森林 - 第二部 - 刘慈欣 - 阳曦 译 - 2008 - ISBN 978-7-5366-9293-0"
         );
 
         // A value that already begins with ISBN (any case) is kept as-is.
@@ -417,7 +503,7 @@ mod tests {
         );
         assert_eq!(
             join_title("三体", "", "", "译者", "阳曦", "", "", ""),
-            "三体 - 译者 - 译者 阳曦"
+            "三体 - 译者 - 阳曦 译"
         );
         assert_eq!(
             join_title(
@@ -435,20 +521,12 @@ mod tests {
     }
 
     #[test]
-    fn resolution_chain_prefers_user_confirmed_title() {
+    fn resolution_chain_derives_from_fields() {
         let base = "dc:title 原样";
         // No overlay → untouched base.
         assert_eq!(resolved_title(None, base), base);
 
-        // Overlay with a hand-confirmed display title wins.
-        let hand = BookMeta {
-            display_title: "手改显示名".into(),
-            title: "字段主书名".into(),
-            ..Default::default()
-        };
-        assert_eq!(resolved_title(Some(&hand), base), "手改显示名");
-
-        // Edited fields derive a title when displayTitle is empty.
+        // Edited fields derive the title; there is no hand-written override.
         let fields = BookMeta {
             title: "字段主书名".into(),
             subtitle: "副".into(),
@@ -494,36 +572,34 @@ mod tests {
             year: "2008".into(),
             publisher: "重庆出版社".into(),
             isbn: "978-7-5366-9293-0".into(),
-            display_title: String::new(),
         };
         let text = format_meta(&meta);
         let back = parse_meta(&text).expect("parse own output");
         assert_eq!(back, meta);
         // The v2 keys are on disk.
-        for key in [
-            "translator",
-            "author",
-            "year",
-            "publisher",
-            "isbn",
-            "displayTitle",
-        ] {
+        for key in ["translator", "author", "year", "publisher", "isbn"] {
             assert!(
                 text.contains(&format!("{key}: ")),
                 "missing {key} in {text}"
             );
         }
+        // displayTitle is gone from the format (destructive removal).
+        assert!(!text.contains("displayTitle"));
 
         // A v1 md (no v2 keys) parses with empty v2 fields — no data loss.
-        let v1 =
-            parse_meta("<!-- icedreader-meta\ntitle: 三体\nvolume: 第二部\ndisplayTitle:\n-->")
-                .unwrap();
+        let v1 = parse_meta("<!-- icedreader-meta\ntitle: 三体\nvolume: 第二部\n-->").unwrap();
         assert_eq!(v1.title, "三体");
         assert_eq!(v1.volume, "第二部");
         assert_eq!(v1.author, "");
         assert_eq!(v1.translator, "");
         assert_eq!(v1.publisher, "");
         assert_eq!(v1.isbn, "");
+
+        // A stale displayTitle line is simply ignored (unknown key).
+        let stale =
+            parse_meta("<!-- icedreader-meta\ntitle: 三体\ndisplayTitle: 手写名\n-->\n").unwrap();
+        assert_eq!(stale.title, "三体");
+        assert_eq!(resolved_title(Some(&stale), "base"), "三体");
 
         // Values may contain colons; the first one separates key from value.
         let with_colon = parse_meta("<!-- icedreader-meta\ntitle: 书名：副标题\n-->\n").unwrap();
@@ -552,7 +628,7 @@ mod tests {
         let dir = std::env::temp_dir().join("icedreader-book-meta-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("三体.md");
+        let path = dir.join("三体.epub.md");
         let meta = BookMeta {
             book_file: Some("三体.epub".into()),
             original_title: Some("三体".into()),
@@ -564,12 +640,86 @@ mod tests {
             year: "2008".into(),
             publisher: "重庆出版社".into(),
             isbn: "978-7-5366-9293-0".into(),
-            display_title: String::new(),
         };
         write_meta_file(&path, &meta).unwrap();
         assert_eq!(read_meta_file(&path), Some(meta.clone()));
 
         // Missing file → None.
         assert_eq!(read_meta_file(&dir.join("nope.md")), None);
+    }
+
+    #[test]
+    fn split_meta_keeps_the_body_verbatim() {
+        let text = format_meta(&BookMeta {
+            title: "三体".into(),
+            ..Default::default()
+        }) + "\n## 第 1 章 · 开头\n\n笔记一行。\n";
+        let (block, body) = split_meta(&text);
+        assert!(block.starts_with("<!-- icedreader-meta"));
+        assert!(block.ends_with("-->\n"));
+        assert_eq!(body, "## 第 1 章 · 开头\n\n笔记一行。\n");
+
+        // No marker → everything is user content.
+        let (block, body) = split_meta("纯笔记，没有元数据块\n");
+        assert!(block.is_empty());
+        assert_eq!(body, "纯笔记，没有元数据块\n");
+
+        // Unterminated block → never truncate the file.
+        let (block, body) = split_meta("<!-- icedreader-meta\ntitle: 三体\n");
+        assert!(block.is_empty());
+        assert_eq!(body, "<!-- icedreader-meta\ntitle: 三体\n");
+
+        // The file's own leading prose stays in the body when the block sits
+        // above it (the block is always written first by the program).
+        let (_, body) = split_meta("<!-- icedreader-meta\ntitle: 书\n-->\n\n前置散文\n");
+        assert_eq!(body, "前置散文\n");
+    }
+
+    #[test]
+    fn join_meta_leaves_the_body_alone() {
+        let block = format_meta(&BookMeta {
+            title: "三体".into(),
+            ..Default::default()
+        });
+        let body = "## 第 1 章 · 开头\n\n我的笔记。\n";
+        let joined = join_meta(&block, body);
+        assert!(joined.starts_with("<!-- icedreader-meta"));
+        assert!(joined.ends_with(body));
+        // Round trip: split gets the same body back, byte for byte.
+        assert_eq!(split_meta(&joined).1, body);
+
+        // No metadata block → body untouched (a pure highlight file).
+        assert_eq!(join_meta("", body), body);
+        assert_eq!(join_meta("   \n", body), body);
+
+        // Empty body → just the block, no trailing blank line.
+        let only_block = join_meta(&block, "");
+        assert!(only_block.ends_with("-->\n"));
+        assert_eq!(split_meta(&only_block).1, "");
+    }
+
+    /// The whole point of the split: rewriting the metadata block must not
+    /// touch one byte of the highlight archive below it, and vice versa.
+    #[test]
+    fn metadata_rewrite_preserves_the_notes_body() {
+        let dir = std::env::temp_dir().join("icedreader-meta-body-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("三体.epub.md");
+
+        let body = "## 第 1 章 · 开头\n\n<!-- icedreader-note\nid: abc\n-->\n> 【重点】摘录（全书 34% · 划于 2026-09-05 14:30）\n\n用户写的笔记。\n";
+        fs::write(&path, join_meta(&format_meta(&BookMeta::default()), body)).unwrap();
+
+        let meta = BookMeta {
+            book_file: Some("三体.epub".into()),
+            title: "三体".into(),
+            author: "刘慈欣".into(),
+            ..Default::default()
+        };
+        write_meta_file(&path, &meta).unwrap();
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(split_meta(&text).1, body);
+        assert_eq!(read_meta_file(&path), Some(meta));
     }
 }

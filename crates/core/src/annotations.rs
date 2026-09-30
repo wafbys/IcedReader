@@ -3,14 +3,40 @@
 //! chapter by global text-node sequence + in-node offset, stable because
 //! chapter HTML is regenerated deterministically on every open. Records carry
 //! `color` (yellow = 重点, green = 摘抄) and whole-book `pos` (0–1).
+//!
+//! **Storage is the book's companion md** — the same file that holds the
+//! metadata block. Each highlight is one machine block below it:
+//!
+//! ```markdown
+//! <!-- icedreader-note
+//! id: 8f3c…
+//! color: yellow
+//! created: 2026-09-05T14:30:00+08:00
+//! deleted:
+//! posPct: 34
+//! href: /EPUB/ch2.xhtml
+//! startText: 12
+//! startOffset: 3
+//! endText: 12
+//! endOffset: 8
+//! text: 摘录原文…
+//! -->
+//! > 【重点】摘录一（全书 34% · 划于 2026-09-05 14:30）
+//!
+//! 用户的自由笔记。
+//! ```
+//!
+//! There is no `data/annotations.json` any more: the coordinates a highlight
+//! needs in order to be painted live in the block, right next to the human
+//! excerpt and the user's own prose. The block parsing and the body rewriting
+//! live in [`crate::notes`]; this module is the typed front over them.
 
-use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{same_book, CoreError};
+use crate::notes;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -37,7 +63,8 @@ pub struct Highlight {
     /// visible-text char weights (same char regime as the front-end text
     /// nodes). `None` while those weights are unknown (a freshly imported
     /// book's first-open analysis still running) — never invent `0.0`, which
-    /// would read as "at the very start". Written into notes.md.
+    /// would read as "at the very start". Written into the md block as
+    /// `posPct`.
     #[serde(default)]
     pub pos: Option<f64>,
     pub created_at: i64,
@@ -53,225 +80,216 @@ fn default_highlight_color() -> String {
     COLOR_YELLOW.to_string()
 }
 
-#[derive(Debug, Default)]
+/// One highlight as it is stored in the md block: the [`Highlight`] plus the
+/// chapter title it is filed under (the `## …` section it sits below).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredHighlight {
+    pub highlight: Highlight,
+    /// 章标题行全文（`## 第 12 章 · …`），新条目按它分组归属。Reading an
+    /// existing block derives it from the section heading above the block.
+    pub section_title: String,
+    /// 用户笔记区文本（外部编辑器/备注框都可写）。
+    pub note: String,
+}
+
+/// The on-disk front over [`crate::notes`]: every book's highlights live in
+/// that book's companion md, addressed by the book's `file_name`. There is no
+/// book-keyed state to migrate — renaming or deleting a book moves/deletes the
+/// md with it — so the store stays a pure per-file view.
 pub struct AnnotationStore {
-    path: Option<PathBuf>,
-    by_book: HashMap<String, Vec<Highlight>>,
+    /// Library directory (`data/library/`). `None` = in-memory only.
+    dir: Option<PathBuf>,
+}
+
+impl Default for AnnotationStore {
+    fn default() -> Self {
+        Self { dir: None }
+    }
 }
 
 impl AnnotationStore {
+    /// A store with no I/O at all (tests, headless use).
     pub fn in_memory() -> Self {
         Self::default()
     }
 
-    pub fn open(path: PathBuf) -> Result<Self, CoreError> {
-        let by_book = if path.exists() {
-            let bytes = fs::read(&path).map_err(|e| CoreError::msg(e.to_string()))?;
-            serde_json::from_slice(&bytes).unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-        Ok(Self {
-            path: Some(path),
-            by_book,
-        })
+    /// A store that reads and writes each book's companion md under `dir`.
+    pub fn with_library_dir(dir: PathBuf) -> Self {
+        Self { dir: Some(dir) }
     }
 
-    /// Highlights for one book, in insertion order. `lib:` keys include stem
-    /// aliases (`书名-2` ≡ `书名`), matching [`crate::progress::ProgressStore`].
-    pub fn list(&self, key: &str) -> Vec<Highlight> {
-        if !key.starts_with("lib:") {
-            return self.by_book.get(key).cloned().unwrap_or_default();
+    /// Path of the md backing one book (`三体.epub` → `<dir>/三体.epub.md`).
+    /// Rejects anything that is not a plain file name.
+    pub fn md_path(&self, file_name: &str) -> Option<PathBuf> {
+        let dir = self.dir.as_ref()?;
+        let as_path = Path::new(file_name);
+        if file_name.is_empty()
+            || as_path
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return None;
         }
-        let mut keys: Vec<&String> = self.by_book.keys().filter(|k| same_book(k, key)).collect();
-        keys.sort();
-        let mut out = Vec::new();
-        for k in keys {
-            if let Some(list) = self.by_book.get(k) {
-                out.extend(list.iter().cloned());
+        Some(dir.join(format!("{file_name}.md")))
+    }
+
+    /// Every stored block in one book's md, in file order. `None` when the
+    /// store has no directory (in-memory) or the book name is unusable.
+    fn read_all(&self, file_name: &str) -> Vec<StoredHighlight> {
+        let Some(path) = self.md_path(file_name) else {
+            return Vec::new();
+        };
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        notes::stored_highlights(&text)
+    }
+
+    /// Highlights for one book, in file order. Takes the book's **file name**
+    /// (`三体.epub`), not a progress key — the md is found by file name, and the
+    /// `id:`/`lib:` key never appears in a path. Numbered copies that share a
+    /// stem (`书名-2.epub` ≡ `书名.epub`) are read as the same book, matching
+    /// [`crate::progress::ProgressStore`].
+    pub fn list(&self, file_name: &str) -> Vec<Highlight> {
+        let mut out: Vec<Highlight> = Vec::new();
+        for book in self.books_for(file_name) {
+            for s in self.read_all(&book) {
+                if !out.iter().any(|h| h.id == s.highlight.id) {
+                    out.push(s.highlight);
+                }
             }
         }
         out
     }
 
-    /// Insert or replace (same id) one highlight. `lib:` writes fold alias
-    /// lists into `key` so a numbered copy and the plain name stay one book.
-    pub fn add(&mut self, key: String, highlight: Highlight) -> Result<(), CoreError> {
-        self.fold_lib_aliases_into(&key);
-        let list = self.by_book.entry(key).or_default();
-        if let Some(slot) = list.iter_mut().find(|h| h.id == highlight.id) {
-            *slot = highlight;
-        } else {
-            list.push(highlight);
-        }
-        self.persist()
+    /// Insert or replace (same id) one highlight. Takes the book's **file name**
+    /// (`三体.epub`), which is what locates the md.
+    ///
+    /// The block is filed with no chapter heading. The reader does not use this
+    /// path: it writes each stroke through [`crate::notes::upsert`] with the
+    /// chapter title, so the archive stays grouped under `## 第 N 章 · …`. Kept
+    /// as the low-level insert for headless callers and tests.
+    pub fn add(&mut self, file_name: &str, highlight: Highlight) -> Result<(), crate::CoreError> {
+        let Some(path) = self.md_path(file_name) else {
+            return Err(crate::CoreError::msg("没有书库目录，无法写入划线"));
+        };
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let entry = notes::NoteEntry {
+            highlight: highlight.clone(),
+            section_title: String::new(),
+            note: String::new(),
+        };
+        let updated = notes::upsert(&text, &entry);
+        write_atomic(&path, &updated)
     }
 
-    /// Remove one highlight; `lib:` looks across stem aliases.
-    pub fn remove(&mut self, key: &str, id: &str) -> Result<bool, CoreError> {
-        let keys: Vec<String> = if key.starts_with("lib:") {
-            self.by_book
-                .keys()
-                .filter(|k| same_book(k, key))
-                .cloned()
-                .collect()
-        } else if self.by_book.contains_key(key) {
-            vec![key.to_string()]
-        } else {
-            return Ok(false);
-        };
-        if keys.is_empty() {
-            return Ok(false);
-        }
+    /// Remove one highlight; numbered stem copies are searched too.
+    pub fn remove(&mut self, file_name: &str, id: &str) -> Result<bool, crate::CoreError> {
+        let books = self.books_for(file_name);
         let mut removed = false;
-        for k in keys {
-            let Some(list) = self.by_book.get_mut(&k) else {
+        for book in books {
+            let Some(path) = self.md_path(&book) else {
                 continue;
             };
-            let before = list.len();
-            list.retain(|h| h.id != id);
-            if list.len() != before {
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            if !notes::stored_highlights(&text).iter().any(|s| s.highlight.id == id) {
+                continue;
+            }
+            let has_note = notes::notes_of(&text).iter().any(|(nid, _)| nid == id);
+            let updated = if has_note {
+                // 有备注：留痕（`deleted:` + 删除线），用户笔记保留。删除时间
+                // 由系统时钟给出；调用方（Tauri 层）不参与这段决策。
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                notes::mark_deleted(&text, id, now)
+            } else {
+                notes::remove_note(&text, id)
+            };
+            if let Some(updated) = updated {
+                write_atomic(&path, &updated)?;
                 removed = true;
             }
-            if list.is_empty() {
-                self.by_book.remove(&k);
-            }
-        }
-        if removed {
-            self.persist()?;
         }
         Ok(removed)
     }
 
     /// Fill in one highlight's whole-book position once the weights are known
-    /// (a stroke made before the first-import analysis finished). `lib:` looks
-    /// across stem aliases, mirroring [`Self::remove`]. Returns whether any
-    /// record changed; a record that already has the value is a no-op.
-    pub fn set_pos(&mut self, key: &str, id: &str, pos: f64) -> Result<bool, CoreError> {
+    /// (a stroke made before the first-import analysis finished). Takes the
+    /// book's **file name**. Returns whether anything changed.
+    ///
+    /// Rewrites the machine block and the excerpt line only
+    /// ([`notes::update_pos`]), so the user's own note stays byte for byte —
+    /// the stored note read back here is a trim of that region, and writing it
+    /// through [`notes::upsert`] would put the trimmed form back on disk.
+    pub fn set_pos(&mut self, file_name: &str, id: &str, pos: f64) -> Result<bool, crate::CoreError> {
         let pos = pos.clamp(0.0, 1.0);
-        let keys: Vec<String> = if key.starts_with("lib:") {
-            self.by_book
-                .keys()
-                .filter(|k| same_book(k, key))
-                .cloned()
-                .collect()
-        } else if self.by_book.contains_key(key) {
-            vec![key.to_string()]
-        } else {
-            return Ok(false);
-        };
         let mut changed = false;
-        for k in keys {
-            let Some(list) = self.by_book.get_mut(&k) else {
+        for book in self.books_for(file_name) {
+            let Some(path) = self.md_path(&book) else {
                 continue;
             };
-            if let Some(h) = list.iter_mut().find(|h| h.id == id) {
-                if h.pos != Some(pos) {
-                    h.pos = Some(pos);
-                    changed = true;
-                }
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            let Some(mut stored) = notes::stored_highlights(&text)
+                .into_iter()
+                .find(|s| s.highlight.id == id)
+            else {
+                continue;
+            };
+            if stored.highlight.pos == Some(pos) {
+                continue;
             }
-        }
-        if changed {
-            self.persist()?;
+            stored.highlight.pos = Some(pos);
+            let entry = notes::NoteEntry {
+                highlight: stored.highlight,
+                section_title: stored.section_title,
+                note: stored.note,
+            };
+            let Some(updated) = notes::update_pos(&text, id, &entry) else {
+                continue;
+            };
+            write_atomic(&path, &updated)?;
+            changed = true;
         }
         Ok(changed)
     }
 
-    fn fold_lib_aliases_into(&mut self, canonical: &str) {
-        if !canonical.starts_with("lib:") {
-            return;
-        }
-        let mut extras: Vec<String> = self
-            .by_book
-            .keys()
-            .filter(|k| same_book(k, canonical) && *k != canonical)
-            .cloned()
-            .collect();
-        if extras.is_empty() {
-            return;
-        }
-        extras.sort();
-        let mut merged: Vec<Highlight> = Vec::new();
-        for k in extras {
-            if let Some(list) = self.by_book.remove(&k) {
-                merged.extend(list);
-            }
-        }
-        if merged.is_empty() {
-            return;
-        }
-        let list = self.by_book.entry(canonical.to_string()).or_default();
-        for h in merged {
-            if list.iter().any(|x| x.id == h.id) {
-                continue;
-            }
-            list.push(h);
-        }
-    }
-
-    /// Re-key one book's highlights after its file was renamed in the
-    /// library. Only meaningful for `lib:` keys (they embed the file name);
-    /// callers skip `id:`/`path:` keys. All keys aliasing `old` (numbered
-    /// copies share a stem) merge into `new`, insertion order preserved.
-    pub fn rename_book(&mut self, old: &str, new: &str) -> Result<(), CoreError> {
-        if old == new {
-            return Ok(());
-        }
-        // Only `lib:` keys embed the file name; `id:`/`path:` keys survive a
-        // rename untouched and must never be rewritten here.
-        if !(old.starts_with("lib:") && new.starts_with("lib:")) {
-            return Ok(());
-        }
-        let affected: Vec<String> = self
-            .by_book
-            .keys()
-            .filter(|k| same_book(k, old))
-            .cloned()
-            .collect();
-        if affected.is_empty() {
-            return Ok(());
-        }
-        let mut merged: Vec<Highlight> = Vec::new();
-        // Deterministic order: aliases merge in key order (HashMap iteration
-        // order is not stable across runs).
-        let mut keys = affected;
-        keys.sort();
-        for key in keys {
-            if let Some(list) = self.by_book.remove(&key) {
-                merged.extend(list);
-            }
-        }
-        self.by_book.insert(new.to_string(), merged);
-        self.persist()
-    }
-
-    /// Remove every record belonging to one book: the exact key plus any
-    /// `lib:` stem aliases that the progress key treats as the same book.
-    /// Returns whether anything was removed.
-    pub fn remove_book(&mut self, key: &str) -> Result<bool, CoreError> {
-        if !self.by_book.keys().any(|k| same_book(k, key)) {
-            return Ok(false);
-        }
-        self.by_book.retain(|k, _| !same_book(k, key));
-        self.persist()?;
-        Ok(true)
-    }
-
-    fn persist(&self) -> Result<(), CoreError> {
-        let Some(path) = &self.path else {
-            return Ok(());
+    /// The book file names whose md belongs to `file_name`: the book itself,
+    /// plus the numbered copies that share its stem (`书名-2.epub` ≡
+    /// `书名.epub`). Matches the progress store's notion of "same book".
+    fn books_for(&self, file_name: &str) -> Vec<String> {
+        let Some(dir) = self.dir.as_ref() else {
+            return Vec::new();
         };
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(|e| CoreError::msg(e.to_string()))?;
+        let this = format!("lib:{file_name}");
+        let mut out: Vec<String> = vec![file_name.to_string()];
+        if let Ok(read) = fs::read_dir(dir) {
+            for entry in read.filter_map(|e| e.ok()) {
+                let Some(name) = entry.file_name().to_str().map(|n| n.to_string()) else {
+                    continue;
+                };
+                // `三体.epub.md` → book file name `三体.epub`.
+                let Some(book) = name.strip_suffix(".md") else {
+                    continue;
+                };
+                if book != file_name && crate::same_book(&format!("lib:{book}"), &this) {
+                    out.push(book.to_string());
+                }
+            }
         }
-        let tmp = path.with_extension("json.tmp");
-        let data =
-            serde_json::to_vec_pretty(&self.by_book).map_err(|e| CoreError::msg(e.to_string()))?;
-        fs::write(&tmp, data).map_err(|e| CoreError::msg(e.to_string()))?;
-        fs::rename(&tmp, path).map_err(|e| CoreError::msg(e.to_string()))?;
-        Ok(())
+        out.sort();
+        out.dedup();
+        out
     }
+}
+
+fn write_atomic(path: &Path, text: &str) -> Result<(), crate::CoreError> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| crate::CoreError::msg(e.to_string()))?;
+    }
+    let tmp = path.with_extension("md.tmp");
+    fs::write(&tmp, text).map_err(|e| crate::CoreError::msg(e.to_string()))?;
+    fs::rename(&tmp, path).map_err(|e| crate::CoreError::msg(e.to_string()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -293,224 +311,152 @@ mod tests {
         }
     }
 
+    fn store_in(root: &Path) -> AnnotationStore {
+        AnnotationStore::with_library_dir(root.to_path_buf())
+    }
+
     #[test]
-    fn roundtrip_file_store() {
-        let dir = std::env::temp_dir().join("icedreader-annotations-test");
-        let _ = fs::create_dir_all(&dir);
-        let path = dir.join("annotations.json");
-        let _ = fs::remove_file(&path);
+    fn roundtrip_through_the_md() {
+        let dir = std::env::temp_dir().join("icedreader-annotations-md");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
 
-        let mut store = AnnotationStore::open(path.clone()).unwrap();
-        store.add("lib:foo.epub".into(), hl("a", 0, 0)).unwrap();
-        store.add("lib:foo.epub".into(), hl("b", 3, 7)).unwrap();
+        let mut store = store_in(&dir);
+        store.add("三体.epub".into(), hl("a", 0, 0)).unwrap();
+        store.add("三体.epub".into(), hl("b", 3, 7)).unwrap();
 
-        let reloaded = AnnotationStore::open(path).unwrap();
-        let list = reloaded.list("lib:foo.epub");
+        // A fresh store reads them back out of the same file.
+        let reloaded = store_in(&dir);
+        let list = reloaded.list("三体.epub");
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].id, "a");
         assert_eq!(list[1].start_text, 3);
         assert_eq!(list[1].start_offset, 7);
+        assert_eq!(list[1].href, "/EPUB/ch2.xhtml");
+        assert_eq!(list[0].pos, Some(0.25));
     }
 
     #[test]
-    fn removes_and_reports_missing() {
-        let mut store = AnnotationStore::in_memory();
-        store.add("k".into(), hl("a", 1, 0)).unwrap();
-        assert!(store.remove("k", "a").unwrap());
-        assert!(store.list("k").is_empty());
-        assert!(!store.remove("k", "a").unwrap());
-        assert!(!store.remove("other", "a").unwrap());
-    }
-
-    #[test]
-    fn remove_book_clears_book_and_its_lib_aliases() {
-        let mut store = AnnotationStore::in_memory();
-        store.add("lib:foo.epub".into(), hl("a", 0, 0)).unwrap();
-        store.add("lib:foo-2.epub".into(), hl("b", 1, 0)).unwrap();
-        store.add("lib:bar.epub".into(), hl("c", 2, 0)).unwrap();
-        store.add("id:x".into(), hl("d", 3, 0)).unwrap();
-
-        assert!(store.remove_book("lib:foo.epub").unwrap());
-        assert!(store.list("lib:foo.epub").is_empty());
-        assert!(store.list("lib:foo-2.epub").is_empty());
-        assert_eq!(store.list("lib:bar.epub").len(), 1);
-        assert_eq!(store.list("id:x").len(), 1);
-        assert!(!store.remove_book("lib:foo.epub").unwrap());
-    }
-
-    #[test]
-    fn rename_book_moves_aliases_under_new_key() {
-        let mut store = AnnotationStore::in_memory();
-        store.add("lib:foo.epub".into(), hl("a", 0, 0)).unwrap();
-        store.add("lib:foo-2.epub".into(), hl("b", 1, 0)).unwrap();
-        store.add("lib:bar.epub".into(), hl("c", 2, 0)).unwrap();
-        store.add("id:x".into(), hl("d", 3, 0)).unwrap();
-
-        store
-            .rename_book("lib:foo.epub", "lib:新书名.epub")
-            .unwrap();
-        let mut ids: Vec<String> = store
-            .list("lib:新书名.epub")
-            .iter()
-            .map(|h| h.id.clone())
-            .collect();
-        ids.sort();
-        assert_eq!(ids, ["a", "b"], "alias records merged under the new key");
-        assert!(store.list("lib:foo.epub").is_empty());
-        assert!(store.list("lib:foo-2.epub").is_empty());
-        assert_eq!(store.list("lib:bar.epub").len(), 1);
-        assert_eq!(store.list("id:x").len(), 1);
-
-        // Missing key → no-op.
-        store
-            .rename_book("lib:missing.epub", "lib:new.epub")
-            .unwrap();
-        // Non-lib keys untouched (callers should skip them anyway).
-        store.rename_book("id:x", "id:y").unwrap();
-        assert!(store.list("id:x").len() == 1);
-    }
-
-    #[test]
-    fn remove_book_leaves_other_ids_alone() {
-        let mut store = AnnotationStore::in_memory();
-        store.add("id:a".into(), hl("1", 0, 0)).unwrap();
-        store.add("id:b".into(), hl("2", 0, 0)).unwrap();
-        assert!(store.remove_book("id:a").unwrap());
-        assert!(store.list("id:a").is_empty());
-        assert_eq!(store.list("id:b").len(), 1);
-    }
-
-    #[test]
-    fn lib_aliases_share_list_add_and_remove() {
-        let mut store = AnnotationStore::in_memory();
-        store.add("lib:foo-2.epub".into(), hl("a", 0, 0)).unwrap();
-        let listed = store.list("lib:foo.epub");
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, "a");
-        store.add("lib:foo.epub".into(), hl("b", 1, 0)).unwrap();
-        let listed = store.list("lib:foo-2.epub");
-        let mut ids: Vec<_> = listed.iter().map(|h| h.id.as_str()).collect();
-        ids.sort();
-        assert_eq!(ids, ["a", "b"]);
-        assert!(store.remove("lib:foo.epub", "a").unwrap());
-        assert_eq!(store.list("lib:foo-2.epub").len(), 1);
-        assert_eq!(store.list("lib:foo-2.epub")[0].id, "b");
-    }
-
-    #[test]
-    fn books_are_isolated_and_ordered() {
-        let mut store = AnnotationStore::in_memory();
-        store.add("lib:one.epub".into(), hl("1", 0, 0)).unwrap();
-        store.add("lib:one.epub".into(), hl("2", 1, 0)).unwrap();
-        store.add("id:two".into(), hl("3", 5, 0)).unwrap();
-
-        let one = store.list("lib:one.epub");
-        assert_eq!(
-            one.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
-            ["1", "2"]
-        );
-        assert_eq!(store.list("id:two").len(), 1);
-        assert!(store.list("lib:missing.epub").is_empty());
-    }
-
-    #[test]
-    fn same_id_replaces_without_duplicating() {
-        let mut store = AnnotationStore::in_memory();
-        store.add("k".into(), hl("a", 0, 0)).unwrap();
-        let mut replaced = hl("a", 9, 9);
-        replaced.text = "新摘录".into();
-        store.add("k".into(), replaced).unwrap();
-        let list = store.list("k");
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].text, "新摘录");
-    }
-
-    #[test]
-    fn corrupt_file_falls_back_to_empty() {
-        let dir = std::env::temp_dir().join("icedreader-annotations-corrupt");
-        let _ = fs::create_dir_all(&dir);
-        let path = dir.join("annotations.json");
-        fs::write(&path, b"not json {").unwrap();
-        let store = AnnotationStore::open(path).unwrap();
-        assert!(store.list("k").is_empty());
-    }
-
-    #[test]
-    fn persist_only_writes_file_when_bound() {
-        let mut store = AnnotationStore::in_memory();
-        store.add("k".into(), hl("a", 0, 0)).unwrap();
-        store.remove("k", "a").unwrap();
-        let _ = store.add("k".into(), hl("b", 0, 0));
-    }
-
-    #[test]
-    fn legacy_records_without_color_or_pos_read_with_defaults() {
-        // Old annotations.json rows (pre colour/pos) must deserialise to
-        // yellow with no position rather than failing the whole store.
-        let json = r#"{
-  "lib:old.epub": [
-    {
-      "id": "legacy-1",
-      "href": "/EPUB/ch2.xhtml",
-      "startText": 0,
-      "startOffset": 0,
-      "endText": 0,
-      "endOffset": 5,
-      "text": "旧摘录",
-      "createdAt": 123
-    }
-  ]
-}"#;
-        let by_book: HashMap<String, Vec<Highlight>> = serde_json::from_str(json).unwrap();
-        let list = by_book.get("lib:old.epub").unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].color, COLOR_YELLOW);
-        assert_eq!(list[0].pos, None);
-    }
-
-    #[test]
-    fn set_pos_fills_a_highlight_once_weights_are_known() {
-        let mut store = AnnotationStore::in_memory();
-        store.add("lib:foo.epub".into(), hl("a", 0, 0)).unwrap();
-        let mut no_pos = hl("b", 1, 0);
-        no_pos.pos = None;
-        store.add("lib:foo.epub".into(), no_pos).unwrap();
-
-        assert!(store.set_pos("lib:foo.epub", "b", 0.42).unwrap());
-        let listed = store.list("lib:foo.epub");
-        assert_eq!(listed.iter().find(|h| h.id == "b").unwrap().pos, Some(0.42));
-        // Idempotent, and an unknown id is a no-op.
-        assert!(!store.set_pos("lib:foo.epub", "b", 0.42).unwrap());
-        assert!(!store.set_pos("lib:foo.epub", "missing", 0.5).unwrap());
-        // The `lib:` alias writes through to the canonical list.
-        assert_eq!(
-            store
-                .list("lib:foo-2.epub")
-                .iter()
-                .find(|h| h.id == "b")
-                .unwrap()
-                .pos,
-            Some(0.42)
-        );
-    }
-
-    #[test]
-    fn color_and_pos_roundtrip_on_disk() {
-        let dir = std::env::temp_dir().join("icedreader-annotations-color");
-        let _ = fs::create_dir_all(&dir);
-        let path = dir.join("annotations.json");
-        let _ = fs::remove_file(&path);
-
-        let mut store = AnnotationStore::open(path.clone()).unwrap();
-        let mut h = hl("a", 1, 2);
+    fn coordinates_and_excerpt_survive_the_block() {
+        let mut h = hl("c", 11, 2);
+        h.end_text = 19;
+        h.end_offset = 4;
+        h.pos = None;
         h.color = COLOR_GREEN.into();
-        h.pos = Some(0.618);
-        store.add("k".into(), h.clone()).unwrap();
+        let dir = std::env::temp_dir().join("icedreader-annotations-block");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut store = store_in(&dir);
+        store.add("书.epub".into(), h.clone()).unwrap();
 
-        let reloaded = AnnotationStore::open(path).unwrap();
-        let got = &reloaded.list("k")[0];
-        assert_eq!(got.color, COLOR_GREEN);
-        assert_eq!(got.pos, Some(0.618));
-        assert_eq!(got.created_at, h.created_at);
+        let back = store_in(&dir).list("书.epub");
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0], h);
+        // A missing position stays missing — never faked as 0.
+        assert_eq!(back[0].pos, None);
+    }
+
+    #[test]
+    fn numbered_stem_copies_are_read_as_one_book() {
+        // Each book has its own md now, addressed by file name — but a numbered
+        // copy still stems from the same book (`lib:书名-N.epub` ≡ `书名.epub`,
+        // the same alias rule the progress store uses), so both are folded in.
+        let dir = std::env::temp_dir().join("icedreader-annotations-alias");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut store = store_in(&dir);
+        store.add("书.epub".into(), hl("a", 0, 0)).unwrap();
+        store.add("书-2.epub".into(), hl("b", 1, 1)).unwrap();
+        let list = store_in(&dir).list("书.epub");
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().any(|h| h.id == "b"));
+        // A progress key is not a file name: it never resolves to an md.
+        assert!(store_in(&dir).list("lib:书.epub").is_empty());
+    }
+
+    #[test]
+    fn set_pos_rewrites_only_the_block() {
+        let dir = std::env::temp_dir().join("icedreader-annotations-pos");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut store = store_in(&dir);
+        store.add("书.epub".into(), hl("a", 0, 0)).unwrap();
+        store
+            .remove("书.epub", "a")
+            .expect("remove returns a result");
+        // Re-add, then backfill the position.
+        store.add("书.epub".into(), hl("a", 0, 0)).unwrap();
+        let changed = store.set_pos("书.epub", "a", 0.8).unwrap();
+        assert!(changed);
+        // Second call is a no-op.
+        assert!(!store.set_pos("书.epub", "a", 0.8).unwrap());
+        let list = store_in(&dir).list("书.epub");
+        assert_eq!(list[0].pos, Some(0.8));
+    }
+
+    #[test]
+    fn set_pos_leaves_the_user_note_byte_for_byte() {
+        // 位置回填只该动保护区与摘抄行。用户区经 `stored_highlights` 读回来是
+        // 一个 `trim()` 过的副本，若照它 `upsert` 回去，行首缩进与行尾空格会被
+        // 悄悄吃掉 —— 走 `notes::update_pos` 才真的「用户区不动」。
+        let dir = std::env::temp_dir().join("icedreader-annotations-pos-fidelity");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut store = store_in(&dir);
+        store.add("书.epub".into(), hl("a", 0, 0)).unwrap();
+        let path = store.md_path("书.epub").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let with_note = notes::upsert(
+            &text,
+            &notes::NoteEntry {
+                highlight: hl("a", 0, 0),
+                section_title: "## 第 1 章 · 开头".into(),
+                note: "  缩进的备注行\n\n第二行结尾有空格  ".into(),
+            },
+        );
+        fs::write(&path, &with_note).unwrap();
+
+        assert!(store.set_pos("书.epub", "a", 0.8).unwrap());
+        let after = fs::read_to_string(&path).unwrap();
+        // 保护区与摘抄行照旧刷新…
+        assert!(after.contains("posPct: 80"), "pos 未写入：{after}");
+        assert!(after.contains("全书 80%"), "摘抄行未刷新：{after}");
+        // …用户区一个字节都不许动。
+        assert!(after.contains("  缩进的备注行"), "行首缩进被吃掉：{after}");
+        assert!(
+            after.contains("第二行结尾有空格  "),
+            "行尾空格被吃掉：{after}"
+        );
+    }
+
+    #[test]
+    fn deletion_ledger_survives_a_read_back() {
+        // 有备注的划线删除后：记录本身消失，但档案留下 `deleted:` 与删除线。
+        let dir = std::env::temp_dir().join("icedreader-annotations-deleted");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut store = store_in(&dir);
+        store.add("书.epub".into(), hl("a", 0, 0)).unwrap();
+        // A note makes the deletion leave a trace.
+        let path = store.md_path("书.epub").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let with_note = notes::upsert(
+            &text,
+            &notes::NoteEntry {
+                highlight: hl("a", 0, 0),
+                section_title: String::new(),
+                note: "我的备注".into(),
+            },
+        );
+        fs::write(&path, &with_note).unwrap();
+
+        assert!(store.remove("书.epub", "a").unwrap());
+        // Gone from the records…
+        assert!(store_in(&dir).list("书.epub").is_empty());
+        // …but the ledger line and the user's note are still on disk.
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(after.contains("deleted: "), "missing ledger in {after}");
+        assert!(after.contains("已删于"), "missing strikethrough in {after}");
+        assert!(after.contains("我的备注"), "user note lost in {after}");
     }
 }

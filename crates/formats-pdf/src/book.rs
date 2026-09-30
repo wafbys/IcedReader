@@ -2,7 +2,8 @@
 //!
 //! Why one unit per page (and not one unit for the whole document): the reader
 //! shell already navigates a book by spine units — chapter jumps, TOC entries,
-//! chapter-boundary paging, `notes.md` section titles and the per-chapter char
+//! chapter-boundary paging, highlight section titles (`## 第 N 章 · …` in the
+//! book's companion md) and the per-chapter char
 //! weights all key off them. Making a page a unit lets PDF reuse every one of
 //! those paths unchanged, and keeps `Locator` (`href` + fraction) meaningful:
 //! the href names the page, the fraction stays 0.

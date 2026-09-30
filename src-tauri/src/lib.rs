@@ -71,7 +71,7 @@ pub struct OpenedBook {
     pub toc: Vec<TocNode>,
     pub spine: Vec<SpineItem>,
     /// Per-chapter raw visible-text char counts (spine order) + implicit total.
-    /// Whole-book position weights for notes.md 全书% and 按位置跳转.
+    /// Whole-book position weights for the 全书% readout and 按位置跳转.
     /// PDFs weigh every page equally (`1` per page) — a page is the unit.
     #[serde(rename = "chapterChars")]
     pub chapter_chars: Vec<u64>,
@@ -136,8 +136,8 @@ async fn open_book(
     }
 
     // Companion md overlays the title everywhere (shelf, reader chrome):
-    // displayTitle → joined fields → dc:title/file name. Same resolution the
-    // shelf applies in library.rs, so both surfaces always agree.
+    // joined fields → dc:title/file name. Same resolution the shelf applies in
+    // library.rs, so both surfaces always agree.
     if let Ok(dir) = portable::library_dir() {
         if let Ok(meta_path) = library::meta_path_for(&dir, &file_name) {
             if let Some(meta) = read_meta_file(&meta_path) {
@@ -214,26 +214,6 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// 本地 ISO 时间（notes.md 注释块机器字段）。
-fn local_iso(secs: i64) -> String {
-    use chrono::{DateTime, Local};
-    DateTime::from_timestamp(secs, 0)
-        .map(|d| {
-            d.with_timezone(&Local)
-                .format("%Y-%m-%dT%H:%M:%S%:z")
-                .to_string()
-        })
-        .unwrap_or_default()
-}
-
-/// 本地人类可读时间（引用行「划于 …」「已删于 …」）。
-fn local_human(secs: i64) -> String {
-    use chrono::{DateTime, Local};
-    DateTime::from_timestamp(secs, 0)
-        .map(|d| d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_default()
-}
-
 /// 划线 href → spine 下标（文件 + 可选 #fragment 双匹配；摊平目录里同一
 /// 文件多锚点靠 fragment 精确，回退到仅文件）。
 fn spine_index_for(spine: &[SpineItem], href: &str) -> Option<usize> {
@@ -261,7 +241,7 @@ fn spine_index_for(spine: &[SpineItem], href: &str) -> Option<usize> {
         .or_else(|| spine.iter().position(|s| key(&s.href).0 == file))
 }
 
-/// 划线 href → notes.md 章标题行（`## 第 N 章 · 标题（N/M）`）。
+/// 划线 → md 章标题行（`## 第 N 章 · 标题（N/M）`）。
 fn highlight_section_title(book: &Arc<dyn Book>, href: &str) -> crate::error::Result<String> {
     let spine = book.spine();
     let idx = spine_index_for(&spine, href).ok_or_else(|| "无法定位划线章节".to_string())?;
@@ -281,34 +261,12 @@ fn highlight_section_title(book: &Arc<dyn Book>, href: &str) -> crate::error::Re
     ))
 }
 
-/// 划线 → notes.md 保护区注释块各行。
-fn highlight_comment_lines(rec: &Highlight) -> Vec<String> {
-    vec![
-        notes::NOTE_OPEN.to_string(),
-        format!("id: {}", rec.id),
-        format!("color: {}", rec.color),
-        format!("created: {}", local_iso(rec.created_at)),
-        "deleted:".to_string(),
-        format!("posPct: {}", notes::pos_pct(rec.pos)),
-        notes::NOTE_CLOSE.to_string(),
-    ]
-}
-
-/// 划线 → notes.md 摘抄行（`> 【重点|摘抄】…（全书 N% · 划于 …）`）。
-fn highlight_excerpt(rec: &Highlight) -> String {
-    format!(
-        "> 【{}】{}（{} · 划于 {}）",
-        notes::color_label(&rec.color),
-        rec.text,
-        notes::pos_label(rec.pos),
-        local_human(rec.created_at)
-    )
-}
-
-/// 把一条划线写进它的 notes.md 条目。
+/// 把一条划线写进它的伴生 md 条目。块的机器字段（坐标在内）与摘抄行都由
+/// `notes` 层从记录生成，所以读写永远一致。
 ///
-/// `note = None`（新建划线、位置回填）：条目已在则只换保护区与摘抄行、用户区
-/// 逐字保留；不在则新建空用户区条目（此时才需要书来定章标题）。
+/// `note = None`（新建划线）：条目已在则只换保护区与摘抄行、用户区逐字保留；
+/// 不在则用 `book_id` 的书与 `rec.href` 定章标题（`## 第 N 章 · …`），新建空
+/// 用户区条目。
 /// `note = Some`（UI 保存备注）：整条原位替换，用户区覆盖为最新意图（空串 =
 /// 清空备注但保留划线条目）。
 fn write_highlight_entry(
@@ -320,12 +278,13 @@ fn write_highlight_entry(
 ) -> crate::error::Result<()> {
     let text = read_notes_text(file_name);
     if note.is_none() {
-        if let Some(updated) = notes::update_pos(
-            &text,
-            &rec.id,
-            highlight_comment_lines(rec),
-            highlight_excerpt(rec),
-        ) {
+        // 已在档案里：原位换块与摘抄行，用户区不动。
+        let entry = notes::NoteEntry {
+            highlight: rec.clone(),
+            section_title: String::new(),
+            note: String::new(),
+        };
+        if let Some(updated) = notes::update_pos(&text, &rec.id, &entry) {
             return write_notes_text(file_name, &updated);
         }
     }
@@ -337,46 +296,36 @@ fn write_highlight_entry(
             .clone()
     };
     let entry = notes::NoteEntry {
-        id: rec.id.clone(),
+        highlight: rec.clone(),
         section_title: highlight_section_title(&book, &rec.href)?,
-        comment_lines: highlight_comment_lines(rec),
-        excerpt: highlight_excerpt(rec),
         note: note.unwrap_or_default().to_string(),
     };
     write_notes_text(file_name, &notes::upsert(&text, &entry))
 }
 
-/// 读某本书的 notes.md（不存在/无档案返回空串）。
+/// 读某本书的伴生 md（不存在返回空串）。
 fn read_notes_text(file_name: &str) -> String {
     let Ok(dir) = portable::library_dir() else {
         return String::new();
     };
-    match notes::notes_path_for(&dir, file_name) {
-        Ok(path) => fs::read_to_string(path).unwrap_or_default(),
-        Err(_) => String::new(),
-    }
+    fs::read_to_string(notes::notes_path_for(&dir, file_name)).unwrap_or_default()
 }
 
-/// 写某本书的 notes.md；空内容 = 移除档案文件。
+/// 写某本书的伴生 md。**不再删文件**：那个文件同时存着元数据块，删掉会
+/// 连元数据一起丢。正文写空只会留下元数据块（或一个空文件）。
 fn write_notes_text(file_name: &str, text: &str) -> crate::error::Result<()> {
     let dir = portable::library_dir()?;
-    let path = notes::notes_path_for(&dir, file_name)?;
-    if text.trim().is_empty() {
-        if path.is_file() {
-            fs::remove_file(&path)?;
-        }
-        return Ok(());
-    }
+    let path = notes::notes_path_for(&dir, file_name);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("notes.md.tmp");
+    let tmp = path.with_extension("md.tmp");
     fs::write(&tmp, text)?;
     fs::rename(&tmp, path)?;
     Ok(())
 }
 
-/// notes.md 里一条划线的用户笔记（读回供悬停/列表）。
+/// 伴生 md 里一条划线的用户笔记（读回供悬停/列表）。
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NoteView {
@@ -386,14 +335,14 @@ struct NoteView {
 
 #[tauri::command]
 fn list_annotations(
-    key: String,
+    file_name: String,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<Vec<Highlight>> {
     state
         .annotations
         .lock()
         .map_err(|e| Error::msg(e.to_string()))
-        .map(|store| store.list(&key))
+        .map(|store| store.list(&file_name))
 }
 
 // Flat IPC payload: the field names are the frontend contract, so they stay
@@ -403,7 +352,6 @@ fn list_annotations(
 fn add_annotation(
     file_name: String,
     book_id: String,
-    key: String,
     href: String,
     start_text: usize,
     start_offset: usize,
@@ -435,81 +383,48 @@ fn add_annotation(
         pos: pos.map(|p| p.clamp(0.0, 1.0)),
         created_at: unix_now(),
     };
-    state.annotations.lock()?.add(key, highlight.clone())?;
-    // 每次划线都往 notes.md 落一条（保护区 + 摘录行）。这是配套档案动作，
-    // 失败不回滚划线本身：正文高亮以 annotations.json 为准，下次写备注会
-    // 补回条目。
-    if let Err(err) = write_highlight_entry(&state, &file_name, &book_id, &highlight, None) {
-        eprintln!("notes.md 写入失败（{file_name}）：{err}");
-    }
+    // 划线的唯一存储就是书的伴生 md：块里带渲染高亮所需的坐标，条目归到当前
+    // 章的 `## 第 N 章 · …` 之下。这一次写入因此必须成功——写失败就没有可读回
+    // 的记录，不能给前端返回一条正文有、档案无的幽灵划线。
+    write_highlight_entry(&state, &file_name, &book_id, &highlight, None)?;
     Ok(highlight)
 }
 
 /// Backfill one highlight's whole-book position once the chapter weights have
 /// arrived (a stroke made while the first-import analysis was still running
-/// was stored with `pos: null`). Idempotent.
+/// was stored with `pos: null`). `set_pos` rewrites the block and the excerpt
+/// line (全书 N%) in the companion md in place; the user's note stays put.
+/// Idempotent.
 #[tauri::command]
 fn set_annotation_pos(
     file_name: String,
-    book_id: String,
-    key: String,
     id: String,
     pos: f64,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<()> {
-    let changed = state.annotations.lock()?.set_pos(&key, &id, pos)?;
-    if !changed {
-        return Ok(());
-    }
-    // 位置进 notes.md 的摘抄行与 posPct（该条一般在，走原位替换，用户区不动）。
-    let rec = state
-        .annotations
-        .lock()?
-        .list(&key)
-        .into_iter()
-        .find(|h| h.id == id);
-    if let Some(rec) = rec {
-        if let Err(err) = write_highlight_entry(&state, &file_name, &book_id, &rec, None) {
-            eprintln!("notes.md 位置回填失败（{file_name}）：{err}");
-        }
-    }
+    state.annotations.lock()?.set_pos(&file_name, &id, pos)?;
     Ok(())
 }
 
-/// 删除划线：正文记录移除；notes.md 里该条若写过备注则打删除时间留痕、用户
+/// 删除划线：正文记录移除；伴生 md 里该条若写过备注则打删除时间留痕、用户
 /// 笔记保留（像会计不涂改）；纯划线（从未写备注）整条移除、档案无痕。
+/// 留痕/清除的判断在 `AnnotationStore::remove` 里（它读同一份 md 决定）。
 #[tauri::command]
 fn delete_annotation(
     file_name: String,
-    key: String,
     id: String,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<()> {
-    let text = read_notes_text(&file_name);
-    if !text.is_empty() {
-        // notes_of 只返回非空用户区：有备注 = 该 id 出现在里面。
-        let has_note = notes::notes_of(&text).iter().any(|(nid, _)| nid == &id);
-        let updated = if has_note {
-            let now = unix_now();
-            notes::mark_deleted(&text, &id, &local_iso(now), &local_human(now))
-        } else {
-            notes::remove_note(&text, &id)
-        };
-        if let Some(updated) = updated {
-            write_notes_text(&file_name, &updated)?;
-        }
-    }
-    state.annotations.lock()?.remove(&key, &id)?;
+    state.annotations.lock()?.remove(&file_name, &id)?;
     Ok(())
 }
 
-/// 写/改一条划线的备注（notes.md 用户区）。空串 = 清空备注：划线条目（保护区
+/// 写/改一条划线的备注（伴生 md 的用户区）。空串 = 清空备注：划线条目（保护区
 /// + 摘录行）留下，只把用户区清掉（划线还在，档案不该消失）。
 #[tauri::command]
 fn save_note(
     file_name: String,
     book_id: String,
-    key: String,
     id: String,
     note: String,
     state: tauri::State<'_, AppState>,
@@ -518,14 +433,14 @@ fn save_note(
     let rec = state
         .annotations
         .lock()?
-        .list(&key)
+        .list(&file_name)
         .into_iter()
         .find(|h| h.id == id)
         .ok_or_else(|| "划线不存在".to_string())?;
     write_highlight_entry(&state, &file_name, &book_id, &rec, Some(note.trim()))
 }
 
-/// 读出整本 notes.md 的用户笔记（id → 笔记），供悬停浮层与划线列表。
+/// 读出整本伴生 md 的用户笔记（id → 笔记），供悬停浮层与划线列表。
 #[tauri::command]
 fn read_notes(file_name: String) -> crate::error::Result<Vec<NoteView>> {
     let text = read_notes_text(&file_name);
@@ -874,9 +789,9 @@ async fn set_book_meta(
         .and_then(|m| m.original_title.clone())
         .unwrap_or_else(|| profile.title.clone());
 
-    // The display title the user will see after this save (hand-confirmed
-    // displayTitle wins, else the field join). The library file is renamed to
-    // its cleaned form so the on-disk name matches what the shelf shows.
+    // The name this book will have after the save: always the join of the
+    // fields (there is no hand-written override). The library file is renamed
+    // to its cleaned form so the on-disk name matches what the shelf shows.
     let staged = BookMeta {
         title: clean_title(&fields.title),
         subtitle: clean_title(&fields.subtitle),
@@ -886,19 +801,17 @@ async fn set_book_meta(
         year: clean_title(&fields.year),
         publisher: clean_title(&fields.publisher),
         isbn: clean_title(&fields.isbn),
-        display_title: clean_title(&fields.display_title),
         book_file: None,
         original_title: None,
     };
     let display_title = resolved_title(Some(&staged), &profile.title);
     let old_stem = library::epub_stem(&file_name);
     let desired_stem = library::clean_file_stem(&display_title);
-    let md_name = format!("{old_stem}.md");
-    let notes_name = format!("{old_stem}.notes.md");
+    let md_name = format!("{file_name}.md");
     let target_stem = library::unique_stem_ignoring(
         &dir,
         &desired_stem,
-        &[file_name.as_str(), md_name.as_str(), notes_name.as_str()],
+        &[file_name.as_str(), md_name.as_str()],
     );
     let needs_rename = !old_stem.eq_ignore_ascii_case(&target_stem);
 
@@ -906,7 +819,8 @@ async fn set_book_meta(
         let new_name = library::rename_book_files(&dir, &file_name, &target_stem)?;
         // `id:` / `path:` progress keys survive a rename untouched; only the
         // `lib:` key (which embeds the file name) must be carried over, along
-        // with the highlights and cached quality signals under the old name.
+        // with the cached quality signals under the old name. Highlights need
+        // no migration: the book's md travels with the book file.
         if profile.progress_key.starts_with("lib:") {
             // The key embeds the file name *and its format*: renaming a PDF
             // must not carry the EPUB of the same title along.
@@ -916,10 +830,6 @@ async fn set_book_meta(
                 .progress
                 .lock()?
                 .rename_key(&profile.progress_key, &new_lib_key)?;
-            state
-                .annotations
-                .lock()?
-                .rename_book(&profile.progress_key, &new_lib_key)?;
         }
         book_signals::rename_key(&file_name, &new_name);
         // Drop cached shelf metadata/cover bytes for the old path/name so the
@@ -950,14 +860,15 @@ async fn set_book_meta(
         year: clean_title(&fields.year),
         publisher: clean_title(&fields.publisher),
         isbn: clean_title(&fields.isbn),
-        display_title: clean_title(&fields.display_title),
     };
     write_meta_file(&final_md_path, &meta)?;
     Ok(())
 }
 
-/// Remove a library book: its file first, then the progress and
-/// annotation records keyed to it. Callers must confirm with the user first.
+/// Remove a library book: its file (with the companion md: metadata +
+/// highlights + user notes) goes to the Recycle Bin first, then the progress
+/// and cached quality signals keyed to it are dropped. Callers must confirm
+/// with the user first.
 #[tauri::command]
 fn delete_book(
     file_name: String,
@@ -967,7 +878,6 @@ fn delete_book(
     let dir = portable::library_dir()?;
     library::delete_book_from(&dir, &file_name)?;
     state.progress.lock()?.remove(&progress_key)?;
-    state.annotations.lock()?.remove_book(&progress_key)?;
     // Drop any cached metadata / cover bytes for the removed file.
     let deleted = dir.join(&file_name);
     if let Ok(mut cache) = state.library_meta.lock() {
@@ -1067,11 +977,9 @@ pub fn run() {
                     }
                 }
             }
-            if let Ok(file) = portable::annotations_file() {
-                if let Ok(store) = AnnotationStore::open(file) {
-                    if let Ok(mut slot) = app.state::<AppState>().annotations.lock() {
-                        *slot = store;
-                    }
+            if let Ok(dir) = portable::library_dir() {
+                if let Ok(mut slot) = app.state::<AppState>().annotations.lock() {
+                    *slot = AnnotationStore::with_library_dir(dir);
                 }
             }
             let webview_dir = portable::webview_dir()?;

@@ -202,7 +202,7 @@ pub struct BookSignals {
     pub chapter_shas: Vec<String>,
     /// Per-document raw visible-text char counts in spine order (entities
     /// decoded, whitespace kept — the same char regime as the front-end text
-    /// nodes). Whole-book position weights for notes.md 全书% and 按位置跳转.
+    /// nodes). Whole-book position weights for the 全书% readout and 按位置跳转.
     #[serde(default)]
     pub chapter_chars: Vec<u64>,
     /// 1 = each spine unit is a reading slice (TOC fragment), not a reused

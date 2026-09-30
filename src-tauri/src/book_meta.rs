@@ -2,7 +2,7 @@
 //! lives next to the book file in `data/library/`; the format, parsing and the
 //! display-title resolution rules live in `iced_reader_core::book_meta`.
 
-use iced_reader_core::{clean_person_list, clean_title, join_title, resolved_title, BookMeta};
+use iced_reader_core::{clean_person_list, clean_title, join_title, BookMeta};
 use serde::{Deserialize, Serialize};
 
 use crate::book_signals::{self, IdQuality};
@@ -12,7 +12,8 @@ use crate::library::BookProfile;
 /// 则），所以用 ASCII 逗号+空格，不用顿号。
 const AUTHOR_LIST_JOIN: &str = ", ";
 
-/// Panel payload: whatever the user typed in the inputs.
+/// Panel payload: whatever the user typed in the inputs. The displayed name is
+/// not part of it — the name is always the join of these fields.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BookMetaFields {
@@ -24,7 +25,6 @@ pub struct BookMetaFields {
     pub year: String,
     pub publisher: String,
     pub isbn: String,
-    pub display_title: String,
 }
 
 /// What the panel shows when it opens for one book.
@@ -46,13 +46,10 @@ pub struct BookMetaView {
     pub year: String,
     pub publisher: String,
     pub isbn: String,
-    /// 手改框初值：md 里用户确认过的 displayTitle；空 = 未确认，保存后由
-    /// 字段拼接接管（区别 `display_title` 的“当前裁决结果”——那个永远非空）。
-    pub confirmed_title: String,
-    /// The currently displayed title (resolution result) — the user may edit it.
-    pub display_title: String,
-    /// What a “regenerate” would produce from the current fields right now.
-    pub suggested_title: String,
+    /// The name this book has right now (the join of the fields above, or the
+    /// base title when the fields are empty). Also what the panel previews when
+    /// the user has not typed anything yet.
+    pub joined_title: String,
 }
 
 pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaView {
@@ -75,9 +72,7 @@ pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaVi
     let publisher = overlay.map(|m| m.publisher.clone()).unwrap_or_default();
     let isbn = overlay.map(|m| m.isbn.clone()).unwrap_or_default();
     let translator = overlay.map(|m| m.translator.clone()).unwrap_or_default();
-    let confirmed_title = overlay.map(|m| m.display_title.clone()).unwrap_or_default();
-    let display_title = resolved_title(overlay, base);
-    let suggested_title = join_title(
+    let joined_title = join_title(
         &title,
         &subtitle,
         &volume,
@@ -98,9 +93,7 @@ pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaVi
         year,
         publisher,
         isbn,
-        confirmed_title,
-        display_title,
-        suggested_title,
+        joined_title,
     }
 }
 
@@ -126,7 +119,7 @@ pub fn reread_view_for(
     let author = clean_person_list(&meta.authors.join(AUTHOR_LIST_JOIN));
     let publisher = meta.publisher.clone().unwrap_or_default();
     let isbn = extract_isbn(&meta.identifiers);
-    let suggested_title = join_title(&title, "", "", &author, "", "", &publisher, &isbn);
+    let joined_title = join_title(&title, "", "", &author, "", "", &publisher, &isbn);
     BookMetaView {
         file_name: profile.file_name.clone(),
         original_title: original_title.to_string(),
@@ -138,9 +131,7 @@ pub fn reread_view_for(
         year: String::new(),
         publisher,
         isbn,
-        confirmed_title: String::new(),
-        display_title: title_base.to_string(),
-        suggested_title,
+        joined_title,
     }
 }
 
@@ -208,14 +199,11 @@ mod tests {
     #[test]
     fn no_overlay_prefills_cleaned_current_title() {
         let view = view_for(&profile("  三体  "), None);
-        // The panel always deals in trimmed values (both the prefilled field
-        // and the display box); originalTitle keeps the first-seen name.
+        // The panel always deals in trimmed values; originalTitle keeps the
+        // first-seen name.
         assert_eq!(view.original_title, "三体");
         assert_eq!(view.title, "三体");
-        assert_eq!(view.display_title, "三体");
-        assert_eq!(view.suggested_title, "三体");
-        // No companion md yet → nothing is user-confirmed → empty hand-edit box.
-        assert_eq!(view.confirmed_title, "");
+        assert_eq!(view.joined_title, "三体");
         assert_eq!(view.file_name, "三体.epub");
         // Bibliographic fields start empty (no dc source in this profile).
         assert_eq!(view.author, "");
@@ -229,15 +217,15 @@ mod tests {
     fn author_prefills_from_dc_creator() {
         let view = view_for(&profile_with_authors("三体", vec!["刘慈欣"]), None);
         assert_eq!(view.author, "刘慈欣");
-        // The suggested join shows the full template shape.
-        assert_eq!(view.suggested_title, "三体 - 刘慈欣");
+        // The join shows the full template shape.
+        assert_eq!(view.joined_title, "三体 - 刘慈欣");
 
         let multi = view_for(
             &profile_with_authors("三体", vec!["刘慈欣", "王晋康"]),
             None,
         );
         assert_eq!(multi.author, "刘慈欣, 王晋康");
-        assert_eq!(multi.suggested_title, "三体 - 刘慈欣, 王晋康");
+        assert_eq!(multi.joined_title, "三体 - 刘慈欣, 王晋康");
     }
 
     #[test]
@@ -252,7 +240,6 @@ mod tests {
             year: "2008".into(),
             publisher: "重庆出版社".into(),
             isbn: "978-7-5366-9293-0".into(),
-            display_title: String::new(),
             book_file: None,
         };
         let view = view_for(&profile("原 dc:title"), Some(&meta));
@@ -260,12 +247,9 @@ mod tests {
         assert_eq!(view.original_title, "首发时的脏名");
         assert_eq!(view.title, "三体");
         assert_eq!(
-            view.suggested_title,
-            "三体 _ 黑暗森林 - 第二部 - 刘慈欣 - 译者 阳曦 - 2008 - 重庆出版社 - ISBN 978-7-5366-9293-0"
+            view.joined_title,
+            "三体 _ 黑暗森林 - 第二部 - 刘慈欣 - 阳曦 译 - 2008 - 重庆出版社 - ISBN 978-7-5366-9293-0"
         );
-        assert_eq!(view.display_title, view.suggested_title);
-        // md.displayTitle empty → still derived, hand-edit box stays empty.
-        assert_eq!(view.confirmed_title, "");
     }
 
     #[test]
@@ -302,36 +286,38 @@ mod tests {
         assert_eq!(view.author, "原书作者甲, 原书作者乙");
         assert_eq!(view.publisher, "原书出版社");
         assert_eq!(view.isbn, "978-7-1");
-        // User-edited fields come back empty; nothing is confirmed.
+        // User-edited fields come back empty.
         for empty in [
             &view.subtitle,
             &view.volume,
             &view.translator,
             &view.year,
-            &view.confirmed_title,
         ] {
             assert!(empty.is_empty(), "expected empty field");
         }
         assert_eq!(
-            view.suggested_title,
+            view.joined_title,
             "原书dc:书名 - 原书作者甲, 原书作者乙 - 原书出版社 - ISBN 978-7-1"
         );
     }
 
     #[test]
-    fn hand_confirmed_display_title_wins() {
+    fn name_is_always_the_field_join() {
+        // There is no hand-written override any more: whatever the fields say
+        // is the name, so the panel never shows two competing titles.
         let meta = BookMeta {
             title: "三体".into(),
             subtitle: "黑暗森林".into(),
             author: "刘慈欣".into(),
-            display_title: "三体：黑暗森林（用户手写）".into(),
             ..Default::default()
         };
         let view = view_for(&profile("旧名"), Some(&meta));
-        assert_eq!(view.display_title, "三体：黑暗森林（用户手写）");
-        // The confirmed (hand-edited) value feeds the hand-edit box on reopen…
-        assert_eq!(view.confirmed_title, "三体：黑暗森林（用户手写）");
-        // …and the regenerate suggestion still follows the join template.
-        assert_eq!(view.suggested_title, "三体 _ 黑暗森林 - 刘慈欣");
+        assert_eq!(view.joined_title, "三体 _ 黑暗森林 - 刘慈欣");
+
+        // Fields empty → the panel prefills 主书名 with the cleaned base title,
+        // so the join still produces something instead of an empty box.
+        let view = view_for(&profile("dc:title 兜底"), Some(&BookMeta::default()));
+        assert_eq!(view.title, "dc:title 兜底");
+        assert_eq!(view.joined_title, "dc:title 兜底");
     }
 }

@@ -6,6 +6,7 @@
 mod annotations;
 mod book_meta;
 mod fonts;
+pub mod notes;
 mod progress;
 mod publisher_fonts;
 mod settings;
@@ -16,8 +17,8 @@ use serde::{Deserialize, Serialize};
 
 pub use annotations::{AnnotationStore, Highlight, COLOR_GREEN, COLOR_YELLOW};
 pub use book_meta::{
-    clean_person_list, clean_title, join_title, read_meta_file, resolved_title, write_meta_file,
-    BookMeta, FIELD_SEP, TITLE_JOIN_SEP,
+    clean_person_list, clean_title, format_meta, join_meta, join_title, parse_meta, read_meta_file,
+    resolved_title, split_meta, write_meta_file, BookMeta, FIELD_SEP, META_OPEN, TITLE_JOIN_SEP,
 };
 pub use fonts::{
     apply_custom_fonts, font_override_css, rewrite_css_font_families, sniff_font, FontKind,

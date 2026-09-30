@@ -150,9 +150,9 @@ pub enum FontQuery {
 
 1. **引擎 = 纯 Rust 栅格化（hayro）**：PDF 页在 Rust 里渲染成位图，按「一页 = 一个 spine 单元」喂进现有 HTML/iframe 管线。单 exe 不变、iframe 仍不开脚本、「解析不进 JS」禁则不动。
 2. **第一期只读**：翻页 + 进度 + 目录 + 缩放（适应页面 / 适应宽度）+ 封面 + 元数据改名。**文字选择、划线、搜索不在第一期**（需要文字层，见第二期）。
-3. **存储格式全部沿用现有文件**：`progress.json`（`Locator`）、`annotations.json`、`data/library/<stem>.md`、`<stem>.notes.md`。不为 PDF 另立一套。
+3. **存储格式全部沿用现有文件**：`progress.json`（`Locator`）与书的伴生 md（元数据块 + 划线档案同文件，`data/library/<文件名>.md`）。不为 PDF 另立一套。
 4. **书架混排**：`data/library/` 里 `.epub` 与 `.pdf` 同一个书架、同一套排序与三点菜单。
-5. **一页 = 一个 spine 单元**（见架构），这样目录、章节跳转、`notes.md` 章节标题、全书% 全部复用现有机制。
+5. **一页 = 一个 spine 单元**（见架构），这样目录、章节跳转、划线档案的章节标题（`## 第 N 章 · …`）、全书% 全部复用现有机制。
 
 ## 为什么不是 B / C（决策留痕）
 
@@ -178,7 +178,7 @@ pub enum FontQuery {
 | `resource(href)` | 解析 `page/w{width}/{n:04}.png` → hayro 渲染 → PNG 字节 |
 | `metadata()` | 标题/作者/主题来自 PDF Info + XMP（hayro-syntax `metadata` 模块）；`identifiers` 一期留空（→ 进度键自然落到 `lib:书名.pdf`）；`cover_href` 留空，封面走渲染页 1（见下） |
 
-为什么不是「整本 PDF = 一个 spine 单元（把 N 页全塞进一个 HTML 的多栏）」：那样 3000 页会变成 3000 栏的超宽文档、目录没有可跳的 `href`、`notes.md` 的「第 N 章」也没了。一页一单元让 EPUB 侧全部机制原样可用。
+为什么不是「整本 PDF = 一个 spine 单元（把 N 页全塞进一个 HTML 的多栏）」：那样 3000 页会变成 3000 栏的超宽文档、目录没有可跳的 `href`、划线档案里的「第 N 章」也没了。一页一单元让 EPUB 侧全部机制原样可用。
 
 ### 2. 渲染与缓存
 
@@ -326,7 +326,7 @@ pub enum FontQuery {
 - **B. 缩放控件形态**：顶栏常显两个图标，还是收进「⋯」菜单；是否记忆（存 `settings.json`）。
 - **C. 进度键是否用 PDF 的 trailer `/ID`**：用了则改名/移动后仍稳（对齐 EPUB 的 `id:` 语义，代价是同一文件的两个副本共享进度——与 EPUB 一致）。一期倾向不用，走 `lib:`。
 - ~~D. 样本 PDF~~ **已到位（2026-09-15，三本放仓库根、不入库）**：英文文字版（带 148 条 outline）、中文扫描 + OCR 文字层（无 outline）、中文纯扫描（71 条 outline）。结论见上表。
-- **E. PDF 的「章标题」在 `notes.md`**：一期无划线，二期随文字层一起定（outline 标题 / 「第 N 页」）。
+- **E. PDF 的「章标题」在划线档案里**：一期无划线，二期随文字层一起定（outline 标题 / 「第 N 页」）。
 - ~~F. R1 的退路~~ **已定（2026-09-15）：继续用 A（hayro），不换引擎**。样本 0 本命中；把 `visible_text_risk` 做成导入时的检查 + 命中时在书架/阅读器提示「此 PDF 依赖系统字体，部分页可能显示不全」。等真遇到大面积缺字再评估 C/B。
 
 ## 验证（一期手工清单）

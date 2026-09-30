@@ -101,7 +101,7 @@ type Props = {
   /** Backfill a highlight's `pos` once the chapter weights are known. */
   onUpdateHighlightPos: (id: string, pos: number) => void;
   onDeleteHighlight: (id: string) => Promise<void>;
-  /** 备注正文 (notes.md 用户区) id → 文本；供 hover 浮层与列表。 */
+  /** 备注正文 (伴生 md 用户区) id → 文本；供 hover 浮层与列表。 */
   notesById: Record<string, string>;
   /** 保存/清空一条划线的备注（空串 = 撤掉该备注）。 */
   onSaveNote: (id: string, note: string) => Promise<void>;
@@ -302,7 +302,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   const [noteDraft, setNoteDraft] = useState("");
   const noteEditorIdRef = useRef(noteEditorId);
   noteEditorIdRef.current = noteEditorId;
-  /** 备注保存重入锁（双击/连点只落一次写，防 notes.md 重复插块）。 */
+  /** 备注保存重入锁（双击/连点只落一次写，防伴生 md 重复插块）。 */
   const committingNote = useRef(false);
 
   /** Repaint highlights on the current iframe document (doc must be ready). */
@@ -1182,8 +1182,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
                 disabled={toolbarBusy}
                 title={
                   notesById[toolbar.id]
-                    ? "编辑备注（notes.md 该划线条目的用户区）"
-                    : "写备注（追加到 notes.md 该划线条目）"
+                    ? "编辑备注（伴生 md 该划线条目的用户区）"
+                    : "写备注（追加到伴生 md 该划线条目）"
                 }
                 onClick={() => openNoteEditor(toolbar.id)}
               >
@@ -1249,7 +1249,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             </button>
           </div>
           <p className="hl-note-hint">
-            划线连同摘录已存入 notes.md；备注写进该条目的用户区，可在外部 md 软件继续编辑；有备注的划线删除后备注仍保留在档案里。
+            划线连同摘录已存入书的伴生 md；备注写进该条目的用户区，可在外部 md 软件继续编辑；有备注的划线删除后备注仍保留在档案里。
           </p>
         </div>
       )}

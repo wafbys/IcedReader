@@ -6,10 +6,10 @@ import type { BookMetaFields, BookMetaView, LibraryEntry } from "./types";
 
 /**
  * 拼接预览 —— 镜像 core::book_meta::join_title（裁决永远在 Rust 侧发生）：
- * `书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 译者] [ - 出版年份]
+ * `书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 译者 译] [ - 出版年份]
  * [ - 出版社] [ - ISBN…]`。` _ ` 只出现在书名与副标题之间，其后一律
  * ` - `；空段整体跳过；书名必填（为空则不拼接）；ISBN 未自带前缀时补
- * ASCII「ISBN 」、译者未自带「译者」时补「译者 」标签。
+ * ASCII「ISBN 」、译者未自带结尾「译」时补「 译」。
  */
 export function joinPreview(f: {
   title: string;
@@ -34,7 +34,7 @@ export function joinPreview(f: {
   const author = foldPeople(f.author);
   if (author) parts.push(author);
   const translator = foldPeople(f.translator);
-  if (translator) parts.push(/^译者/.test(translator) ? translator : `译者 ${translator}`);
+  if (translator) parts.push(/译$/.test(translator) ? translator : `${translator} 译`);
   for (const v of [f.year.trim(), f.publisher.trim()]) {
     if (v) parts.push(v);
   }
@@ -79,8 +79,6 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
   const [year, setYear] = useState("");
   const [publisher, setPublisher] = useState("");
   const [isbn, setIsbn] = useState("");
-  /** 手改框：初值 = md 里用户确认过的 displayTitle；空 = 派生模式。 */
-  const [display, setDisplay] = useState("");
   const [saving, setSaving] = useState(false);
   /** 正在从原书重新读取元数据（大书要开一遍 epub，需要反馈）。 */
   const [reading, setReading] = useState(false);
@@ -110,7 +108,6 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
         setYear(v.year);
         setPublisher(v.publisher);
         setIsbn(v.isbn);
-        setDisplay(v.confirmedTitle);
       })
       .catch((err) => {
         if (!cancelled) setError(String(err));
@@ -137,11 +134,9 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
     isbn,
   };
   const joined = view ? joinPreview(fields) : "";
-  // 保存后实际生效的名字：手改名 → 字段拼接 → 打开时的裁决结果（dc:title/文件名）。
-  const effective =
-    display.trim() || joined || view?.displayTitle.trim() || entry.title;
-  // 手改框非空 = 用户确认过：自动填充不覆盖（按钮禁用）；没内容可填时也禁用。
-  const canAutoFill = display.trim() === "" && joined !== "";
+  // 保存后实际生效的名字 = 字段拼接（空则回退打开时的裁决结果：dc:title/文件名）。
+  // 没有第二个名字：文件名与书架显示的都是这一串。
+  const effective = joined || view?.joinedTitle.trim() || entry.title;
   // 书名必填：留空时不能保存（标题只能回退原书名，走不了拼接）。
   const titleMissing = view !== null && title.trim() === "";
 
@@ -150,7 +145,7 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
     setSaving(true);
     setError("");
     try {
-      const payload: BookMetaFields = { ...fields, displayTitle: display };
+      const payload: BookMetaFields = { ...fields };
       await invoke("set_book_meta", { fileName: entry.fileName, fields: payload });
       onSaved();
     } catch (err) {
@@ -176,7 +171,6 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
       setYear(v.year);
       setPublisher(v.publisher);
       setIsbn(v.isbn);
-      setDisplay(v.confirmedTitle);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -260,8 +254,12 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
               className="meta-input"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder={view.displayTitle || "主书名"}
+              placeholder={view.joinedTitle || "主书名"}
             />
+            <p className="meta-note">
+              可用 () 添加书在原文语言下的名字，例：The Three-Body Problem（三体）。
+              括号原样进显示名与文件名。
+            </p>
             {titleMissing && (
               <p className="meta-error">主书名必填：留空时标题只能回退原书名，无法拼接。</p>
             )}
@@ -275,6 +273,10 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
               value={subtitle}
               onChange={(e) => setSubtitle(e.target.value)}
             />
+            <p className="meta-note">
+              可用 () 添加书在原文语言下的名字，例：The Dark Forest（黑暗森林）。
+              括号原样进显示名与文件名。
+            </p>
           </div>
 
           <div className="meta-field">
@@ -307,7 +309,7 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
               onChange={(e) => setTranslator(e.target.value)}
             />
             <p className="meta-note">
-              填姓名即可；拼入标题时自动补「译者 」标签（已写「译者」开头则保留原样），留空不拼入。
+              填姓名即可；拼入标题时自动补结尾「译」（你已写「译」结尾则保留原样），留空不拼入。
             </p>
           </div>
 
@@ -351,48 +353,17 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
             </code>
           </div>
           <p className="meta-note">
-            书名 _ 副标题 - 卷册 - 作者 - 译者 - 出版年份 - 出版社 - ISBN。
+            书名 _ 副标题 - 卷册 - 作者 - 译者 译 - 出版年份 - 出版社 - ISBN。
             书名与副标题之间用 空格 _ 空格，其后各项用 空格 - 空格；
             空字段自动跳过，不会出现连续分隔符。符号由程序生成（只出半角）。
+            这一串既是书架显示的名字，也是保存后库内文件的文件名。
           </p>
 
-          <div className="meta-field">
-            <label htmlFor="bookmeta-display">显示名（可留空）</label>
-            <div className="meta-row">
-              <input
-                id="bookmeta-display"
-                className="meta-input"
-                value={display}
-                onChange={(e) => setDisplay(e.target.value)}
-                placeholder={effective}
-              />
-              <button
-                type="button"
-                className="btn ghost small"
-                onClick={() => setDisplay(joined)}
-                disabled={!canAutoFill}
-                title={
-                  display.trim()
-                    ? "显示名已手填：自动填充不覆盖手改，清空后可重新使用"
-                    : joined
-                      ? "把上方字段的拼接填入显示名"
-                      : "主书名或字段都为空，没有可填充的内容"
-                }
-              >
-                自动填充
-              </button>
-            </div>
-            <p className="meta-note">
-              留空 = 书架/阅读自动按上方模板拼接（以后改字段即跟随）。
-              填写 = 固定为该名字，字段改动和自动填充都不覆盖它；清空可回到自动拼接。
-            </p>
-          </div>
-
           <p className="meta-effect">
-            保存后书架将显示：
+            保存后书架与文件名都用这个名字：
             <strong title={effective}>{effective}</strong>
             <span className="meta-note">
-              （数据目录里的 epub 与同名 md 会按此名改名；若已有同名文件自动加
+              （数据目录里的 epub 与伴生 md 会按此名改名；若已有同名文件自动加
               -2、-3…，进度与划线一并保留。）
             </span>
           </p>
