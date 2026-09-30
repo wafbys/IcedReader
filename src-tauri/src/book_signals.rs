@@ -695,6 +695,31 @@ fn sha16(s: &str) -> String {
     out[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Full-file MD5 (32 hex, lowercase) — the book file's own identity, stored in
+/// the companion md's `md5` field the first time the app files the book.
+///
+/// A *file* identity, deliberately not the content fingerprint above: this
+/// reader never rewrites a book file (it only renames it or sends it to the
+/// Recycle Bin), so the bytes it imported are the bytes it will always see, and
+/// a mismatch means the file was swapped behind the md's back. Read in a
+/// streaming pass, so a 100 MB PDF costs one sequential read and no extra
+/// memory.
+pub fn file_md5(path: &std::path::Path) -> std::io::Result<String> {
+    use md5::{Digest, Md5};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut h = Md5::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
 fn file_of_href(href: &str) -> String {
     href.split(['#', '?']).next().unwrap_or(href).to_string()
 }

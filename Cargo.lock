@@ -1763,6 +1763,7 @@ dependencies = [
  "iced-reader-core",
  "iced-reader-epub",
  "iced-reader-pdf",
+ "md-5",
  "serde",
  "serde_json",
  "sha2 0.10.9",

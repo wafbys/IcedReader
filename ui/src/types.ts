@@ -85,8 +85,6 @@ export type LibraryEntry = {
 /** 编辑元数据面板（get_book_meta）的载荷。 */
 export type BookMetaView = {
   fileName: string;
-  /** 只读：首次导入时程序见到的书名（before any user edit）。 */
-  originalTitle: string;
   /** 主书名 — 预填伴生 md 值或清洗后的当前书名（必填）。 */
   title: string;
   subtitle: string;

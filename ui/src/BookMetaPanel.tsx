@@ -221,13 +221,10 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
           }}
         >
           <div className="meta-field">
-            <span className="meta-cap">原书名（只读）</span>
-            <div className="meta-ro" title={view.originalTitle}>
-              {view.originalTitle || "（无书名，回退到文件名）"}
-            </div>
             <div className="meta-row meta-reread-row">
               <p className="meta-note">
-                首次导入这本书时程序见到的书名。只读保留原始信息，不随本次编辑改变。
+                要从这本书自己的元数据里重新取书名 / 作者 / 出版社 / ISBN
+                填表，点右边按钮；是否保存仍由你决定。
               </p>
               <button
                 type="button"

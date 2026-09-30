@@ -28,6 +28,13 @@
     - 该文件同时装 `<!-- icedreader-meta -->` 元数据块与 `<!-- icedreader-note -->` 划线块（块的机器字段补上渲染高亮必需的 `href`/`startText`/`startOffset`/`endText`/`endOffset` 与 `text`）。两侧各管各的块，其余（含文件头散文与用户笔记区）逐字保留：`split_meta` / `join_meta`。
     - **`data/annotations.json` 废弃**：划线随书走，删书随之进回收站。解析器从 `src-tauri/src/notes.rs` 下沉到 `crates/core/src/notes.rs`（`core` 不能依赖 `src-tauri`），`src-tauri/src/notes.rs` 只转发。
     - **去掉 `displayTitle`**（md 键与面板输入框一起删）：裁决链只剩 `字段拼接 → dc:title/文件名`，书架显示名与库内文件名恒等，不再有两个名字打架。问题起点是「显示名」留空即自动、填了就锁定，与「文件名跟随拼接结果」冲突。
+13. **`bookFile` → `originalBookFile`（首次进书架时写入）+ 新增 `md5`；删 `originalTitle`**（用户 2026-09-30 拍板）：
+    - `bookFile` 旧行为是「**首次保存元数据时**写一次」（`set_book_meta` 里 `existing.book_file.or_else(|| 当前名)`），所以 app 内改名后它必然过期——实测：你的 md 里 `bookFile:` 记的是按**当时那套字段**拼出的旧名（`性政治 - (美)凯特·米利特著 - 江苏人民出版社 - ISBN 9787214026088.epub`），而当前文件名是 `性政治 (Sexual Politics) - 凯特·米利特 (Kate Millett) - 宋文伟 译 - 2000 - 江苏人民出版社 - ISBN 9787214026088.epub`。而且**没有任何地方读它**，`Some("")` 还会被永久保留。
+    - 改为 `originalBookFile`：**这本书首次进入书架时的库内文件名**，此后永不改（书改名了它仍记原来的名字）。写入时机 = 首次落档（导入 / 打开 / 首次保存元数据，谁先到谁写，幂等），不再是「首次保存」。
+    - 新增 `md5`：**首次落档时那个书文件字节的 MD5**（32 hex）。本阅读器从不重写书文件（只改名 / 送回收站），所以「导入的字节 = 永远看到的字节」，md5 就是「这条 md 认的是哪个文件」的证据，将来文件被换掉时用于校验。内容级的 `book_signals::fingerprint` 仍只服务同书对照，两者口径不同、互不替代。
+    - 删 `originalTitle`：`originalBookFile` 已留下「它来时叫什么」，而原书当前书名随时可由面板「重新读取原书元数据」从文件里取回；冻结一份反而会与文件不一致（同一本书换了版本/文件后，它记的还是最初那个名字）。面板「原书名（只读）」一行随之删除。
+    - 旧 md 的 `bookFile` 当作 `originalBookFile` 读入（那是它能给的最早的名字），`originalTitle` 直接忽略，写回去只写新键名。块是按结构体重写的 —— **旧版本再保存一次会把 `md5` 丢掉**，加字段要记住这点。
+    - 每个键的唯一定义（一义一键）写在 `crates/core/src/book_meta.rs` 的模块文档里，代码与文档同址。
 
 ## 实现现状（v1 已提交 `e498e8f`；md v2/拼接模板/译者/保存改名已提交；ASCII 分隔与重读在本提交）
 

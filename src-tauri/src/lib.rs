@@ -117,6 +117,13 @@ async fn open_book(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // 落档（只写一次）：这本书首次进入书架时的库内文件名 + 那时文件的 MD5。
+    // 幂等，之后每次打开只是一次 md 读取；失败不致命（下次打开/保存会再试）。
+    if !file_name.is_empty() {
+        if let Err(err) = notes::stamp_import_identity(&imported, &file_name) {
+            eprintln!("落档失败（{file_name}）：{err}");
+        }
+    }
     let cached_signals = book_signals::read_all().get(&file_name).cloned();
     if !file_name.is_empty() {
         let need = match &cached_signals {
@@ -747,31 +754,24 @@ async fn reread_book_meta(
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<book_meta::BookMetaView> {
     let dir = portable::library_dir()?;
-    let md_path = library::meta_path_for(&dir, &file_name)?;
     let path = dir.join(&file_name);
     if !path.is_file() {
         return Err("书不在书库中".into());
     }
-    let existing = read_meta_file(&md_path);
     let profile = {
         let mut cache = state.library_meta.lock()?;
         cache.profile(&path, &dir)
     };
-    let original_title = existing
-        .and_then(|m| m.original_title)
-        .unwrap_or_else(|| profile.title.clone());
     let book = openers::open_any(&path)?;
     let metadata = book.metadata();
-    Ok(book_meta::reread_view_for(
-        &profile,
-        &original_title,
-        &metadata,
-    ))
+    Ok(book_meta::reread_view_for(&profile, &metadata))
 }
 
-/// Save one book's metadata to its companion md. Creates the md on first save
-/// (freezing bookFile / originalTitle), overwrites it afterwards. The md is
-/// program-maintained — the UI panel is the only editing surface.
+/// Save one book's metadata to its companion md, overwriting its metadata block
+/// (the highlight archive and the user's own prose below stay untouched). The md
+/// is program-maintained — the UI panel is the only editing surface. The two
+/// provenance fields (`originalBookFile` / `md5`) are never written here: they
+/// are stamped once, when the book first enters the shelf.
 #[tauri::command]
 async fn set_book_meta(
     file_name: String,
@@ -789,10 +789,17 @@ async fn set_book_meta(
     // File-bound profile (dc:title base + progress key). Opening an epub only
     // happens on a cache miss; saving metadata is low-frequency, so fine.
     let profile = state.library_meta.lock()?.profile(&path, &dir);
-    let original_title = existing
+    // 落档要趁改名之前：`originalBookFile` 记的是「它进来时叫什么」。已经在书架
+    // 里但还没落过档（旧版本导入、或用户直接丢进 data/library）的书在这里补上。
+    if existing
         .as_ref()
-        .and_then(|m| m.original_title.clone())
-        .unwrap_or_else(|| profile.title.clone());
+        .is_none_or(|m| m.original_book_file.is_none() || m.md5.is_none())
+    {
+        if let Err(err) = notes::stamp_import_identity(&path, &file_name) {
+            eprintln!("落档失败（{file_name}）：{err}");
+        }
+    }
+    let existing = read_meta_file(&md_path);
 
     // The name this book will have after the save: always the join of the
     // fields (there is no hand-written override). The library file is renamed
@@ -806,8 +813,7 @@ async fn set_book_meta(
         year: clean_title(&fields.year),
         publisher: clean_title(&fields.publisher),
         isbn: clean_title(&fields.isbn),
-        book_file: None,
-        original_title: None,
+        ..Default::default()
     };
     let display_title = resolved_title(Some(&staged), &profile.title);
     let old_stem = library::epub_stem(&file_name);
@@ -820,7 +826,7 @@ async fn set_book_meta(
     );
     let needs_rename = !old_stem.eq_ignore_ascii_case(&target_stem);
 
-    let (final_file_name, final_md_path) = if needs_rename {
+    let (_, final_md_path) = if needs_rename {
         let new_name = library::rename_book_files(&dir, &file_name, &target_stem)?;
         // `id:` / `path:` progress keys survive a rename untouched; only the
         // `lib:` key (which embeds the file name) must be carried over, along
@@ -852,11 +858,9 @@ async fn set_book_meta(
     };
 
     let meta = BookMeta {
-        book_file: existing
-            .as_ref()
-            .and_then(|m| m.book_file.clone())
-            .or_else(|| Some(final_file_name.clone())),
-        original_title: Some(original_title),
+        // 落档字段纯透传：`set_book_meta` 不写它们（写入时机是「首次进书架」）。
+        original_book_file: existing.as_ref().and_then(|m| m.original_book_file.clone()),
+        md5: existing.as_ref().and_then(|m| m.md5.clone()),
         title: clean_title(&fields.title),
         subtitle: clean_title(&fields.subtitle),
         volume: clean_title(&fields.volume),

@@ -12,12 +12,12 @@
 //!
 //! ```markdown
 //! <!-- icedreader-meta
-//! bookFile: 140亿年宇宙演化全史.epub
-//! originalTitle: 140亿年宇宙演化全史
+//! originalBookFile: 140亿年宇宙演化全史.epub
+//! md5: 2b0e1f…（32 hex）
 //! title: 140亿年宇宙演化全史
 //! subtitle:
 //! volume:
-//! author: [美] 尼尔·德格拉斯·泰森、[美] 唐纳德·戈德史密斯
+//! author: [美] 尼尔·德格拉斯·泰森, [美] 唐纳德·戈德史密斯
 //! translator: 阳曦
 //! year: 2019
 //! publisher: 北京联合出版公司
@@ -29,29 +29,42 @@
 //! <!-- icedreader-note
 //! id: …
 //! -->
-//! > 【重点】摘录一（全书 34% · 划于 …）
+//! > 【重点】摘录一
+//! > （全书 34% · 划于 …）
 //!
 //! 用户的自由笔记。
 //! ```
 //!
-//! - `bookFile` / `originalTitle`: captured on first save (the file name and
-//!   the title the program first saw, before any user edit).
-//! - `title` / `subtitle` / `volume` / `author` / `translator` / `year` /
-//!   `publisher` / `isbn`: structured fields edited in the panel.
-//!   Author/translator lists use ASCII separators — a full-width 、 typed in
-//!   those fields is folded to `, ` on save and inside the join, so the
-//!   rendered title never carries a Chinese punctuation mark it generated.
-//!   There is no hand-written display title: the name is always the derived
-//!   join, so the on-disk file name follows the fields.
+//! # 每个键的定义（一义一键，不许两名一义）
 //!
-//! Display-title join template: `书名 [ _ 副标题] [ - 卷册]
-//! [ - 作者] [ - 译者 译] [ - 出版年份] [ - 出版社] [ - ISBN…]`. Auto-generated
-//! separators are ASCII only — `" _ "` appears **only** between 书名 and
-//! 副标题; every later segment (卷册 and the bibliographic data) is joined
-//! with `" - "`. Empty segments are skipped (never an empty segment between
-//! two separators); 书名 is required — without it nothing is derived.
-//! Full-width characters inside the original `dc:title` are preserved as-is
-//! (they belong to the book title).
+//! | 键 | 唯一含义 | 谁写·何时 | 读者 | 空值 |
+//! | --- | --- | --- | --- | --- |
+//! | `originalBookFile` | 这本书**首次进入书架时**的库内文件名；此后永不改（书改名了它也记着原来的名字） | 首次落档：`src-tauri` 的 `notes::stamp_import_identity`（导入 / 首次打开 / 首次保存 / 书架首列，谁先到谁写） | 无（留痕） | 字段缺失 = 还没落过档 |
+//! | `md5` | **首次落档时那个书文件字节的 MD5**（32 位小写 hex）。本阅读器从不重写书文件，所以它 = 「这条 md 认的是哪个文件」 | 同 `originalBookFile`，同一次写入 | 无（留痕；将来用于「文件被换过」的校验） | 缺失 = 还没落过档 |
+//! | `title` | 主书名。**拼接的第一段，也是唯一必填字段**（面板留空禁保存；`join_title` 遇空返回 `""`，名字回退到原书名/文件名） | 只有 `set_book_meta`（编辑元数据面板） | `join_title` → 显示名 → 库内文件名；面板回显 | 空 = 不拼入（**不是**「未知」） |
+//! | `subtitle` | 副标题。**唯一使用 `" _ "` 的那一段** | 同上 | 同上 | 空 = 不拼入 |
+//! | `volume` | 卷册（「第二部」这类） | 同上 | 同上 | 空 = 不拼入 |
+//! | `author` | 作者；多人用 ASCII `, ` 连接（顿号 U+3001 折成 `, `） | 同上 | 同上 | 空 = 不拼入 |
+//! | `translator` | 译者；多人同 `, `；拼接时自动补结尾「译」 | 同上 | 同上 | 空 = 不拼入 |
+//! | `year` | 出版年份，纯文本不校验 | 同上 | 同上 | 空 = 不拼入 |
+//! | `publisher` | 出版社 | 同上 | 同上 | 空 = 不拼入 |
+//! | `isbn` | ISBN 号码本体；拼接时自动补 ASCII `ISBN ` 前缀，不校验位数 | 同上 | 同上 | 空 = 不拼入 |
+//!
+//! 绑定关系（字段不参与）：**书 ↔ md 的唯一绑定是文件名**（`X.epub` ↔
+//! `X.epub.md`）。显示名 = 库内文件名 = 字段拼接结果，三者恒等。
+//!
+//! 没有 `originalTitle`（2026-09-30 删）：`originalBookFile` 记着「它来时叫什么」，
+//! 而原书当前书名随时可由面板的「重新读取原书元数据」从文件里取回，冻结一份
+//! 反而会与文件不一致。也没有手填显示名：名字永远是字段拼接。
+//!
+//! 块是**按结构体重写**的（`format_meta` 固定键序）：认不出的键读时忽略，但旧版本
+//! 一旦再保存就会把它丢掉 —— 加字段时要记住。
+//!
+//! 拼接模板：`书名 [ _ 副标题] [ - 卷册] [ - 作者] [ - 译者 译] [ - 出版年份]
+//! [ - 出版社] [ - ISBN…]`。程序生成的符号一律 ASCII —— `" _ "` **只**出现在书名
+//! 与副标题之间，其后各段一律 `" - "`；空段整体跳过（不会出现两分隔符夹空段）；
+//! 书名必填。原书 `dc:title` 自带的全角字符原样保留（它们是书名的一部分）。
+
 
 use std::fs;
 use std::io;
@@ -78,10 +91,11 @@ pub const TRANSLATOR_SUFFIX: &str = " 译";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BookMeta {
-    /// File name of the epub this md belongs to (captured when the md is first written).
-    pub book_file: Option<String>,
-    /// Title the program first saw for this book, before any user edit.
-    pub original_title: Option<String>,
+    /// 这本书**首次进入书架时**的库内文件名（留痕，永不更新）。只由
+    /// `src-tauri` 的落档路径写；`set_book_meta` 原样透传。
+    pub original_book_file: Option<String>,
+    /// 首次落档时那个书文件字节的 MD5（32 位小写十六进制；留痕，永不更新）。
+    pub md5: Option<String>,
     /// 主书名 (main title; required for the join).
     pub title: String,
     /// 副标题 (subtitle).
@@ -101,6 +115,7 @@ pub struct BookMeta {
 }
 
 impl BookMeta {
+    /// 面板那 8 个字段是否全空（`originalBookFile` / `md5` 是程序留痕，不计）。
     pub fn is_empty(&self) -> bool {
         self.title.trim().is_empty()
             && self.subtitle.trim().is_empty()
@@ -275,8 +290,16 @@ pub fn parse_meta(text: &str) -> Option<BookMeta> {
         };
         let value = value.trim().to_string();
         match key.trim() {
-            "bookFile" => meta.book_file = Some(value),
-            "originalTitle" => meta.original_title = Some(value),
+            "originalBookFile" => meta.original_book_file = Some(value),
+            // 旧 md 的 `bookFile` 是它能给的**最早**名字（首次保存时），当作
+            // `originalBookFile` 读入；读不到真正的导入名也没必要编一个。
+            "bookFile" => {
+                if meta.original_book_file.is_none() {
+                    meta.original_book_file = Some(value);
+                }
+            }
+            "md5" => meta.md5 = Some(value),
+            // `originalTitle` 已删（2026-09-30），旧值直接忽略。
             "title" => meta.title = value,
             "subtitle" => meta.subtitle = value,
             "volume" => meta.volume = value,
@@ -305,14 +328,16 @@ fn write_field(out: &mut String, key: &str, value: &str) {
 }
 
 /// Serialize a [`BookMeta`] into its md comment block (no trailing blank line;
-/// use [`join_meta`] to place it above the file body).
+/// use [`join_meta`] to place it above the file body). Key order is fixed; the
+/// block is rewritten whole, so keys added by a newer build are dropped by an
+/// older one on its next save.
 pub fn format_meta(meta: &BookMeta) -> String {
     let mut out = String::from("<!-- icedreader-meta\n");
-    if let Some(book_file) = &meta.book_file {
-        write_field(&mut out, "bookFile", book_file);
+    if let Some(original_book_file) = &meta.original_book_file {
+        write_field(&mut out, "originalBookFile", original_book_file);
     }
-    if let Some(original_title) = &meta.original_title {
-        write_field(&mut out, "originalTitle", original_title);
+    if let Some(md5) = &meta.md5 {
+        write_field(&mut out, "md5", md5);
     }
     write_field(&mut out, "title", &meta.title);
     write_field(&mut out, "subtitle", &meta.subtitle);
@@ -562,8 +587,8 @@ mod tests {
     #[test]
     fn parse_roundtrip_and_tolerance() {
         let meta = BookMeta {
-            book_file: Some("三体.epub".into()),
-            original_title: Some("三体".into()),
+            original_book_file: Some("三体.epub".into()),
+            md5: Some("2b0e1f4a5c6d7e8f90a1b2c3d4e5f607".into()),
             title: "三体".into(),
             subtitle: "黑暗森林".into(),
             volume: "第二部".into(),
@@ -583,8 +608,14 @@ mod tests {
                 "missing {key} in {text}"
             );
         }
-        // displayTitle is gone from the format (destructive removal).
-        assert!(!text.contains("displayTitle"));
+        // 程序留痕的两个键也在，且用新键名。
+        for key in ["originalBookFile: ", "md5: "] {
+            assert!(text.contains(key), "missing {key} in {text}");
+        }
+        // 已删的键不再出现。
+        for gone in ["displayTitle", "originalTitle", "bookFile:"] {
+            assert!(!text.contains(gone), "{gone} must be gone from {text}");
+        }
 
         // A v1 md (no v2 keys) parses with empty v2 fields — no data loss.
         let v1 = parse_meta("<!-- icedreader-meta\ntitle: 三体\nvolume: 第二部\n-->").unwrap();
@@ -623,6 +654,29 @@ mod tests {
         assert_eq!(extra.title, "书");
     }
 
+    /// 旧 md 的 `bookFile` 当作 `originalBookFile` 读入（那是它能给的最早名字）；
+    /// `originalTitle` 直接忽略；写回去只有新键名。
+    #[test]
+    fn legacy_keys_are_adopted_or_ignored() {
+        let legacy = parse_meta(
+            "<!-- icedreader-meta\nbookFile: 旧名.epub\noriginalTitle: 旧书名\ntitle: 书\n-->\n",
+        )
+        .unwrap();
+        assert_eq!(legacy.original_book_file.as_deref(), Some("旧名.epub"));
+        assert_eq!(legacy.md5, None);
+        assert_eq!(legacy.title, "书");
+        // 两个键都在时以新键为准。
+        let both = parse_meta(
+            "<!-- icedreader-meta\noriginalBookFile: 新名.epub\nbookFile: 旧名.epub\ntitle: 书\n-->\n",
+        )
+        .unwrap();
+        assert_eq!(both.original_book_file.as_deref(), Some("新名.epub"));
+        let out = format_meta(&legacy);
+        assert!(out.contains("originalBookFile: 旧名.epub"), "{out}");
+        assert!(!out.contains("\nbookFile:"), "{out}");
+        assert!(!out.contains("originalTitle"), "{out}");
+    }
+
     #[test]
     fn read_write_roundtrip_on_disk() {
         let dir = std::env::temp_dir().join("icedreader-book-meta-test");
@@ -630,8 +684,8 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("三体.epub.md");
         let meta = BookMeta {
-            book_file: Some("三体.epub".into()),
-            original_title: Some("三体".into()),
+            original_book_file: Some("三体.epub".into()),
+            md5: Some("2b0e1f4a5c6d7e8f90a1b2c3d4e5f607".into()),
             title: "三体".into(),
             subtitle: "黑暗森林".into(),
             volume: String::new(),
@@ -711,7 +765,8 @@ mod tests {
         fs::write(&path, join_meta(&format_meta(&BookMeta::default()), body)).unwrap();
 
         let meta = BookMeta {
-            book_file: Some("三体.epub".into()),
+            original_book_file: Some("三体.epub".into()),
+            md5: Some("2b0e1f4a5c6d7e8f90a1b2c3d4e5f607".into()),
             title: "三体".into(),
             author: "刘慈欣".into(),
             ..Default::default()

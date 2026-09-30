@@ -32,8 +32,6 @@ pub struct BookMetaFields {
 #[serde(rename_all = "camelCase")]
 pub struct BookMetaView {
     pub file_name: String,
-    /// Read-only: the title the program first saw (before any user edit).
-    pub original_title: String,
     /// 主书名 — prefilled with the companion value or a cleaned current title.
     pub title: String,
     pub subtitle: String,
@@ -54,9 +52,6 @@ pub struct BookMetaView {
 
 pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaView {
     let base = profile.title.trim();
-    let original_title = overlay
-        .and_then(|m| m.original_title.clone())
-        .unwrap_or_else(|| base.to_string());
     let title = overlay
         .and_then(|m| (!m.title.trim().is_empty()).then(|| m.title.clone()))
         .unwrap_or_else(|| clean_title(base));
@@ -84,7 +79,6 @@ pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaVi
     );
     BookMetaView {
         file_name: profile.file_name.clone(),
-        original_title,
         title,
         subtitle,
         volume,
@@ -100,12 +94,9 @@ pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaVi
 /// Rebuild the panel from the book's own epub metadata (重新读取原书元数据):
 /// clears everything user-entered and fills title/authors/publisher/ISBN
 /// freshly from the file. subtitle/volume/translator/year have no usable OPF
-/// source yet, so they come back empty. `originalTitle` is untouched — it
-/// froze on the first save (or equals the current base title for a
-/// never-saved book). Whether to save stays the user's call.
+/// source yet, so they come back empty. Whether to save stays the user's call.
 pub fn reread_view_for(
     profile: &BookProfile,
-    original_title: &str,
     meta: &iced_reader_core::Metadata,
 ) -> BookMetaView {
     let base = profile.title.trim();
@@ -122,7 +113,6 @@ pub fn reread_view_for(
     let joined_title = join_title(&title, "", "", &author, "", "", &publisher, &isbn);
     BookMetaView {
         file_name: profile.file_name.clone(),
-        original_title: original_title.to_string(),
         title,
         subtitle: String::new(),
         volume: String::new(),
@@ -199,9 +189,8 @@ mod tests {
     #[test]
     fn no_overlay_prefills_cleaned_current_title() {
         let view = view_for(&profile("  三体  "), None);
-        // The panel always deals in trimmed values; originalTitle keeps the
-        // first-seen name.
-        assert_eq!(view.original_title, "三体");
+        // The panel always deals in trimmed values (no frozen 原书名 any more:
+        // the 重读 button fetches the book's current dc:title on demand).
         assert_eq!(view.title, "三体");
         assert_eq!(view.joined_title, "三体");
         assert_eq!(view.file_name, "三体.epub");
@@ -231,7 +220,6 @@ mod tests {
     #[test]
     fn overlay_fields_shape_the_view() {
         let meta = BookMeta {
-            original_title: Some("首发时的脏名".into()),
             title: "三体".into(),
             subtitle: "黑暗森林".into(),
             volume: "第二部".into(),
@@ -240,11 +228,9 @@ mod tests {
             year: "2008".into(),
             publisher: "重庆出版社".into(),
             isbn: "978-7-5366-9293-0".into(),
-            book_file: None,
+            ..Default::default()
         };
         let view = view_for(&profile("原 dc:title"), Some(&meta));
-        // originalTitle freezes the first-seen value, not the current dc:title.
-        assert_eq!(view.original_title, "首发时的脏名");
         assert_eq!(view.title, "三体");
         assert_eq!(
             view.joined_title,
@@ -280,8 +266,7 @@ mod tests {
             description: None,
             cover_href: None,
         };
-        let view = reread_view_for(&profile, "定格的原书名", &meta);
-        assert_eq!(view.original_title, "定格的原书名");
+        let view = reread_view_for(&profile, &meta);
         assert_eq!(view.title, "原书dc:书名");
         assert_eq!(view.author, "原书作者甲, 原书作者乙");
         assert_eq!(view.publisher, "原书出版社");
