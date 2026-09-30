@@ -7,10 +7,11 @@
  * Chapter HTML is regenerated deterministically on every open, so the DOM's
  * text nodes appear in the same order each time. A highlight is stored as the
  * half-open span [start, end) over that sequence: `startText`/`endText` are
- * indexes into `collectTexts(doc)`, plus an in-node offset. `text` keeps a
- * whitespace-normalised excerpt so a changed/regenerated edition can be
- * re-anchored by searching it instead of silently drifting; records that
- * cannot be re-anchored are skipped but kept on disk.
+ * indexes into `collectTexts(doc)`, plus an in-node offset. `text` keeps the
+ * **whole** whitespace-normalised selection on one line: it is both the quote
+ * the companion md prints and what a changed/regenerated edition is re-anchored
+ * by searching (that probe only ever reads its head/tail). Records that cannot
+ * be re-anchored are skipped but kept on disk.
  *
  * Painting
  * --------
@@ -43,12 +44,6 @@ export function highlightName(color: string): string {
 
 /** <style id=...> injected into the chapter head, next to the flow style. */
 export const HIGHLIGHT_STYLE_ID = "iced-reader-highlight-style";
-
-/** Excerpt length kept for validation/re-anchoring. */
-export const EXCERPT_MAX = 160;
-/** When an excerpt is longer than EXCERPT_MAX keep head and tail only. */
-const EXCERPT_HEAD = 80;
-const EXCERPT_TAIL = 80;
 
 export type TextPoint = { seq: number; offset: number };
 
@@ -133,6 +128,20 @@ export function normalizeText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * The excerpt stored for one stroke: the **whole** selection, whitespace
+ * normalised onto a single line (the md block needs one `text:` field and one
+ * `> ` quote line, so newlines cannot survive).
+ *
+ * Deliberately not trimmed to a short fingerprint: this same string is what the
+ * human 摘抄行 in the companion md quotes, so any cap here silently drops the
+ * middle of a long 摘抄 from the archive. The re-anchor probe only ever reads
+ * its head and tail, so a long excerpt costs nothing there.
+ */
+export function excerptFromSelection(raw: string): string {
+  return normalizeText(raw);
+}
+
 /** Concatenated plain text of the chapter, node data in order. */
 export function plainText(texts: Text[]): string {
   let out = "";
@@ -159,11 +168,7 @@ export function anchorFromRange(
   const to = charOfPoint(prefix, end);
   if (to <= from) return null;
   const raw = range.toString();
-  const norm = normalizeText(raw);
-  const text =
-    norm.length <= EXCERPT_MAX
-      ? norm
-      : `${norm.slice(0, EXCERPT_HEAD)}…${norm.slice(-EXCERPT_TAIL)}`;
+  const text = excerptFromSelection(raw);
   if (!text) return null;
   return { start, end, text };
 }

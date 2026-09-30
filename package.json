@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "check:ui": "node ui/src/pdfPaging.check.ts",
+    "check:ui": "node ui/src/pdfPaging.check.ts && node ui/src/highlights.check.ts",
     "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",
     "lint": "npm run typecheck && npm run lint:rust",
     "test:rust": "cargo test --workspace",
