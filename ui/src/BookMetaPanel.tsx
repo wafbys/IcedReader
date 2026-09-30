@@ -134,9 +134,6 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
     isbn,
   };
   const joined = view ? joinPreview(fields) : "";
-  // 保存后实际生效的名字 = 字段拼接（空则回退打开时的裁决结果：dc:title/文件名）。
-  // 没有第二个名字：文件名与书架显示的都是这一串。
-  const effective = joined || view?.joinedTitle.trim() || entry.title;
   // 书名必填：留空时不能保存（标题只能回退原书名，走不了拼接）。
   const titleMissing = view !== null && title.trim() === "";
 
@@ -351,21 +348,17 @@ export default function BookMetaPanel({ entry, onClose, onSaved }: Props) {
             <code className="meta-joined" title={joined || undefined}>
               {joined || "（书名必填；留空则不拼接）"}
             </code>
+            {joined !== "" && (
+              <p className="meta-note">
+                这一串就是保存后书架显示的名字，也是库内 epub 与伴生 md
+                改名后的文件名（若已有同名文件自动加 -2、-3…，进度与划线一并保留）。
+              </p>
+            )}
           </div>
           <p className="meta-note">
             书名 _ 副标题 - 卷册 - 作者 - 译者 译 - 出版年份 - 出版社 - ISBN。
             书名与副标题之间用 空格 _ 空格，其后各项用 空格 - 空格；
             空字段自动跳过，不会出现连续分隔符。符号由程序生成（只出半角）。
-            这一串既是书架显示的名字，也是保存后库内文件的文件名。
-          </p>
-
-          <p className="meta-effect">
-            保存后书架与文件名都用这个名字：
-            <strong title={effective}>{effective}</strong>
-            <span className="meta-note">
-              （数据目录里的 epub 与伴生 md 会按此名改名；若已有同名文件自动加
-              -2、-3…，进度与划线一并保留。）
-            </span>
           </p>
         </form>
       )}

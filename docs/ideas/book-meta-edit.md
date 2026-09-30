@@ -59,7 +59,8 @@
    - 划线解析/写回从 `src-tauri/src/notes.rs` 下沉到 `crates/core/src/notes.rs`（`core` 不能依赖 `src-tauri`），Tauri 侧只转发路径；`AnnotationStore` 从「`annotations.json` + 内存 HashMap，按 `id:`/`lib:` 键寻址」改为「按**书文件名**寻址伴生 md」的读写门面（`list`/`remove`/`set_pos`）；创建仍只走 `write_highlight_entry`，因为只有它拿到打开的书、能定该条的 `## 第 N 章 · …` 归属。
    - `displayTitle` 从 md 键、`BookMetaFields`、`BookMetaView`（`confirmedTitle`/`displayTitle`/`suggestedTitle` 三个字段并成 `joinedTitle`）与面板（手改框 + 「自动填充」按钮）一起删除；裁决链只剩 `字段拼接 → dc:title/文件名`。
    - 顺带修两处真问题：① `AnnotationStore::set_pos` 改走 `notes::update_pos` —— 位置回填只重写保护区与摘抄行，用户笔记区逐字保留（原走 `upsert` 会把 `stored_highlights` 读回来的 `trim()` 副本写回盘，吃掉用户笔记的行首缩进/行尾空格）；② `set_annotation_pos` 不再声明前端根本没发的 `bookId`（Tauri 对缺失的必填参报 `missing required key`，整次调用失败又被前端 `catch {}` 吞掉 —— 首次开书那批 `pos: null` 划线的位置回填会静默失效）。
-   - 验证：`cargo test`（core 69 / lib 60 / epub 33+2 ignored / pdf 17+3 ignored）、`npx tsc --noEmit`、`npm run check:ui` 全过；`set_pos` 的保真修复有回归单测 `set_pos_leaves_the_user_note_byte_for_byte`（换回 `upsert` 会红）。桌面窗口手工核对（划线仍按章归组、位置回填真的落盘、改名后伴生 md 随书更名、删书置回收站可还原）仍待做。
+   - 面板顺带去掉一处必然重复：没有「显示名」之后，预览框下面那行「保存后书架与文件名都用这个名字：<同一串>」与「拼接预览」恒等（去掉显示名前它显示的是可能不同的生效名），整行删除，改名后果的说明并进预览框（`.meta-effect` 样式随之删除）；主书名留空时不显示这句后果说明。
+   - 验证：`cargo test --workspace` 全绿（iced-reader 68 + 3 ignored / core 61 / epub 33 + 2 ignored / pdf 17 + 3 ignored）、`npx tsc --noEmit`、`npm run check:ui` 通过；`set_pos` 的保真修复有回归单测 `set_pos_leaves_the_user_note_byte_for_byte`（换回 `upsert` 会红）。桌面窗口手工核对已做（见下）：划线按章归组、位置回填真的落盘、改名后伴生 md 随书更名、删书置回收站可还原、有备注的划线删除留痕且备注保留。
 
 ## AGENTS.md 同步（已完成，原草案存档）
 

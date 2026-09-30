@@ -1373,22 +1373,6 @@ body {
   font-weight: 650;
 }
 
-.meta-effect {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.meta-effect strong {
-  display: block;
-  color: var(--ink);
-  font-weight: 650;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* 字段多了之后表单自己滚，操作行常驻模态底部（不随内容滚走）。 */
 .meta-actions {
   flex: 0 0 auto;
