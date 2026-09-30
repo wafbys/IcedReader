@@ -248,8 +248,17 @@ export default function App() {
     const note = notesRef.current[id];
     if (note !== undefined) {
       const preview = note.length > 60 ? `${note.slice(0, 60)}…` : note;
-      const ok = window.confirm(
+      // 原生对话框（与删书同一套）：`window.confirm` 在 WebView2 里既不弹框也
+      // 不阻塞、直接返回真值，于是「有备注删除先确认」成了空转——划线不声不响就
+      // 删掉了（备注靠留痕保住，但确认这一步等于没有）。
+      const ok = await ask(
         `这条划线有备注：\n「${preview}」\n\n删除后正文高亮消失；划线内容与备注保留在书的伴生 md 里并记删除时间。\n确定删除这条划线？`,
+        {
+          title: "删除划线",
+          kind: "warning",
+          okLabel: "删除",
+          cancelLabel: "取消",
+        },
       );
       if (!ok) return;
     }

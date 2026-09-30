@@ -371,6 +371,10 @@ fn add_annotation(
     } else {
         COLOR_YELLOW.to_string()
     };
+    // 前端把选区**按段落**交过来（段间是换行）：折成一行的全文进块的 `text:`
+    // 字段（可搜索的指纹 + 划线列表展示），段落切点进 `paras:` —— 人读的摘抄行
+    // 据此折成一条一段的 `> ` 引用，之后任何一次重写都能照原样摊回来。
+    let (text, paras) = notes::split_excerpt(&text);
     let highlight = Highlight {
         id: Uuid::new_v4().to_string(),
         href,
@@ -379,6 +383,7 @@ fn add_annotation(
         end_text,
         end_offset,
         text,
+        paras,
         color,
         pos: pos.map(|p| p.clamp(0.0, 1.0)),
         created_at: unix_now(),

@@ -45,7 +45,12 @@ export type HighlightRecord = {
   startOffset: number;
   endText: number;
   endOffset: number;
+  /** 折成一行的摘录全文（块的 `text:` 字段）：重新锚定用的可搜索文本，也是
+   *  划线列表展示的那一行。**完整选区**，不做长度截断。 */
   text: string;
+  /** `text` 里的段落切点（字节下标，指向段落之间的连接空格），人读的摘抄行
+   *  据此折成一条一段的 `> ` 引用。前端不读它，只为形状完整。 */
+  paras: number[];
   color: string;
   pos: number | null;
   createdAt: number;

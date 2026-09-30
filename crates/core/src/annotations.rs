@@ -53,8 +53,17 @@ pub struct Highlight {
     pub end_text: usize,
     /// Offset inside the end text node.
     pub end_offset: usize,
-    /// Excerpt of the highlighted plain text (validation + future listings).
+    /// Excerpt of the highlighted plain text, whitespace folded onto one line
+    /// (the md block's `text:` field and the 划线列表's display form). It is
+    /// also the searchable text the re-anchor probe uses.
     pub text: String,
+    /// Paragraph cuts inside [`Self::text`]: byte offsets of the single space
+    /// that joins two paragraphs, ascending. Empty = one paragraph. The md
+    /// stores them in the block's `paras:` field, so the human 摘抄行 can be
+    /// re-folded into one `> ` quote line per paragraph on **any** later
+    /// rewrite (pos backfill, note save) instead of being write-once.
+    #[serde(default)]
+    pub paras: Vec<usize>,
     /// Decided at stroke time; never edited afterwards (换色 = 删除重划).
     /// Opinionated semantics: yellow = 重点 (default), green = 摘抄.
     #[serde(default = "default_highlight_color")]
@@ -300,6 +309,7 @@ mod tests {
             end_text: start_text,
             end_offset: start_offset + 5,
             text: "示例摘录……".into(),
+            paras: Vec::new(),
             color: COLOR_YELLOW.into(),
             pos: Some(0.25),
             created_at: 100 + start_offset as i64,

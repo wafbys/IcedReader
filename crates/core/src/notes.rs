@@ -1,15 +1,19 @@
 //! 书伴生 md 的划线档案。全书只有 **一个** 伴生 md（`三体.epub.md`），
 //! 顶部是 `<!-- icedreader-meta -->` 元数据块，其下是这里管的划线区。
 //!
-//! 每次划线都落一条（程序保护区 + 摘录行），写过备注再往用户区加字。
+//! 每次划线都落一条（程序保护区 + 摘抄行），写过备注再往用户区加字。
 //!
 //! 程序保护区：`<!-- icedreader-note` 注释块 + **紧跟其后的摘抄行**（`> `
-//! 引用）。块里的机器字段是**划线记录的完整存储**（`id` / `color` /
-//! `created` / `deleted` / `posPct`，以及渲染高亮必需的坐标
-//! `href` / `startText` / `startOffset` / `endText` / `endOffset` 与摘录
-//! `text`）。其后到下一个保护区 / `##` 章标题 = 用户笔记区。重写只动保护区，
+//! 引用，一段一条）。块里的机器字段是**划线记录的完整存储**（`id` / `color` /
+//! `created` / `deleted` / `posPct`，渲染高亮必需的坐标
+//! `href` / `startText` / `startOffset` / `endText` / `endOffset`，摘录
+//! `text`（空白折成一行的全文）与它的段落切点 `paras`）。`paras` 是 `text`
+//! 里段落之间那个空格的字节下标，所以摘抄行在**任何一次重写**（位置回填、改
+//! 备注）之后都能从记录原样摊回多条引用，而不是写一次就不能动。摘抄行的最后
+//! 一条固定是 `> （全书 N% · 划于 …）`，删除时各条加删除线、末条附（已删于 …）。
+//! 其后到下一个保护区 / `##` 章标题 = 用户笔记区。重写只动保护区，
 //! 用户区逐字保留（阅读器备注框与外部 md 软件写的是同一处）。按「注释块后
-//! 首个以 `> ` 开头的行」认摘抄行。缺 `id:` 的块与手写无块段落原样保留。
+//! 连续的 `> ` 行」认摘抄行。缺 `id:` 的块与手写无块段落原样保留。
 //!
 //! 删除：有备注则保护区记 `deleted:`、摘抄行加删除线并附（已删于 …）；
 //! 纯划线（从未写备注）删除即整条移除、md 无痕（若用户区被外部写过，
@@ -57,10 +61,10 @@ pub fn pos_pct(pos: Option<f64>) -> String {
 
 /// 一条划线的档案条目。机器字段（坐标、颜色、位置、时间、摘录）由
 /// [`NoteEntry::highlight`] 生成到保护区注释块里；`comment_lines` 是已经排好
-/// 的块（内部用）；`excerpt` 是紧跟其后的摘抄行（普通文本，程序生成，
-/// 含标签/位置/划线时间）。
+/// 的块（内部用）；`excerpt` 是紧跟其后的摘抄行（普通文本，程序生成：一段一条
+/// `> ` 引用，末条是位置/划线时间）。
 pub struct NoteEntry {
-    /// 这条划线的完整记录（坐标 + 颜色 + 位置 + 时间 + 摘录原文）。
+    /// 这条划线的完整记录（坐标 + 颜色 + 位置 + 时间 + 摘录原文 + 段落切点）。
     pub highlight: Highlight,
     /// 章标题行全文（`## 第 12 章 · …`），新条目按它分组归属。
     pub section_title: String,
@@ -85,6 +89,14 @@ impl NoteEntry {
         out.push(format!("endText: {}", h.end_text));
         out.push(format!("endOffset: {}", h.end_offset));
         out.push(format!("text: {}", single_line(&h.text)));
+        out.push(format!(
+            "paras: {}",
+            h.paras
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
         out.push(NOTE_CLOSE.to_string());
         out
     }
@@ -95,11 +107,50 @@ fn single_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// 原始选区文本（段落之间是换行）→ 记录用的折行全文 + 段落切点。
+///
+/// 段内空白折成一个空格、空段丢弃（选区的行尾缩进、源里的排版空白都不进记录）；
+/// 切点是折行后的 `text` 里**段落之间那个空格**的字节下标，配合
+/// [`excerpt_paragraphs`] 可原样摊回段落。空选区 → 空串 + 无切点。
+pub fn split_excerpt(raw: &str) -> (String, Vec<usize>) {
+    let mut text = String::new();
+    let mut paras: Vec<usize> = Vec::new();
+    for line in raw.split('\n') {
+        let para = single_line(line);
+        if para.is_empty() {
+            continue;
+        }
+        if !text.is_empty() {
+            paras.push(text.len());
+            text.push(' ');
+        }
+        text.push_str(&para);
+    }
+    (text, paras)
+}
+
+/// 按段落切点把折成一行的摘录摊回段落。越界、非字符边界或落到原地的切点直接
+/// 忽略（`text:` / `paras:` 被外部改过时保持宽容），不丢字。
+fn excerpt_paragraphs(text: &str, paras: &[usize]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    for &cut in paras {
+        if cut <= start || cut >= text.len() || !text.is_char_boundary(cut) {
+            continue;
+        }
+        out.push(text[start..cut].trim().to_string());
+        start = cut + 1; // 跳过切点那个连接空格
+    }
+    out.push(text[start..].trim().to_string());
+    out.retain(|p| !p.is_empty());
+    out
+}
+
 pub struct NoteSeg {
     pub id: String,
-    pub open_lines: Vec<String>, // 注释块各行（含 <!-- 与 -->）
-    pub excerpt: Option<String>, // 摘抄行（普通文本）
-    pub note: Vec<String>,       // 用户区原文行
+    pub open_lines: Vec<String>,   // 注释块各行（含 <!-- 与 -->）
+    pub excerpt: Option<Vec<String>>, // 摘抄行（普通文本，一段一条）
+    pub note: Vec<String>,         // 用户区原文行
 }
 
 enum Seg {
@@ -150,8 +201,9 @@ fn parse_fields(open_lines: &[String]) -> Option<String> {
     id
 }
 
-/// 结构解析：把文本切成 Note 段与 Text 段。注释块之后紧接的首个非空行 =
-/// 摘抄行（普通文本）；其后到下一个锚点（注释块 / `## `）之间的行是用户区。
+/// 结构解析：把文本切成 Note 段与 Text 段。注释块之后紧接的**连续 `> ` 行**
+/// = 摘抄行（一段一条，最后一条是位置/划线时间）；其后到下一个锚点（注释块 /
+/// `## `）之间的行是用户区。
 fn parse(text: &str) -> Vec<Seg> {
     let lines = split_lines(text);
     let n = lines.len();
@@ -169,18 +221,17 @@ fn parse(text: &str) -> Vec<Seg> {
             }
             let open_lines = lines[i..j].to_vec();
             let id = parse_fields(&open_lines);
-            // 摘抄行：块结束后（允许空行）首个以 `> ` 开头的引用行。
+            // 摘抄行：块结束后（允许空行）连续的 `> ` 引用行。
             let mut k = j;
             while k < n && lines[k].trim().is_empty() {
                 k += 1;
             }
-            let excerpt = if k < n && lines[k].starts_with("> ") {
-                let e = lines[k].clone();
+            let mut excerpt: Vec<String> = Vec::new();
+            while k < n && lines[k].starts_with("> ") {
+                excerpt.push(lines[k].clone());
                 k += 1;
-                Some(e)
-            } else {
-                None
-            };
+            }
+            let excerpt = (!excerpt.is_empty()).then_some(excerpt);
             // 用户区：直到下一个锚点或文尾。
             let mut m = k;
             while m < n && !is_note_open(&lines[m]) && !is_section(&lines[m]) {
@@ -218,7 +269,7 @@ fn serialize(segs: &[Seg]) -> String {
             Seg::Note(note) => {
                 out.extend(note.open_lines.iter().cloned());
                 if let Some(excerpt) = &note.excerpt {
-                    out.push(excerpt.clone());
+                    out.extend(excerpt.iter().cloned());
                 }
                 out.extend(note.note.iter().cloned());
             }
@@ -259,29 +310,40 @@ fn note_from_entry(entry: &NoteEntry) -> Seg {
     Seg::Note(NoteSeg {
         id: entry.highlight.id.clone(),
         open_lines: entry.comment_lines(),
-        excerpt,
+        excerpt: (!excerpt.is_empty()).then_some(excerpt),
         note: note_lines,
     })
 }
 
-/// 人读的摘抄行：`> 【重点|摘抄】摘录（全书 N% · 划于 …）`。由记录本身生成，
-/// 所以它永远和块里的机器字段一致。时间显示为**本机时区**（块里的 `created`
-/// 才是权威的 unix 秒）。
-fn excerpt_for(entry: &NoteEntry) -> Option<String> {
-    let text = entry.highlight.text.trim();
-    if text.is_empty() {
-        return None;
+/// 人读的摘抄行：一段一条 `> ` 引用，`> 【重点|摘抄】` 只挂在头一条上；最后一条
+/// 固定是 `> （全书 N% · 划于 …）`。由记录本身生成（段落按 `paras` 摊回），所以
+/// 它永远和块里的机器字段一致。时间显示为**本机时区**（块里的 `created` 才是
+/// 权威的 unix 秒）。
+fn excerpt_for(entry: &NoteEntry) -> Vec<String> {
+    let h = &entry.highlight;
+    if h.text.trim().is_empty() {
+        return Vec::new();
     }
-    let mut bits = vec![pos_label(entry.highlight.pos)];
-    if entry.highlight.created_at > 0 {
-        bits.push(format!("划于 {}", human_stamp(entry.highlight.created_at)));
+    let paras = excerpt_paragraphs(&h.text, &h.paras);
+    let mut out: Vec<String> = Vec::new();
+    let label = color_label(&h.color);
+    for (i, para) in paras.iter().enumerate() {
+        if i == 0 {
+            out.push(format!("> 【{label}】{para}"));
+        } else {
+            out.push(format!("> {para}"));
+        }
     }
-    Some(format!(
-        "> 【{}】{}（{}）",
-        color_label(&entry.highlight.color),
-        single_line(text),
-        bits.join(" · "),
-    ))
+    if out.is_empty() {
+        // `paras` 全被宽容掉（例如 text 被外部改小）：整段当一段，别丢字。
+        out.push(format!("> 【{label}】{}", single_line(&h.text)));
+    }
+    let mut bits = vec![pos_label(h.pos)];
+    if h.created_at > 0 {
+        bits.push(format!("划于 {}", human_stamp(h.created_at)));
+    }
+    out.push(format!("> （{}）", bits.join(" · ")));
+    out
 }
 
 /// 将一条划线写入档案：`id` 已存在 → 原位替换保护区与笔记区（UI 保存 =
@@ -382,12 +444,19 @@ fn mark_deleted_body(text: &str, id: &str, deleted_at: i64) -> Option<String> {
             .unwrap_or(note.open_lines.len());
         note.open_lines.insert(insert_at, format!("deleted: {deleted_at}"));
     }
-    // 摘抄行加删除线与删除说明（引用块内包 md 删除线语法）。
-    if let Some(excerpt) = &note.excerpt {
-        if !excerpt.contains("已删于") && excerpt.starts_with("> ") {
-            let body = &excerpt[2..];
+    // 摘抄行（可能多行）逐条加删除线，删除时间落在最后一条。
+    if let Some(lines) = &mut note.excerpt {
+        if !lines.is_empty() && !lines.iter().any(|l| l.contains("已删于")) {
             let human = human_stamp(deleted_at);
-            note.excerpt = Some(format!("> ~~{body}~~（已删于 {human}）"));
+            let last = lines.len() - 1;
+            for (i, line) in lines.iter_mut().enumerate() {
+                let body = line.strip_prefix("> ").unwrap_or(line).to_string();
+                *line = if i == last {
+                    format!("> ~~{body}~~（已删于 {human}）")
+                } else {
+                    format!("> ~~{body}~~")
+                };
+            }
         }
     }
     Some(serialize(&segs))
@@ -453,7 +522,8 @@ fn update_pos_body(text: &str, id: &str, entry: &NoteEntry) -> Option<String> {
         return None;
     };
     note.open_lines = entry.comment_lines();
-    note.excerpt = excerpt_for(entry);
+    let excerpt = excerpt_for(entry);
+    note.excerpt = (!excerpt.is_empty()).then_some(excerpt);
     Some(serialize(&segs))
 }
 
@@ -580,6 +650,13 @@ fn stored_from_seg(seg: &NoteSeg, section_title: &str) -> Option<StoredHighlight
         .filter(|v| !v.is_empty())
         .and_then(|v| v.parse::<f64>().ok())
         .map(|pct| pct / 100.0);
+    let paras: Vec<usize> = field("paras")
+        .map(|v| {
+            v.split(',')
+                .filter_map(|p| p.trim().parse::<usize>().ok())
+                .collect()
+        })
+        .unwrap_or_default();
     Some(StoredHighlight {
         highlight: Highlight {
             id: seg.id.clone(),
@@ -589,6 +666,7 @@ fn stored_from_seg(seg: &NoteSeg, section_title: &str) -> Option<StoredHighlight
             end_text: num("endText")?,
             end_offset: num("endOffset")?,
             text: field("text").unwrap_or_default(),
+            paras,
             color: field("color").unwrap_or_else(|| "yellow".into()),
             pos,
             created_at: field("created")
@@ -615,6 +693,7 @@ mod tests {
             end_text: 4,
             end_offset: 1,
             text: text.into(),
+            paras: Vec::new(),
             color: COLOR_YELLOW.into(),
             pos: Some(0.34),
             created_at: 1_756_900_000,
@@ -627,6 +706,11 @@ mod tests {
             section_title: "## 第 1 章 · 开头".into(),
             note: note.into(),
         }
+    }
+
+    /// 段落摊开的可读形式（用 `|` 分隔，便于断言）。
+    fn paras_of(text: &str, cuts: &[usize]) -> String {
+        excerpt_paragraphs(text, cuts).join("|")
     }
 
     #[test]
@@ -658,13 +742,105 @@ mod tests {
         ] {
             assert!(out.contains(line), "missing {line} in {out}");
         }
+        // 没有段落切点时字段留空（不写一个假的 0）。
+        assert!(out.contains("paras: \n"), "empty paras must stay blank: {out}");
         assert!(out.starts_with("## 第 1 章 · 开头\n\n<!-- icedreader-note\n"));
         // 摘抄行是 md 引用块（以 `>` 开头，md 软件里看得舒服）。
         assert!(out.lines().any(|l| l.starts_with("> 【重点】")));
+        // 单段摘录 = 一条引用行 + 一条位置/时间行。
+        assert_eq!(out.lines().filter(|l| l.starts_with("> ")).count(), 2);
         assert_eq!(
             notes_of(&out),
             vec![("a".to_string(), "第一条笔记".to_string())]
         );
+    }
+
+    /// 折成一行的摘录 + 段落切点：切点必须正好落在段落之间那个空格上，
+    /// 摊回来一字不差。
+    #[test]
+    fn split_excerpt_folds_to_one_line_and_keeps_the_cuts() {
+        let raw = "第一段。\n  第二段，行尾有空格  \n\n第三段。";
+        let (text, paras) = split_excerpt(raw);
+        assert_eq!(text, "第一段。 第二段，行尾有空格 第三段。");
+        assert_eq!(paras.len(), 2, "cuts: {paras:?}");
+        for &cut in &paras {
+            assert_eq!(&text[cut..cut + 1], " ", "切点必须落在连接空格上");
+        }
+        assert_eq!(paras_of(&text, &paras), "第一段。|第二段，行尾有空格|第三段。");
+        // 空选区 → 空串 + 无切点。
+        assert_eq!(split_excerpt("   \n \n"), (String::new(), Vec::new()));
+    }
+
+    /// 手改过的 `text:` / `paras:`：越界、非字符边界、重复的切点一律忽略，
+    /// 一个字都不丢，也不 panic。
+    #[test]
+    fn excerpt_paragraphs_tolerates_broken_cuts() {
+        let text = "甲乙 丙丁";
+        assert_eq!(paras_of(text, &[6]), "甲乙|丙丁");
+        assert_eq!(paras_of(text, &[999, 0, 6, 6]), "甲乙|丙丁");
+        assert_eq!(paras_of(text, &[1]), "甲乙 丙丁", "非字符边界 → 整段");
+        assert_eq!(paras_of("单段", &[]), "单段");
+        assert_eq!(paras_of("", &[3]), "");
+    }
+
+    /// 多段摘抄：md 里一段一条 `> ` 引用（标签只在第一条），末条是位置/时间；
+    /// 位置回填（整条重写）之后段落结构照旧；删除时每条都加删除线。
+    #[test]
+    fn multi_paragraph_excerpt_roundtrips_and_survives_a_rewrite() {
+        let (text, paras) = split_excerpt("一段。\n二段。\n三段。");
+        let mut h = hl("a", &text);
+        h.paras = paras.clone();
+        let v1 = upsert(
+            "",
+            &NoteEntry {
+                highlight: h.clone(),
+                section_title: "## 第 1 章 · 开头".into(),
+                note: String::new(),
+            },
+        );
+        let cut_field = format!(
+            "paras: {}",
+            paras
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(v1.contains(&cut_field), "块里要记下切点：{v1}");
+        let quote: Vec<&str> = v1.lines().filter(|l| l.starts_with("> ")).collect();
+        assert_eq!(quote.len(), 4, "quote: {quote:?}");
+        assert_eq!(quote[0], "> 【重点】一段。");
+        assert_eq!(quote[1], "> 二段。");
+        assert_eq!(quote[2], "> 三段。");
+        assert!(quote[3].starts_with("> （全书 34% · 划于 "));
+
+        // 读回来一致（含切点）。
+        assert_eq!(stored_highlights(&v1)[0].highlight, h);
+
+        // 位置回填 = 整条重写：段落结构必须原样回来。
+        let mut moved = h.clone();
+        moved.pos = Some(0.42);
+        let out = update_pos(
+            &v1,
+            "a",
+            &NoteEntry {
+                highlight: moved,
+                section_title: String::new(),
+                note: String::new(),
+            },
+        )
+        .unwrap();
+        let quote2: Vec<&str> = out.lines().filter(|l| l.starts_with("> ")).collect();
+        assert_eq!(quote2.len(), 4, "quote after pos backfill: {quote2:?}");
+        assert_eq!(quote2[1], "> 二段。");
+        assert!(out.contains("> （全书 42% · 划于 "));
+
+        // 删除留痕：每条引用都加删除线，时间落在末条。
+        let del = mark_deleted(&out, "a", 1_756_987_200).unwrap();
+        assert!(del.contains("> ~~【重点】一段。~~"));
+        assert!(del.contains("> ~~二段。~~"));
+        assert!(del.contains("> ~~三段。~~"));
+        assert!(del.contains("已删于 "));
     }
 
     /// 记录进得去也出得来：坐标/颜色/位置/摘录在块里往返一致。

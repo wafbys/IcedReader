@@ -8,10 +8,13 @@
  * text nodes appear in the same order each time. A highlight is stored as the
  * half-open span [start, end) over that sequence: `startText`/`endText` are
  * indexes into `collectTexts(doc)`, plus an in-node offset. `text` keeps the
- * **whole** whitespace-normalised selection on one line: it is both the quote
- * the companion md prints and what a changed/regenerated edition is re-anchored
- * by searching (that probe only ever reads its head/tail). Records that cannot
- * be re-anchored are skipped but kept on disk.
+ * **whole** selection with one line per source paragraph: Rust folds it onto one
+ * line for the md block's `text:` field and records the paragraph cuts
+ * (`paras:`), so the companion md prints one `> ` quote line per paragraph and
+ * the same splits survive any later rewrite. It is also what a
+ * changed/regenerated edition is re-anchored by searching (that probe only ever
+ * reads its head/tail). Records that cannot be re-anchored are skipped but kept
+ * on disk.
  *
  * Painting
  * --------
@@ -50,6 +53,8 @@ export type TextPoint = { seq: number; offset: number };
 export type HighlightAnchor = {
   start: TextPoint;
   end: TextPoint;
+  /** 整段选区的摘录，**一段一行**（见 [`excerptFromSelection`]）：折成一行是
+   *  Rust 侧的事（机器字段），段落切点也在那里算。 */
   text: string;
 };
 
@@ -129,17 +134,25 @@ export function normalizeText(text: string): string {
 }
 
 /**
- * The excerpt stored for one stroke: the **whole** selection, whitespace
- * normalised onto a single line (the md block needs one `text:` field and one
- * `> ` quote line, so newlines cannot survive).
+ * The excerpt stored for one stroke: the **whole** selection, **one line per
+ * source paragraph**.
  *
- * Deliberately not trimmed to a short fingerprint: this same string is what the
+ * Intra-paragraph whitespace folds to a single space; the newlines that separate
+ * paragraphs are kept, because the Rust side turns them into the record's
+ * paragraph cuts (`paras`) and the md's one-`>`-quote-line-per-paragraph. An
+ * all-blank selection yields `""` and the caller drops the stroke.
+ *
+ * Deliberately not trimmed to a short fingerprint: this same text is what the
  * human 摘抄行 in the companion md quotes, so any cap here silently drops the
  * middle of a long 摘抄 from the archive. The re-anchor probe only ever reads
  * its head and tail, so a long excerpt costs nothing there.
  */
 export function excerptFromSelection(raw: string): string {
-  return normalizeText(raw);
+  return raw
+    .split("\n")
+    .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
+    .filter((line) => line !== "")
+    .join("\n");
 }
 
 /** Concatenated plain text of the chapter, node data in order. */
