@@ -1185,6 +1185,33 @@ body {
   opacity: 1;
 }
 
+/* 注标跳转的落点提示：父页画的短暂高亮框，自行淡出。从不注入章节
+   （AGENTS 硬约束：正文不加阅读皮肤）；z-index 压在浮条/气泡之下。 */
+.jump-flash {
+  position: fixed;
+  z-index: 39;
+  pointer-events: none;
+  border-radius: 4px;
+  background: rgba(196, 106, 58, 0.16);
+  box-shadow: 0 0 0 1.5px rgba(196, 106, 58, 0.55);
+  animation: jump-flash-fade 1.5s ease-out forwards;
+}
+
+@keyframes jump-flash-fade {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  68% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 /* 编辑元数据模态（书名规范）——从书架三点菜单进入。真 modal：原生 <dialog> +
    showModal（ui/src/modal.ts），进 top layer、背景 inert，遮罩是它自己的
    ::backdrop 而不是一层 fixed div。属于壳层 UI，不注入任何正文样式（AGENTS：

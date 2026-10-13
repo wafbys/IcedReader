@@ -134,6 +134,16 @@ type ToolbarState =
   | { kind: "delete"; x: number; y: number; id: string }
   | null;
 
+/** Transient highlight over a jumped-to element; parent-viewport CSS pixels. */
+type LandingFlash = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  /** Bumped per jump so the element remounts and the fade restarts. */
+  key: number;
+};
+
 function usableLang(value: string | null | undefined): string | null {
   if (!value) return null;
   const t = value.trim();
@@ -289,6 +299,12 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   const noteTipTargetRef = useRef<Element | null>(null);
   const keepHlTip = useRef(false);
   const hideHlTipTimer = useRef<number | null>(null);
+  /** Landing flash for a jumped-to element (e.g. note marker → note). Drawn on
+   *  the parent page as a viewport-fixed div; a new jump remounts it via `key`
+   *  so the fade animation restarts. */
+  const [landingFlash, setLandingFlash] = useState<LandingFlash | null>(null);
+  const landingFlashTimer = useRef<number | null>(null);
+  const landingFlashSeq = useRef(0);
   const [toolbar, setToolbar] = useState<ToolbarState>(null);
   const [toolbarBusy, setToolbarBusy] = useState(false);
   /** 新建划线的颜色（下笔即定；记住上次选择）。 */
@@ -451,6 +467,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     if (!st.metrics || !box) return;
     // The content under the cursor moves, so a stale bubble must not linger.
     hideNoteTip();
+    // A manual page move makes the previous landing flash point at nothing.
+    setLandingFlash(null);
     const pages = Math.max(1, st.pages);
     const next = Math.min(pages - 1, Math.max(0, page));
     st.page = next;
@@ -466,6 +484,46 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
       pages,
       columns: st.metrics.columns,
     });
+  };
+
+  /**
+   * Flash a jumped-to element so the reader can see *which* note/anchor they
+   * landed on — a chapter can hold dozens of notes and scrolling alone gives no
+   * cue. The box is a plain viewport-fixed div on the parent page (nothing is
+   * injected into the chapter, so the book's own styling stays untouched) and
+   * fades out by itself. A long target (a note taller than a column) only
+   * flashes its top so the overlay never becomes a full-page wash.
+   */
+  const flashTarget = (rect: DOMRect) => {
+    const iframe = iframeRef.current;
+    const box = containerRef.current;
+    if (!iframe || !box || (rect.width <= 0 && rect.height <= 0)) return;
+    const iframeRect = iframe.getBoundingClientRect();
+    const boxRect = box.getBoundingClientRect();
+    const pad = 3;
+    const maxHeight = 160;
+    // Anchor on the rect's top-left; clamp inside the reading area so the flash
+    // never covers the top bar.
+    let left = iframeRect.left + rect.left - pad;
+    let top = iframeRect.top + rect.top - pad;
+    let width = Math.max(rect.width, 2) + pad * 2;
+    let height = Math.min(Math.max(rect.height, 2) + pad * 2, maxHeight);
+    const right = boxRect.right - 2;
+    const bottom = boxRect.bottom - 2;
+    left = Math.min(Math.max(left, boxRect.left + 2), right - 8);
+    top = Math.min(Math.max(top, boxRect.top + 2), bottom - 8);
+    width = Math.min(width, right - left);
+    height = Math.min(height, bottom - top);
+    if (width <= 0 || height <= 0) return;
+    landingFlashSeq.current += 1;
+    setLandingFlash({ left, top, width, height, key: landingFlashSeq.current });
+    if (landingFlashTimer.current !== null) {
+      window.clearTimeout(landingFlashTimer.current);
+    }
+    landingFlashTimer.current = window.setTimeout(() => {
+      landingFlashTimer.current = null;
+      setLandingFlash(null);
+    }, 1500);
   };
 
   /** Scroll the flow so a highlight's span sits on the current page. */
@@ -499,6 +557,9 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     const rects = el.getClientRects();
     const r = rects.length > 0 ? rects[0] : el.getBoundingClientRect();
     applyPage(Math.floor((r.left - rootRect.left) / st.metrics.stride), true);
+    // Show where we landed (note markers, in-book anchors): the page alone is
+    // ambiguous when a chapter has dozens of notes.
+    flashTarget(r);
   };
 
   /**
@@ -667,11 +728,23 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   }, [restoreFraction, html]);
 
   // Chapter content changed: the old doc's toolbar is stale and its anchor
-  // would be committed against the wrong chapter, so drop it now.
+  // would be committed against the wrong chapter, so drop it now. The landing
+  // flash points into the old document's coordinates, so it goes too.
   useEffect(() => {
     setToolbar(null);
     setToolbarBusy(false);
+    setLandingFlash(null);
   }, [html]);
+
+  // Clear the fade timer on unmount so it cannot fire into a dead component.
+  useEffect(
+    () => () => {
+      if (landingFlashTimer.current !== null) {
+        window.clearTimeout(landingFlashTimer.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     relayout(true);
@@ -1078,6 +1151,21 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
           hideNoteTip();
         }}
       />
+
+      {/* Landing flash for a jumped-to element (note marker → note, in-book
+          anchors). Parent-page overlay: the chapter itself is never touched. */}
+      {landingFlash && (
+        <div
+          key={landingFlash.key}
+          className="jump-flash"
+          style={{
+            left: landingFlash.left,
+            top: landingFlash.top,
+            width: landingFlash.width,
+            height: landingFlash.height,
+          }}
+        />
+      )}
 
       {toolbar && (
         <div
