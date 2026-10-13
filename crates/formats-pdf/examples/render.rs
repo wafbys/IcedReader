@@ -29,14 +29,15 @@ struct Args {
     /// `--substitute-font <path>[#index]`: font program handed to the renderer
     /// for fonts the PDF does not embed (diagnostic; not a shipped setting).
     substitute: Option<(Vec<u8>, u32)>,
-    /// `--format png|jpeg` (default jpeg, like the reader serves).
+    /// `--format png|jpeg|webp` (default png; the reader itself serves lossless
+    /// WebP — see the crate docs for the measurements).
     format: PageFormat,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: render <file.pdf|dir> [--width N] [--pages A-B] [--out DIR] [--fonts-only] \
-         [--dump-page N] [--substitute-font FILE[#TTC_INDEX]] [--format png|jpeg]"
+         [--dump-page N] [--substitute-font FILE[#TTC_INDEX]] [--format png|jpeg|webp]"
     );
     std::process::exit(2);
 }

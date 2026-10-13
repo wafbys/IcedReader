@@ -402,7 +402,7 @@ pub struct CellValue {
   与占位图重试逻辑从 `Library.tsx` 抽成共享模块，别抄一份。
 - **`edition_vs_peers` 的去留**：面板已由 `book_compare` 接管轴判定；这个旧函数只剩单测在用，
   可以删掉（`image_rank` / `note_weight` 已被 `plate_counts` 与 `book_compare::note_weight` 取代）。
-- **封面图识别**：靠「封面页文件 + `body.cover-page` 类 + 内联 background-image」还是靠 OPF 的
-  `cover-image` 属性。这套书用的是 CSS 背景图，`cover-image` 属性未必指得到，需要实测确认。
+- **封面图识别**：已定（2026-10-13）——按引用关系判：正文没引用、样式表引用的图片即封面/包装图
+  （`book_compare::cover_bytes`），不依赖 OPF 的 `cover-image` 属性或 `body.cover-page` 类。
 - **孤图判定边界**：只按引用关系判。F3 里 `Kindle.jpg`（仅清单）和 `平板.jpg`（被换掉后不再被引用）
   靠引用关系都判得干净；按文件名猜「像不像推广图」反而会漏掉 `平板.jpg` 这种被替换留下的旧封面。
