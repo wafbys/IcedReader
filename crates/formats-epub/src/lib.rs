@@ -882,7 +882,11 @@ mod tests {
             ("cover.xhtml", "封面", "<div id=\"cover\"></div>"),
             ("title.xhtml", "扉页", "<p>扉页</p>"),
             ("preface.xhtml", "前言", "<p>前言</p>"),
-            ("c1.xhtml", "第一章", "<h1 id=\"s1\">第一章</h1><p>正文一</p>"),
+            (
+                "c1.xhtml",
+                "第一章",
+                "<h1 id=\"s1\">第一章</h1><p>正文一</p>",
+            ),
             ("c2.xhtml", "第二章", "<h1>第二章</h1><p>正文二</p>"),
         ] {
             zip.start_file(format!("EPUB/{name}"), deflated).unwrap();

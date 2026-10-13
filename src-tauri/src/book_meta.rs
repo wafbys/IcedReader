@@ -95,10 +95,7 @@ pub fn view_for(profile: &BookProfile, overlay: Option<&BookMeta>) -> BookMetaVi
 /// clears everything user-entered and fills title/authors/publisher/ISBN
 /// freshly from the file. subtitle/volume/translator/year have no usable OPF
 /// source yet, so they come back empty. Whether to save stays the user's call.
-pub fn reread_view_for(
-    profile: &BookProfile,
-    meta: &iced_reader_core::Metadata,
-) -> BookMetaView {
+pub fn reread_view_for(profile: &BookProfile, meta: &iced_reader_core::Metadata) -> BookMetaView {
     let base = profile.title.trim();
     let dc = meta.title.trim();
     let title_base = if dc.is_empty() || dc == "Untitled" {
@@ -272,12 +269,7 @@ mod tests {
         assert_eq!(view.publisher, "原书出版社");
         assert_eq!(view.isbn, "978-7-1");
         // User-edited fields come back empty.
-        for empty in [
-            &view.subtitle,
-            &view.volume,
-            &view.translator,
-            &view.year,
-        ] {
+        for empty in [&view.subtitle, &view.volume, &view.translator, &view.year] {
             assert!(empty.is_empty(), "expected empty field");
         }
         assert_eq!(

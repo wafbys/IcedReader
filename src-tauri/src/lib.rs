@@ -253,7 +253,12 @@ fn highlight_section_title(book: &Arc<dyn Book>, href: &str) -> crate::error::Re
     let spine = book.spine();
     let idx = spine_index_for(&spine, href).ok_or_else(|| "无法定位划线章节".to_string())?;
     let total = spine.len();
-    let title = spine[idx].title.clone().unwrap_or_default().trim().to_string();
+    let title = spine[idx]
+        .title
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let title_show = if title.is_empty() {
         href.to_string()
     } else {
@@ -819,11 +824,8 @@ async fn set_book_meta(
     let old_stem = library::epub_stem(&file_name);
     let desired_stem = library::clean_file_stem(&display_title);
     let md_name = format!("{file_name}.md");
-    let target_stem = library::unique_stem_ignoring(
-        &dir,
-        &desired_stem,
-        &[file_name.as_str(), md_name.as_str()],
-    );
+    let target_stem =
+        library::unique_stem_ignoring(&dir, &desired_stem, &[file_name.as_str(), md_name.as_str()]);
     let needs_rename = !old_stem.eq_ignore_ascii_case(&target_stem);
 
     let (_, final_md_path) = if needs_rename {

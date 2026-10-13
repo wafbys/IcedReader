@@ -545,9 +545,9 @@ pub fn unique_stem_ignoring(dir: &Path, preferred: &str, ignore: &[&str]) -> Str
 /// (`三体.epub.md`), so book files are what the check really ranges over.
 fn stem_taken(taken: &std::collections::HashSet<String>, stem: &str) -> bool {
     let s = stem.to_lowercase();
-    iced_reader_core::BOOK_EXTENSIONS
-        .iter()
-        .any(|ext| taken.contains(&format!("{s}.{ext}")) || taken.contains(&format!("{s}.{ext}.md")))
+    iced_reader_core::BOOK_EXTENSIONS.iter().any(|ext| {
+        taken.contains(&format!("{s}.{ext}")) || taken.contains(&format!("{s}.{ext}.md"))
+    })
 }
 
 /// File stem of a library book name (`Foo.EPUB` → `Foo`, `Foo.pdf` → `Foo`).

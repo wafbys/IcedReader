@@ -148,9 +148,9 @@ fn excerpt_paragraphs(text: &str, paras: &[usize]) -> Vec<String> {
 
 pub struct NoteSeg {
     pub id: String,
-    pub open_lines: Vec<String>,   // 注释块各行（含 <!-- 与 -->）
+    pub open_lines: Vec<String>,      // 注释块各行（含 <!-- 与 -->）
     pub excerpt: Option<Vec<String>>, // 摘抄行（普通文本，一段一条）
-    pub note: Vec<String>,         // 用户区原文行
+    pub note: Vec<String>,            // 用户区原文行
 }
 
 enum Seg {
@@ -442,7 +442,8 @@ fn mark_deleted_body(text: &str, id: &str, deleted_at: i64) -> Option<String> {
             .iter()
             .position(|l| l.trim_start().starts_with(NOTE_CLOSE))
             .unwrap_or(note.open_lines.len());
-        note.open_lines.insert(insert_at, format!("deleted: {deleted_at}"));
+        note.open_lines
+            .insert(insert_at, format!("deleted: {deleted_at}"));
     }
     // 摘抄行（可能多行）逐条加删除线，删除时间落在最后一条。
     if let Some(lines) = &mut note.excerpt {
@@ -565,8 +566,7 @@ fn prune_empty_sections(mut segs: Vec<Seg>) -> Vec<Seg> {
         segs.remove(i);
         // 吃掉标题后连着的光秃空行段。
         while i < segs.len() {
-            let blank =
-                matches!(&segs[i], Seg::Text(t) if t.iter().all(|l| is_blank_line(l)));
+            let blank = matches!(&segs[i], Seg::Text(t) if t.iter().all(|l| is_blank_line(l)));
             if blank {
                 segs.remove(i);
             } else {
@@ -743,7 +743,10 @@ mod tests {
             assert!(out.contains(line), "missing {line} in {out}");
         }
         // 没有段落切点时字段留空（不写一个假的 0）。
-        assert!(out.contains("paras: \n"), "empty paras must stay blank: {out}");
+        assert!(
+            out.contains("paras: \n"),
+            "empty paras must stay blank: {out}"
+        );
         assert!(out.starts_with("## 第 1 章 · 开头\n\n<!-- icedreader-note\n"));
         // 摘抄行是 md 引用块（以 `>` 开头，md 软件里看得舒服）。
         assert!(out.lines().any(|l| l.starts_with("> 【重点】")));
@@ -766,7 +769,10 @@ mod tests {
         for &cut in &paras {
             assert_eq!(&text[cut..cut + 1], " ", "切点必须落在连接空格上");
         }
-        assert_eq!(paras_of(&text, &paras), "第一段。|第二段，行尾有空格|第三段。");
+        assert_eq!(
+            paras_of(&text, &paras),
+            "第一段。|第二段，行尾有空格|第三段。"
+        );
         // 空选区 → 空串 + 无切点。
         assert_eq!(split_excerpt("   \n \n"), (String::new(), Vec::new()));
     }

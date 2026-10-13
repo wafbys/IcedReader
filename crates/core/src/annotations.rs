@@ -194,7 +194,10 @@ impl AnnotationStore {
                 continue;
             };
             let text = fs::read_to_string(&path).unwrap_or_default();
-            if !notes::stored_highlights(&text).iter().any(|s| s.highlight.id == id) {
+            if !notes::stored_highlights(&text)
+                .iter()
+                .any(|s| s.highlight.id == id)
+            {
                 continue;
             }
             let has_note = notes::notes_of(&text).iter().any(|(nid, _)| nid == id);
@@ -225,7 +228,12 @@ impl AnnotationStore {
     /// ([`notes::update_pos`]), so the user's own note stays byte for byte —
     /// the stored note read back here is a trim of that region, and writing it
     /// through [`notes::upsert`] would put the trimmed form back on disk.
-    pub fn set_pos(&mut self, file_name: &str, id: &str, pos: f64) -> Result<bool, crate::CoreError> {
+    pub fn set_pos(
+        &mut self,
+        file_name: &str,
+        id: &str,
+        pos: f64,
+    ) -> Result<bool, crate::CoreError> {
         let pos = pos.clamp(0.0, 1.0);
         let mut changed = false;
         for book in self.books_for(file_name) {
