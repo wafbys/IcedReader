@@ -73,7 +73,7 @@ PDF 样本自检（不入库，放哪都行）：`cargo run -p iced-reader-pdf -
 
 ## EPUB 章节
 
-- **目录锚点当章：** TOC ≥ 2 且（任一 href 带 `#` 或 TOC 树条目数 > OPF spine）时用摊平 TOC（href 保留 `#`），`chapter_html` 按锚点切到下一 TOC 锚点。少于两条不摊平。正规一章一文件仍走 OPF spine。见 `crates/formats-epub/src/lib.rs`。
+- **目录锚点当章：** TOC ≥ 2 且（任一 href 带 `#` 或 TOC 树条目数 > OPF spine）时用摊平 TOC（href 保留 `#`），`chapter_html` 按锚点切到下一 TOC 锚点。少于两条不摊平。正规一章一文件仍走 OPF spine；TOC 从中间开始时，它前面未被 TOC 引用的 OPF 页（封面/扉页/前言等）仍补在 spine 前部。见 `crates/formats-epub/src/lib.rs`。
 - **路径改写**要能过不规范 HTML：rbook XML 失败后宽松改写相对 `src`/`href`，不要为此给章节开脚本。
 - **`lang`：** `srcDoc` 无 `lang` 时从 `xml:lang` 或 `dc:language` 补（跳过 `und`）。不要为此灌皮肤。
 - **分页：** CSS 多栏，栏宽上限 720px、最多 2 栏，竖屏 1 栏；多出的宽度是页边。iframe 按页数拉宽，外层 `scrollLeft` 翻页。左右键 / 滚轮翻页（无点左右侧翻页）；章边界续翻。进度仍是 `href` + 章内 `fraction`。

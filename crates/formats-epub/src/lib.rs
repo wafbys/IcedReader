@@ -252,6 +252,25 @@ impl EpubBook {
         spine
     }
 
+    /// The flat TOC spine must not drop the pages that sit before its first
+    /// entry: books whose TOC starts at the first essay lose the cover, title
+    /// page and preface that the OPF spine lists in front of it. Prepend the
+    /// OPF pages up to the first file the TOC references (by construction none
+    /// of them are in the TOC). Pages *after* that first file are still the
+    /// TOC's business — a TOC that also omits a trailing page keeps it omitted.
+    fn with_front_matter(opf: Vec<SpineItem>, toc: Vec<SpineItem>) -> Vec<SpineItem> {
+        let toc_files: HashSet<String> = toc.iter().map(|s| href_file_key(&s.href)).collect();
+        let Some(first) = opf
+            .iter()
+            .position(|s| toc_files.contains(&href_file_key(&s.href)))
+        else {
+            return toc;
+        };
+        let mut out: Vec<SpineItem> = opf.into_iter().take(first).collect();
+        out.extend(toc);
+        out
+    }
+
     fn next_fragment_after(&self, href: &str) -> Option<String> {
         let items = self.spine();
         let file = href_file_key(href);
@@ -342,7 +361,7 @@ impl Book for EpubBook {
         // fragment href or the tree is longer than the OPF spine. Fewer than
         // two entries stay on the OPF spine (typical one-file-per-chapter).
         if toc.len() >= 2 && (toc.iter().any(|s| s.href.contains('#')) || toc.len() > opf.len()) {
-            toc
+            Self::with_front_matter(opf, toc)
         } else {
             Self::with_toc_titles(opf, &toc)
         }
@@ -789,6 +808,121 @@ mod tests {
                 .any(|n| n.href.as_deref().is_some_and(|h| h.contains("#a"))),
             "{toc:?}"
         );
+    }
+
+    /// Cover + title page + preface sit before the first TOC entry, and the TOC
+    /// starts mid-book with a fragment. The flat TOC spine must keep those
+    /// three pages in front (`iced-reader` used to open at the first entry,
+    /// losing the cover page entirely).
+    fn write_front_matter_epub(path: &Path) {
+        let file = File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/epub+zip").unwrap();
+        zip.start_file("META-INF/container.xml", deflated).unwrap();
+        zip.write_all(
+            r#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="EPUB/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#
+                .as_bytes(),
+        )
+        .unwrap();
+        zip.start_file("EPUB/content.opf", deflated).unwrap();
+        zip.write_all(
+            r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:icedreader-front</dc:identifier>
+    <dc:title>前置页书</dc:title>
+    <dc:language>zh</dc:language>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
+    <item id="title" href="title.xhtml" media-type="application/xhtml+xml"/>
+    <item id="preface" href="preface.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="c2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="cover"/>
+    <itemref idref="title"/>
+    <itemref idref="preface"/>
+    <itemref idref="c1"/>
+    <itemref idref="c2"/>
+  </spine>
+</package>"#
+                .as_bytes(),
+        )
+        .unwrap();
+        zip.start_file("EPUB/nav.xhtml", deflated).unwrap();
+        zip.write_all(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>nav</title></head>
+<body>
+<nav epub:type="toc">
+  <ol>
+    <li><a href="c1.xhtml">第一章</a><ol><li><a href="c1.xhtml#s1">第一节</a></li></ol></li>
+    <li><a href="c2.xhtml">第二章</a></li>
+  </ol>
+</nav>
+</body>
+</html>"#
+                .as_bytes(),
+        )
+        .unwrap();
+        for (name, title, body) in [
+            ("cover.xhtml", "封面", "<div id=\"cover\"></div>"),
+            ("title.xhtml", "扉页", "<p>扉页</p>"),
+            ("preface.xhtml", "前言", "<p>前言</p>"),
+            ("c1.xhtml", "第一章", "<h1 id=\"s1\">第一章</h1><p>正文一</p>"),
+            ("c2.xhtml", "第二章", "<h1>第二章</h1><p>正文二</p>"),
+        ] {
+            zip.start_file(format!("EPUB/{name}"), deflated).unwrap();
+            zip.write_all(
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>{title}</title></head>
+<body>{body}</body>
+</html>"#
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn toc_spine_keeps_front_matter_before_first_entry() {
+        let dir = std::env::temp_dir().join("icedreader-epub-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("front.epub");
+        write_front_matter_epub(&path);
+
+        let book = EpubOpener.open(&path).expect("open");
+        let spine = book.spine();
+        let files: Vec<String> = spine.iter().map(|s| href_file_key(&s.href)).collect();
+        assert_eq!(files.len(), 6, "{spine:?}");
+        assert_eq!(files[0], "epub/cover.xhtml", "{spine:?}");
+        assert_eq!(files[1], "epub/title.xhtml", "{spine:?}");
+        assert_eq!(files[2], "epub/preface.xhtml", "{spine:?}");
+        assert_eq!(files[3], "epub/c1.xhtml", "{spine:?}");
+        assert!(spine[4].href.contains("#s1"), "{spine:?}");
+        assert_eq!(files[5], "epub/c2.xhtml", "{spine:?}");
+        // The front-matter pages are real chapters the reader can show.
+        let html = book
+            .chapter_html(&spine[0].href, "http://icedreader.localhost/book/t/")
+            .expect("cover page");
+        assert!(html.contains("id=\"cover\""), "{html}");
     }
 
     #[test]
