@@ -582,6 +582,19 @@ export default function App() {
     }
   }, []);
 
+  /**
+   * 书架自愈的收尾动作：`list_library` 会把旧代分析（升级后才失效的缓存）
+   * 丢去 Rust 后台重算，重列一次就能看到新结果——升级后不必逐本打开。
+   * 只补一枪、只在书架：不轮询、不在前台等，重列本身只是读缓存。
+   */
+  useEffect(() => {
+    if (book) return;
+    const timer = window.setTimeout(() => {
+      void loadLibrary();
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [book, loadLibrary]);
+
   const deleteBook = useCallback(
     async (entry: LibraryEntry) => {
       const confirmed = await ask(

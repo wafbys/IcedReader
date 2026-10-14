@@ -31,15 +31,33 @@ use serde::{Deserialize, Serialize};
 use crate::portable;
 
 /// [`BookSignals::chapter_chars`] counted per spine *slice* (TOC-as-chapters).
-pub const CHAPTER_CHARS_PER_SPINE: u8 = 1;
-/// Extra grade inputs. 2 = `sup_count` is bracket notes (`[n]`), not every
-/// `<sup>` (exponents like 10^-43 must not count). Kind 1 caches skip the
-/// sup bonus until the book is reopened.
+/// 2 = the slice list keeps the pages the OPF spine lists in front of the first
+/// TOC entry (cover / 扉页 / 前言 — `EpubBook::with_front_matter`); kind 1
+/// weights describe a list without those pages and must never be mixed with it.
+pub const CHAPTER_CHARS_PER_SPINE: u8 = 2;
+/// Cache generation for the whole [`BookSignals`] blob
+/// ([`BookSignals::analysis_kind`]). Bump whenever the numbers change meaning:
+/// `open_book` recomputes entries from older generations, and the shelf refuses
+/// to group on a fingerprint computed under a different rule.
+/// History: 2 = `sup_count` is bracket notes (`[n]`), not every `<sup>`
+/// (exponents like 10^-43 must not count); kind 1 caches skip the sup bonus
+/// until the book is reopened.
 /// 3 = `<?xml … ?>` no longer counted as body text, plus the
 /// `img_referenced` / `img_css_only` / `img_orphan` breakdown; kind ≤ 2 caches
 /// carry a `fingerprint` inflated by the XML declaration, so they must be
 /// recomputed before 同书 grouping can be trusted.
-pub const ANALYSIS_KIND: u8 = REFERENCED_IMAGE_KIND;
+/// 4 = the flattened spine keeps the front matter ([`SPINE_FRONT_MATTER_KIND`]):
+/// kind ≤ 3 `fingerprint` / `headings` / `chapter_chars` describe the old,
+/// shorter chapter list.
+pub const ANALYSIS_KIND: u8 = SPINE_FRONT_MATTER_KIND;
+/// Kind at which [`BookSignals`] started describing the spine *with* the pages
+/// before the first TOC entry (see `EpubBook::with_front_matter`).
+///
+/// Deliberately a generation of its own, not [`REFERENCED_IMAGE_KIND`]: that
+/// one doubles as a *feature* watermark (`analysis_kind >=` in [`grade`] /
+/// [`plate_counts`]), so a kind-3 cache must still grade by its reference
+/// breakdown while it waits to be recomputed.
+pub const SPINE_FRONT_MATTER_KIND: u8 = 4;
 /// `analysis_kind` at which plates switched from "every image in the package"
 /// to "images the text references". Older caches keep the old reading (see
 /// [`grade`]) so upgrading does not move a single shelf badge.
@@ -205,8 +223,10 @@ pub struct BookSignals {
     /// nodes). Whole-book position weights for the 全书% readout and 按位置跳转.
     #[serde(default)]
     pub chapter_chars: Vec<u64>,
-    /// 1 = each spine unit is a reading slice (TOC fragment), not a reused
-    /// whole-file length. Missing/0 is the legacy cache and must be recomputed.
+    /// Current slice-list generation — [`CHAPTER_CHARS_PER_SPINE`]. Each spine
+    /// unit is a reading slice (TOC fragment), not a reused whole-file length;
+    /// missing or older weights must be recomputed (see
+    /// [`weights_for_current_spine`]).
     #[serde(default)]
     pub chapter_chars_kind: u8,
     /// sha of the joined `chapter_shas` — cheap group key.
@@ -268,7 +288,8 @@ pub struct BookSignals {
     /// Superscript tags across unique spine files (traditional [n] notes).
     #[serde(default)]
     pub sup_count: u64,
-    /// 1 = grade inputs above are filled; missing/0 recomputes on next open.
+    /// Cache generation the entry was written under — [`ANALYSIS_KIND`].
+    /// Missing/0 or older recomputes on the next open.
     #[serde(default)]
     pub analysis_kind: u8,
     /// PDF-only quality signals, stored as measured by
@@ -1235,6 +1256,39 @@ pub fn plate_counts(s: &BookSignals) -> (u64, u64) {
     }
 }
 
+/// Per-chapter weights from a cached entry — [`BookSignals::chapter_chars`] —
+/// but **only when they describe the current spine**: the same file revision
+/// and the current slice-list generation ([`CHAPTER_CHARS_PER_SPINE`]).
+/// Both the reader (`open_book`) and its retry path (`chapter_weights`) read
+/// weights through this, so an entry an older generation wrote — a different
+/// chapter list — can never be mixed into the 全书% / 划线 pos of the current
+/// one; empty makes the front end poll instead.
+pub fn weights_for_current_spine(s: Option<&BookSignals>, rev: &str) -> Vec<u64> {
+    s.filter(|s| s.rev == rev && s.chapter_chars_kind == CHAPTER_CHARS_PER_SPINE)
+        .map(|s| s.chapter_chars.clone())
+        .unwrap_or_default()
+}
+
+/// Whether this cached entry must be analysed again: nothing cached yet, a
+/// different file revision, an older [`ANALYSIS_KIND`], a PDF entry without its
+/// [`BookSignals::pdf`] block, or (EPUB) missing weights for the current slice
+/// list. One rule for both refresh triggers — `open_book` and the shelf's
+/// background self-heal — so the two can never disagree about which entries are
+/// stale.
+pub fn needs_reanalysis(cached: Option<&BookSignals>, rev: &str, is_pdf: bool) -> bool {
+    match cached {
+        None => true,
+        Some(s) => {
+            s.rev != rev
+                || s.analysis_kind != ANALYSIS_KIND
+                || (is_pdf && s.pdf.is_none())
+                || (!is_pdf
+                    && (s.chapter_chars.is_empty()
+                        || s.chapter_chars_kind != CHAPTER_CHARS_PER_SPINE))
+        }
+    }
+}
+
 // ---- persistence: data/book-signals.json (fileName → signals) ----
 
 /// Serialises read-modify-write of `book-signals.json` so two background
@@ -1879,6 +1933,59 @@ mod tests {
             analysis_kind: ANALYSIS_KIND,
             pdf: None,
         }
+    }
+
+    /// Weights are served only for the current file revision *and* the current
+    /// slice list. An entry of an older generation describes a different
+    /// chapter list — mixing it in would misalign the reader's 全书% / 划线 pos,
+    /// and an empty answer is what makes the front end poll `chapter_weights`
+    /// until the re-analysis lands.
+    #[test]
+    fn weights_only_for_the_current_revision_and_generation() {
+        let mut s = sig(IdQuality::None, false, 0, 0, false);
+        assert_eq!(weights_for_current_spine(Some(&s), "r"), vec![50_000]);
+
+        // The file was replaced since the analysis: these widths belong to the
+        // old spine, not this revision's.
+        assert!(weights_for_current_spine(Some(&s), "other-rev").is_empty());
+
+        // Written before the slice list changed (older chapter list).
+        s.chapter_chars_kind = CHAPTER_CHARS_PER_SPINE - 1;
+        assert!(weights_for_current_spine(Some(&s), "r").is_empty());
+
+        // A new import whose analysis is still running has no entry at all.
+        assert!(weights_for_current_spine(None, "r").is_empty());
+    }
+
+    /// Every way a cached entry can be out of date, so `open_book` and the
+    /// shelf's background self-heal agree on what has to be analysed again.
+    #[test]
+    fn needs_reanalysis_covers_every_stale_case() {
+        let s = sig(IdQuality::None, false, 0, 0, false);
+        assert!(!needs_reanalysis(Some(&s), "r", false));
+
+        assert!(needs_reanalysis(None, "r", false), "never analysed");
+        assert!(
+            needs_reanalysis(Some(&s), "other-rev", false),
+            "file replaced since the analysis"
+        );
+
+        let mut old_kind = s.clone();
+        old_kind.analysis_kind = ANALYSIS_KIND - 1;
+        assert!(needs_reanalysis(Some(&old_kind), "r", false));
+
+        let mut no_weights = s.clone();
+        no_weights.chapter_chars.clear();
+        assert!(needs_reanalysis(Some(&no_weights), "r", false));
+
+        let mut old_weights = s.clone();
+        old_weights.chapter_chars_kind = CHAPTER_CHARS_PER_SPINE - 1;
+        assert!(needs_reanalysis(Some(&old_weights), "r", false));
+
+        // A PDF entry: chapter weights are nobody's business, the PDF block is.
+        let mut pdf = s.clone();
+        pdf.chapter_chars.clear();
+        assert!(needs_reanalysis(Some(&pdf), "r", true), "missing PDF block");
     }
 
     #[test]

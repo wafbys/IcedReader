@@ -125,21 +125,10 @@ async fn open_book(
         }
     }
     let cached_signals = book_signals::read_all().get(&file_name).cloned();
-    if !file_name.is_empty() {
-        let need = match &cached_signals {
-            None => true,
-            Some(s) => {
-                s.rev != rev
-                    || s.analysis_kind != book_signals::ANALYSIS_KIND
-                    || (is_pdf && s.pdf.is_none())
-                    || (!is_pdf
-                        && (s.chapter_chars.is_empty()
-                            || s.chapter_chars_kind != book_signals::CHAPTER_CHARS_PER_SPINE))
-            }
-        };
-        if need {
-            book_signals::analyze_in_background(imported.clone(), file_name.clone(), rev.clone());
-        }
+    if !file_name.is_empty()
+        && book_signals::needs_reanalysis(cached_signals.as_ref(), &rev, is_pdf)
+    {
+        book_signals::analyze_in_background(imported.clone(), file_name.clone(), rev.clone());
     }
 
     // Companion md overlays the title everywhere (shelf, reader chrome):
@@ -160,11 +149,11 @@ async fn open_book(
         vec![1u64; spine.len()]
     } else {
         // Reuse the signals read above instead of parsing book-signals.json a
-        // second time (the background analysis cannot finish before this returns).
-        cached_signals
-            .as_ref()
-            .map(|s| s.chapter_chars.clone())
-            .unwrap_or_default()
+        // second time (the background analysis cannot finish before this
+        // returns). Trust rule = `weights_for_current_spine`: an entry of an
+        // older generation describes a different chapter list, and empty makes
+        // the front end poll `chapter_weights` until the re-analysis lands.
+        book_signals::weights_for_current_spine(cached_signals.as_ref(), &rev)
     };
     let warnings = if is_pdf {
         pdf_warnings(&rev, cached_signals.as_ref())
@@ -618,7 +607,9 @@ async fn list_library(
         store.snapshot()
     };
     let mut cache = state.library_meta.lock()?;
-    // Read the signals cache once per listing (never recomputed here).
+    // Read the signals cache once per listing. The listing itself never
+    // re-computes anything; the stale entries picked below are refreshed in the
+    // background.
     let signals = book_signals::read_all();
     let entries = library::list_library_cached(&dir, &progress, &mut cache, &signals);
     drop(cache);
@@ -628,6 +619,17 @@ async fn list_library(
     // write unless something is actually stale.
     let present: HashSet<String> = entries.iter().map(|e| e.file_name.clone()).collect();
     book_signals::prune_missing(&present);
+    // Re-analyse entries written under an older analysis generation (or with no
+    // weights for the current slice list) **off** the listing path: without
+    // this they keep the shelf's 同书 hint and the reader's 全书% weights stale
+    // until the user happens to open the book. Capped per listing like the
+    // cover warm-up below — `analyze_in_background` dedups by `(file, rev)`, so
+    // revisiting the shelf while a batch is still running only picks up the
+    // next books.
+    const REANALYZE_MAX: usize = 8;
+    for (file_name, rev) in library::stale_analysis_batch(&entries, &signals, REANALYZE_MAX) {
+        book_signals::analyze_in_background(dir.join(&file_name), file_name, rev);
+    }
     // Warm covers for this shelf **off** the listing path: a PDF cover costs
     // real CPU, and a protocol request must never do it (see
     // `serve_library_cover`). With this the first cover request usually hits and
@@ -929,14 +931,15 @@ fn chapter_weights(file_name: String) -> crate::error::Result<Vec<u64>> {
     if !path.is_file() {
         return Ok(Vec::new());
     }
-    // Only the current file revision counts, exactly like the shelf's grading.
+    // Only the current file revision counts, exactly like the shelf's grading
+    // (and only weights matching the current spine — see
+    // `book_signals::weights_for_current_spine`).
     let rev = library::file_rev(&path);
     let all = book_signals::read_all();
-    Ok(all
-        .get(&file_name)
-        .filter(|s| s.rev == rev && s.chapter_chars_kind == book_signals::CHAPTER_CHARS_PER_SPINE)
-        .map(|s| s.chapter_chars.clone())
-        .unwrap_or_default())
+    Ok(book_signals::weights_for_current_spine(
+        all.get(&file_name),
+        &rev,
+    ))
 }
 
 #[tauri::command]

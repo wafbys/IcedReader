@@ -360,6 +360,13 @@ impl Book for EpubBook {
         // TOC-as-chapters: flatten when there are ≥2 entries and either a
         // fragment href or the tree is longer than the OPF spine. Fewer than
         // two entries stay on the OPF spine (typical one-file-per-chapter).
+        //
+        // This list is not only navigation: `src-tauri/src/book_signals.rs`
+        // measures a book per spine *unit* (chapter weights, fingerprint,
+        // headings). Changing which units it yields changes those numbers, so
+        // bump `ANALYSIS_KIND` / `CHAPTER_CHARS_PER_SPINE` there in the same
+        // commit — otherwise the shelf keeps grouping and weighting books by
+        // the old chapter list until each cache entry is rewritten.
         if toc.len() >= 2 && (toc.iter().any(|s| s.href.contains('#')) || toc.len() > opf.len()) {
             Self::with_front_matter(opf, toc)
         } else {

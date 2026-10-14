@@ -199,13 +199,20 @@ fn enrich_and_sort(
 
     // Same-typesetting groups (equal chapter-text fingerprint). An empty
     // fingerprint means "not computed" (or a PDF, whose signals carry their own
-    // coarse one) and must never group unrelated books together.
+    // coarse one) and must never group unrelated books together; neither may a
+    // fingerprint from an older cache generation — it was computed over a
+    // different chapter list (see `book_signals::ANALYSIS_KIND`). Such an entry
+    // is re-analysed when the book is opened or when the shelf's background
+    // self-heal picks it up; the listing itself never runs that analysis.
     let valid: Vec<(usize, &book_signals::BookSignals)> = entries
         .iter()
         .enumerate()
         .filter_map(|(i, e)| {
             let s = all.get(&e.file_name)?;
-            (s.rev == e.cover_rev && !s.fingerprint.is_empty()).then_some((i, s))
+            (s.rev == e.cover_rev
+                && s.analysis_kind == book_signals::ANALYSIS_KIND
+                && !s.fingerprint.is_empty())
+            .then_some((i, s))
         })
         .collect();
     let mut by_fp: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -303,6 +310,33 @@ fn enrich_and_sort(
         }
     });
     entries
+}
+
+/// Books the shelf should re-analyse in the background, as `(file_name, rev)`
+/// pairs, capped per listing.
+///
+/// The shelf itself only reads the signals cache, and a cache entry written by
+/// an older generation keeps both the 同书 hint and the whole-book weights
+/// stale — until now the only trigger was opening the book. This picks the
+/// stale ones so the shelf heals itself; the caller re-analyses them off the
+/// listing path (see `list_library`). Entries that failed to open are skipped —
+/// there is nothing to analyse — and `book_signals::needs_reanalysis` decides
+/// staleness so the shelf and `open_book` can never disagree about it.
+pub(crate) fn stale_analysis_batch(
+    entries: &[LibraryEntry],
+    signals: &HashMap<String, book_signals::BookSignals>,
+    max: usize,
+) -> Vec<(String, String)> {
+    entries
+        .iter()
+        .filter(|e| e.open_error.is_none())
+        .filter_map(|e| {
+            let is_pdf = e.file_name.to_ascii_lowercase().ends_with(".pdf");
+            book_signals::needs_reanalysis(signals.get(&e.file_name), &e.cover_rev, is_pdf)
+                .then(|| (e.file_name.clone(), e.cover_rev.clone()))
+        })
+        .take(max)
+        .collect()
 }
 
 /// Cover bytes cache keyed by file name; every hit is validated against the
@@ -1031,6 +1065,84 @@ mod tests {
         assert_eq!(dup("a.epub"), vec!["b.epub".to_string()]);
         assert_eq!(dup("b.epub"), vec!["a.epub".to_string()]);
         assert!(dup("c.epub").is_empty());
+    }
+
+    /// A fingerprint from an older cache generation describes a chapter list the
+    /// current code no longer produces (here: the generation before the
+    /// flattened spine kept the front matter). The shelf must stay silent on it
+    /// rather than group by a fingerprint that no longer describes the book; the
+    /// entry is re-analysed when the book is opened or by the shelf's own
+    /// background self-heal (`stale_analysis_batch`).
+    #[test]
+    fn stale_generation_fingerprint_does_not_group() {
+        let mut a = empty_signals("rev".into());
+        a.fingerprint = "fp-same".into();
+        let mut b = empty_signals("rev".into());
+        b.fingerprint = "fp-same".into();
+        b.analysis_kind = book_signals::ANALYSIS_KIND - 1;
+
+        let mut signals = HashMap::new();
+        signals.insert("a.epub".to_string(), a);
+        signals.insert("b.epub".to_string(), b);
+        let out = enrich_and_sort(
+            vec![entry("a.epub", "rev"), entry("b.epub", "rev")],
+            &signals,
+        );
+        assert!(out.iter().all(|e| e.duplicates.is_empty()));
+    }
+
+    /// The shelf picks stale entries for background re-analysis: nothing cached
+    /// yet, an older generation, or weights that no longer match the slice list.
+    /// Books that fail to open are skipped (nothing to analyse), and the cap
+    /// keeps one listing from starting one analysis per book.
+    #[test]
+    fn stale_entries_are_picked_for_background_analysis() {
+        let mut fresh = empty_signals("rev".into());
+        fresh.chapter_chars = vec![100]; // EPUB: weights must be present too
+        let mut old_kind = empty_signals("rev".into());
+        old_kind.analysis_kind = book_signals::ANALYSIS_KIND - 1;
+        old_kind.chapter_chars = vec![100];
+        let mut old_weights = empty_signals("rev".into());
+        old_weights.chapter_chars = vec![100];
+        old_weights.chapter_chars_kind = book_signals::CHAPTER_CHARS_PER_SPINE - 1;
+
+        let mut signals = HashMap::new();
+        signals.insert("fresh.epub".to_string(), fresh);
+        signals.insert("old-kind.epub".to_string(), old_kind);
+        signals.insert("old-weights.epub".to_string(), old_weights);
+
+        let mut broken = entry("broken.epub", "rev");
+        broken.open_error = Some("打不开".into());
+
+        let batch = stale_analysis_batch(
+            &[
+                entry("fresh.epub", "rev"),
+                entry("old-kind.epub", "rev"),
+                broken,
+                entry("never-analysed.epub", "rev"),
+                entry("old-weights.epub", "rev"),
+            ],
+            &signals,
+            8,
+        );
+        let names: Vec<&str> = batch.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["old-kind.epub", "never-analysed.epub", "old-weights.epub"]
+        );
+
+        let capped = stale_analysis_batch(
+            &[
+                entry("old-kind.epub", "rev"),
+                entry("never-analysed.epub", "rev"),
+            ],
+            &signals,
+            1,
+        );
+        assert_eq!(
+            capped,
+            vec![("old-kind.epub".to_string(), "rev".to_string())]
+        );
     }
 
     #[test]
