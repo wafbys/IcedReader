@@ -174,7 +174,17 @@ export default function ComparePanel({ entry, entries, onClose, onOpen }: Props)
             <div className="cmp-col-head cmp-col-axis">项目</div>
             {data.columns.map((c, i) => (
               <div className="cmp-col-head" key={c.fileName}>
-                <strong title={c.title}>{columnLabel(i, data.columns)}</strong>
+                {/* 悬停提示给 **完整书名 + 实际文件名**：可见标签会被省略号截掉，
+                    而同名两本真正能区分身份的只有文件名（体积前缀 / (1) 后缀）。 */}
+                <strong
+                  title={
+                    c.title === c.fileName
+                      ? c.fileName
+                      : `${c.title}\n${c.fileName}`
+                  }
+                >
+                  {columnLabel(i, data.columns)}
+                </strong>
                 <span className="cmp-col-size">{fmtBytes(c.sizeBytes)}</span>
                 {c.quality && (
                   <span className={`cmp-col-grade g-${c.quality}`}>{c.quality}</span>
