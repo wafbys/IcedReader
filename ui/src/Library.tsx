@@ -26,9 +26,12 @@ type Props = {
   onCompare: (entry: LibraryEntry) => void;
 };
 
-/** 封面 / 书名悬停提示：书名 + 书籍文件大小（同一本书两处看到同一份信息）。 */
+/**
+ * 封面 / 书名悬停提示：书名 + 书籍文件大小 + 实际文件名（同一本书两处看到同一份
+ * 信息）。同名两版的书名常常一样，能区分身份的是文件名（`….epub` 与 `… (1).epub`）。
+ */
 function bookTip(entry: LibraryEntry): string {
-  return `${entry.title}\n大小 ${fmtBytes(entry.sizeBytes)}`;
+  return `${entry.title}\n大小 ${fmtBytes(entry.sizeBytes)}\n文件 ${entry.fileName}`;
 }
 
 /**
