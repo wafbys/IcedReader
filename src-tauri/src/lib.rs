@@ -237,7 +237,9 @@ fn spine_index_for(spine: &[SpineItem], href: &str) -> Option<usize> {
         .or_else(|| spine.iter().position(|s| key(&s.href).0 == file))
 }
 
-/// 划线 → md 章标题行（`## 第 N 章 · 标题（N/M）`）。
+/// 划线 → md 章节标题行（`## 【书中位置 N/M】 标题`）。数字是阅读顺序里的
+/// 位置，不冒充“第 N 章”：spine 里可能含扉页/目录/封面，目录条目数也未必
+/// 等于阅读单元数。章/节由书名自己的标题文字表达。
 fn highlight_section_title(book: &Arc<dyn Book>, href: &str) -> crate::error::Result<String> {
     let spine = book.spine();
     let idx = spine_index_for(&spine, href).ok_or_else(|| "无法定位划线章节".to_string())?;
@@ -254,11 +256,10 @@ fn highlight_section_title(book: &Arc<dyn Book>, href: &str) -> crate::error::Re
         title
     };
     Ok(format!(
-        "## 第 {} 章 · {}（{}/{}）",
+        "## 【书中位置 {}/{}】 {}",
         idx + 1,
-        title_show,
-        idx + 1,
-        total
+        total,
+        title_show
     ))
 }
 
@@ -266,7 +267,7 @@ fn highlight_section_title(book: &Arc<dyn Book>, href: &str) -> crate::error::Re
 /// `notes` 层从记录生成，所以读写永远一致。
 ///
 /// `note = None`（新建划线）：条目已在则只换保护区与摘抄行、用户区逐字保留；
-/// 不在则用 `book_id` 的书与 `rec.href` 定章标题（`## 第 N 章 · …`），新建空
+/// 不在则用 `book_id` 的书与 `rec.href` 定章节标题（`## 【书中位置 N/M】 …`），新建空
 /// 用户区条目。
 /// `note = Some`（UI 保存备注）：整条原位替换，用户区覆盖为最新意图（空串 =
 /// 清空备注但保留划线条目）。
@@ -390,7 +391,7 @@ fn add_annotation(
         created_at: unix_now(),
     };
     // 划线的唯一存储就是书的伴生 md：块里带渲染高亮所需的坐标，条目归到当前
-    // 章的 `## 第 N 章 · …` 之下。这一次写入因此必须成功——写失败就没有可读回
+    // 章节的 `## 【书中位置 N/M】 …` 之下。这一次写入因此必须成功——写失败就没有可读回
     // 的记录，不能给前端返回一条正文有、档案无的幽灵划线。
     write_highlight_entry(&state, &file_name, &book_id, &highlight, None)?;
     Ok(highlight)

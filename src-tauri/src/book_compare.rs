@@ -30,6 +30,10 @@ pub enum RelationKind {
     /// Every chapter's text is byte-identical: one typesetting source, packed
     /// twice. The only real differences left are packaging.
     SameTypesetting,
+    /// Same chapter count, and at least 99% of the chapters are byte-identical
+    /// once notes are removed. The rest differ (a moved note, a fixed typo, one
+    /// truncated heading) — the same work, not a different edition.
+    NearTypesetting,
     /// Same 回目, but the text actually differs — a re-edited or re-typeset
     /// edition. Which one is "better" is not decidable from counts.
     SameEdition,
@@ -166,7 +170,22 @@ fn toc_key(s: &BookSignals) -> Vec<String> {
 }
 
 fn same_typesetting(a: &BookSignals, b: &BookSignals) -> bool {
-    !a.chapter_shas.is_empty() && a.chapter_shas == b.chapter_shas
+    let a = book_signals::body_shas(a);
+    !a.is_empty() && a == book_signals::body_shas(b)
+}
+
+/// `Some((identical, total))` when both copies have the same chapter count and
+/// at least [`book_signals::NEAR_SAME_PERCENT`] of the chapters are identical
+/// after notes are removed. This is the "same text, notes moved to the chapter
+/// end" repack that exact fingerprint and heading equality both miss.
+fn near_typesetting(a: &BookSignals, b: &BookSignals) -> Option<(usize, usize)> {
+    let a = book_signals::body_shas(a);
+    let b = book_signals::body_shas(b);
+    if a.is_empty() || a.len() != b.len() {
+        return None;
+    }
+    let same = a.iter().zip(b).filter(|(x, y)| x == y).count();
+    (same * 100 >= a.len() * book_signals::NEAR_SAME_PERCENT).then_some((same, a.len()))
 }
 
 /// Sorted multiset containment: every heading of `a` appears in `b`.
@@ -211,6 +230,27 @@ fn classify(sigs: &[&BookSignals]) -> (RelationKind, String) {
             "逐章正文完全一致——同一排版源的两次打包"
         };
         return (RelationKind::SameTypesetting, note.to_string());
+    }
+
+    if sigs.len() == 2 {
+        if let Some((same, total)) = near_typesetting(sigs[0], sigs[1]) {
+            return (
+                RelationKind::NearTypesetting,
+                format!(
+                    "逐章正文几乎一致（{same}/{total} 章相同，{} 章有差）——同一排版源，注文位置或少量修订不同",
+                    total - same
+                ),
+            );
+        }
+    } else if sigs.iter().enumerate().all(|(i, a)| {
+        sigs.iter()
+            .skip(i + 1)
+            .all(|b| near_typesetting(a, b).is_some())
+    }) {
+        return (
+            RelationKind::NearTypesetting,
+            "逐章正文几乎一致（≥99% 章相同）——同一排版源，注文位置或少量修订不同".to_string(),
+        );
     }
 
     if tocs.windows(2).all(|w| w[0] == w[1]) {
@@ -761,26 +801,33 @@ fn provenance_axes(axes: &mut Vec<Axis>, inputs: &[CompareInput]) {
 /// units, so zipping the two would mislabel the strip (F: 天津往事). Refuse
 /// rather than show a wrong alignment.
 fn chapter_diff(a: &BookSignals, b: &BookSignals) -> Option<ChapterDiff> {
-    if a.chapter_shas.len() != b.chapter_shas.len()
+    let sha_a = book_signals::body_shas(a);
+    let sha_b = book_signals::body_shas(b);
+    if sha_a.len() != sha_b.len()
         || a.chapter_chars.len() != b.chapter_chars.len()
-        || a.chapter_shas.len() != a.chapter_chars.len()
-        || a.chapter_shas.is_empty()
-        || toc_key(a) != toc_key(b)
+        || sha_a.len() != a.chapter_chars.len()
+        || sha_a.is_empty()
     {
         return None;
     }
+    // Labels come from the first copy: two packings may word one heading
+    // differently, but the strip still has to line up by position.
+    let labels = if a.headings.len() == sha_a.len() {
+        a.headings.clone()
+    } else {
+        vec![String::new(); sha_a.len()]
+    };
     Some(ChapterDiff {
-        labels: a.headings.clone(),
+        labels,
         deltas: a
             .chapter_chars
             .iter()
             .zip(&b.chapter_chars)
             .map(|(x, y)| *y as i64 - *x as i64)
             .collect(),
-        identical: a
-            .chapter_shas
+        identical: sha_a
             .iter()
-            .zip(&b.chapter_shas)
+            .zip(sha_b)
             .map(|(x, y)| x == y)
             .collect(),
     })
@@ -866,6 +913,7 @@ mod tests {
             rev: "r".into(),
             chars,
             chapter_shas: shas.iter().map(|s| s.to_string()).collect(),
+            chapter_body_shas: shas.iter().map(|s| s.to_string()).collect(),
             chapter_chars: chapter_chars.to_vec(),
             chapter_chars_kind: book_signals::CHAPTER_CHARS_PER_SPINE,
             fingerprint: "fp".into(),
@@ -968,8 +1016,7 @@ mod tests {
     /// Same 回目 but genuinely different text: say so, and don't pretend the
     /// longer one is better.
     #[test]
-    fn re_edited_edition_is_flagged_but_text_length_is_not_scored() {
-        let a = signals(&["a", "b"], &["第一回", "第二回"], &[100, 200], 300);
+    fn re_edited_edition_is_flagged_but_text_length_is_not_scored() {        let a = signals(&["a", "b"], &["第一回", "第二回"], &[100, 200], 300);
         let b = signals(&["a", "b2"], &["第一回", "第二回"], &[100, 260], 360);
         let c = compare(&[input("a.epub", 1, a), input("b.epub", 1, b)]).unwrap();
         assert_eq!(c.kind, RelationKind::SameEdition);
@@ -981,6 +1028,27 @@ mod tests {
         let strip = c.chapter_diff.expect("same 回目 aligns");
         assert_eq!(strip.identical, vec![true, false]);
         assert_eq!(strip.deltas, vec![0, 60]);
+    }
+
+    /// Two packings of one text that differ only in where the notes live:
+    /// body text is 99/100 identical, so this is the same work — the strip must
+    /// still align and mark the one real difference.
+    #[test]
+    fn moved_notes_are_near_typesetting_not_a_different_edition() {
+        let shas: Vec<String> = (0..100).map(|i| format!("c{i}")).collect();
+        let heads: Vec<String> = (0..100).map(|i| format!("第{i}章")).collect();
+        let refs: Vec<&str> = shas.iter().map(String::as_str).collect();
+        let hrefs: Vec<&str> = heads.iter().map(String::as_str).collect();
+        let chars = vec![10u64; 100];
+        let a = signals(&refs, &hrefs, &chars, 1000);
+        let mut b = signals(&refs, &hrefs, &chars, 1000);
+        b.chapter_body_shas[0] = "moved".into();
+        b.fingerprint = "other".into();
+        let c = compare(&[input("a.epub", 1, a), input("b.epub", 1, b)]).unwrap();
+        assert_eq!(c.kind, RelationKind::NearTypesetting);
+        assert!(c.kind_note.contains("99/100"), "{}", c.kind_note);
+        let strip = c.chapter_diff.expect("same count still aligns");
+        assert_eq!(strip.identical.iter().filter(|x| !**x).count(), 1);
     }
 
     /// TOC-as-chapters books reuse one file across many spine units, so
@@ -1180,4 +1248,5 @@ mod tests {
         }
         println!("—— 共 {related} 组非「无关」配对");
     }
+
 }

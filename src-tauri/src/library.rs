@@ -281,6 +281,46 @@ fn enrich_and_sort(
             }
         }
     }
+    // Near-identical body text across different fingerprints: same chapter
+    // count and ≥99% of chapters byte-identical once notes are removed. This
+    // is the "same text, notes moved to the chapter end" repack that both
+    // exact fingerprint and exact heading equality miss.
+    const MIN_NEAR_CHAPTERS: usize = 3;
+    let mut by_len: HashMap<usize, Vec<(usize, &book_signals::BookSignals)>> = HashMap::new();
+    for (i, s) in &valid {
+        let n = book_signals::body_shas(s).len();
+        if n >= MIN_NEAR_CHAPTERS {
+            by_len.entry(n).or_default().push((*i, s));
+        }
+    }
+    for bucket in by_len.values().filter(|v| v.len() > 1) {
+        for a in 0..bucket.len() {
+            for b in (a + 1)..bucket.len() {
+                let (ia, sa) = bucket[a];
+                let (ib, sb) = bucket[b];
+                if entries[ia].duplicates.contains(&entries[ib].file_name) {
+                    continue;
+                }
+                let xa = book_signals::body_shas(sa);
+                let xb = book_signals::body_shas(sb);
+                if xa.is_empty() || xa.len() != xb.len() {
+                    continue;
+                }
+                let same = xa.iter().zip(xb).filter(|(x, y)| x == y).count();
+                if same * 100 < xa.len() * book_signals::NEAR_SAME_PERCENT {
+                    continue;
+                }
+                let name_a = entries[ia].file_name.clone();
+                let name_b = entries[ib].file_name.clone();
+                if !entries[ia].duplicates.contains(&name_b) {
+                    entries[ia].duplicates.push(name_b);
+                }
+                if !entries[ib].duplicates.contains(&name_a) {
+                    entries[ib].duplicates.push(name_a);
+                }
+            }
+        }
+    }
     // De-duplicate hints regardless of which pass added them.
     for e in &mut entries {
         let mut seen: Vec<String> = Vec::with_capacity(e.duplicates.len());
@@ -970,6 +1010,7 @@ mod tests {
             rev,
             chars: 0,
             chapter_shas: Vec::new(),
+            chapter_body_shas: Vec::new(),
             chapter_chars: Vec::new(),
             chapter_chars_kind: book_signals::CHAPTER_CHARS_PER_SPINE,
             fingerprint: "pdf-fp".into(),
@@ -1146,8 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn single_heading_book_is_not_hinted_across_unrelated_books() {
-        // A single-file / TOC-as-chapters book yields one heading (here the
+    fn single_heading_book_is_not_hinted_across_unrelated_books() {        // A single-file / TOC-as-chapters book yields one heading (here the
         // generic 第一章). Two unrelated books must not be grouped by it, even
         // with near-equal length and different fingerprints.
         let mut a = empty_signals("rev".into());
@@ -1167,6 +1207,34 @@ mod tests {
             &signals,
         );
         assert!(out.iter().all(|e| e.duplicates.is_empty()), "{out:?}");
+    }
+
+    /// Two packings whose full text differs only because the notes moved, and
+    /// whose headings differ on one chapter: the body hashes still say they are
+    /// the same work.
+    #[test]
+    fn moved_notes_still_hint_each_other() {
+        let shas: Vec<String> = (0..100).map(|i| format!("c{i}")).collect();
+        let mut a = empty_signals("rev".into());
+        a.fingerprint = "fp-a".into();
+        a.chapter_shas = shas.clone();
+        a.chapter_body_shas = shas.clone();
+        a.headings = vec!["第一章".into(); 100];
+        let mut b = a.clone();
+        b.fingerprint = "fp-b".into();
+        b.chapter_shas[0] = "full-text-differs".into();
+        b.chapter_body_shas[0] = "moved-note".into();
+        b.headings[0] = "另一个标题".into();
+
+        let mut signals = HashMap::new();
+        signals.insert("a.epub".to_string(), a);
+        signals.insert("b.epub".to_string(), b);
+        let out = enrich_and_sort(
+            vec![entry("a.epub", "rev"), entry("b.epub", "rev")],
+            &signals,
+        );
+        assert_eq!(out[0].duplicates, vec!["b.epub".to_string()], "{out:?}");
+        assert_eq!(out[1].duplicates, vec!["a.epub".to_string()], "{out:?}");
     }
 
     #[test]

@@ -49,7 +49,11 @@ pub const CHAPTER_CHARS_PER_SPINE: u8 = 2;
 /// 4 = the flattened spine keeps the front matter ([`SPINE_FRONT_MATTER_KIND`]):
 /// kind ≤ 3 `fingerprint` / `headings` / `chapter_chars` describe the old,
 /// shorter chapter list.
-pub const ANALYSIS_KIND: u8 = SPINE_FRONT_MATTER_KIND;
+/// 5 = `chapter_body_shas`: notes are cut out of the hashed text, and
+/// `headings` no longer contains note text. Kind ≤ 4 `headings` can differ
+/// between two packings of one text purely because one kept its notes inline
+/// (inside `<h2>`) and the other moved them to a chapter-end list.
+pub const ANALYSIS_KIND: u8 = 5;
 /// Kind at which [`BookSignals`] started describing the spine *with* the pages
 /// before the first TOC entry (see `EpubBook::with_front_matter`).
 ///
@@ -58,6 +62,10 @@ pub const ANALYSIS_KIND: u8 = SPINE_FRONT_MATTER_KIND;
 /// [`plate_counts`]), so a kind-3 cache must still grade by its reference
 /// breakdown while it waits to be recomputed.
 pub const SPINE_FRONT_MATTER_KIND: u8 = 4;
+/// The body-fingerprint generation must be newer than the front-matter one;
+/// this also keeps [`SPINE_FRONT_MATTER_KIND`] referenced (it documents a
+/// historical cache layout rather than a current code path).
+const _: () = assert!(ANALYSIS_KIND > SPINE_FRONT_MATTER_KIND);
 /// `analysis_kind` at which plates switched from "every image in the package"
 /// to "images the text references". Older caches keep the old reading (see
 /// [`grade`]) so upgrading does not move a single shelf badge.
@@ -72,6 +80,11 @@ const MISSING_CHAR_PER_K: f64 = 2.0;
 /// Traditional `[n]`-style notes (`<sup>[1]</sup>`), not bare exponents.
 /// Below this, ignore (a handful of citations).
 const SUP_NOTE_MIN: u64 = 10;
+/// Two copies are "near-identical" when at least this share of their chapters
+/// has byte-identical body text (notes removed). 99% of a 1000-chapter book
+/// allows 10 real differences — enough for a moved note or a fixed typo, far
+/// too strict for two different books.
+pub const NEAR_SAME_PERCENT: usize = 99;
 
 /// How trustworthy the epub's own identifier is (best first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +231,14 @@ pub struct BookSignals {
     /// Per-document text sha256 (first 16 hex) in spine order. Equal sequences
     /// ⇒ the very same typesetting, even if repacked/renamed.
     pub chapter_shas: Vec<String>,
+    /// Same order and meaning as `chapter_shas`, but with note containers
+    /// (`duokan-note` spans, chapter-end `duokan-footnote-content` lists,
+    /// EPUB3 footnote asides) cut out first. Two packings of one text that only
+    /// differ in *where* the notes live are byte-identical here, while
+    /// `chapter_shas` is not. Empty for caches from before [`ANALYSIS_KIND`] 5;
+    /// read it through [`body_shas`].
+    #[serde(default)]
+    pub chapter_body_shas: Vec<String>,
     /// Per-document raw visible-text char counts in spine order (entities
     /// decoded, whitespace kept — the same char regime as the front-end text
     /// nodes). Whole-book position weights for the 全书% readout and 按位置跳转.
@@ -708,6 +729,135 @@ fn norm_ws(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
+/// Per-chapter body text hashes: note containers removed, whitespace removed.
+/// Falls back to `chapter_shas` for caches written before [`ANALYSIS_KIND`] 5.
+pub fn body_shas(s: &BookSignals) -> &[String] {
+    if s.chapter_body_shas.is_empty() {
+        &s.chapter_shas
+    } else {
+        &s.chapter_body_shas
+    }
+}
+
+/// Parse the tag starting at `at` (which must be `<`). Returns
+/// `(is_closing, lowercase_name, index_after_gt, self_closing)`.
+fn tag_at(raw: &str, at: usize) -> Option<(bool, String, usize, bool)> {
+    let b = raw.as_bytes();
+    if b.get(at) != Some(&b'<') {
+        return None;
+    }
+    let mut i = at + 1;
+    let closing = b.get(i) == Some(&b'/');
+    if closing {
+        i += 1;
+    }
+    let start = i;
+    while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'-' || b[i] == b':') {
+        i += 1;
+    }
+    if i == start {
+        return None; // `<!doctype`, `<!--`, `<?xml`
+    }
+    let name = raw[start..i].to_ascii_lowercase();
+    let mut quote = 0u8;
+    while i < b.len() {
+        let c = b[i];
+        if quote != 0 {
+            if c == quote {
+                quote = 0;
+            }
+        } else if c == b'"' || c == b'\'' {
+            quote = c;
+        } else if c == b'>' {
+            let self_closing = i > at && b[i - 1] == b'/';
+            return Some((closing, name, i + 1, self_closing));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// True for an element whose text is apparatus, not body: Duokan inline notes
+/// (`class="… duokan-note"`), its chapter-end note list
+/// (`ol.duokan-footnote-content`, `li.duokan-footnote-item`), and EPUB3
+/// footnote asides (`epub:type="footnote"` / `role="doc-footnote"`).
+fn is_note_container(name: &str, tag: &str) -> bool {
+    let lower = tag.to_ascii_lowercase();
+    if lower.contains("duokan-note")
+        || lower.contains("duokan-footnote-content")
+        || lower.contains("duokan-footnote-item")
+    {
+        return true;
+    }
+    if !matches!(name, "aside" | "div" | "section") {
+        return false;
+    }
+    lower.contains("epub:type=\"footnote\"")
+        || lower.contains("epub:type='footnote'")
+        || lower.contains("role=\"doc-footnote\"")
+        || lower.contains("role='doc-footnote'")
+}
+
+/// Index just past the `</name>` that closes the element opened before `from`.
+fn find_matching_close(raw: &str, mut pos: usize, name: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    while pos < raw.len() {
+        let rel = raw[pos..].find('<')?;
+        let at = pos + rel;
+        if raw[at..].starts_with("<!--") {
+            let end = raw[at + 4..].find("-->")?;
+            pos = at + 4 + end + 3;
+            continue;
+        }
+        if let Some((closing, tag, end, self_closing)) = tag_at(raw, at) {
+            if tag == name {
+                if closing {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(end);
+                    }
+                } else if !self_closing {
+                    depth += 1;
+                }
+            }
+            pos = end;
+        } else {
+            pos = at + 1;
+        }
+    }
+    None
+}
+
+/// Copy `raw` with note containers removed. Used only for the body fingerprint
+/// and headings; the display path keeps the notes exactly where they were.
+fn strip_note_blocks(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0usize;
+    while i < raw.len() {
+        if raw.as_bytes()[i] == b'<' {
+            if let Some((closing, name, end, self_closing)) = tag_at(raw, i) {
+                if !closing && is_note_container(&name, &raw[i..end]) {
+                    if self_closing {
+                        i = end;
+                        continue;
+                    }
+                    if let Some(stop) = find_matching_close(raw, end, &name) {
+                        i = stop;
+                        continue;
+                    }
+                }
+                out.push_str(&raw[i..end]);
+                i = end;
+                continue;
+            }
+        }
+        let ch = raw[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 fn sha16(s: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut d = Sha256::new();
@@ -761,6 +911,7 @@ pub fn analyze_book(
 
     let mut files: HashMap<String, String> = HashMap::new();
     let mut shas: Vec<String> = Vec::new();
+    let mut body_shas: Vec<String> = Vec::new();
     let mut chars: u64 = 0;
     let mut mojibake = 0u64;
     let mut br_count = 0u64;
@@ -790,7 +941,13 @@ pub fn analyze_book(
         let normed = norm_ws(&decoded);
         chars += normed.chars().count() as u64;
         shas.push(sha16(&normed));
-        if let Some(first_heading) = scan.headings.first() {
+        // The same file with note containers removed: what the reader sees as
+        // 正文. Headings come from this scan too, so an inline note inside an
+        // `<h2>` cannot split one work into two shelf groups.
+        let body_scan = scan_html(&strip_note_blocks(&raw));
+        let body_normed = norm_ws(&decode_entities(&body_scan.text));
+        body_shas.push(sha16(&body_normed));
+        if let Some(first_heading) = body_scan.headings.first() {
             headings.push(norm_ws(first_heading));
         } else {
             headings.push(String::new());
@@ -820,6 +977,7 @@ pub fn analyze_book(
         rev: rev.to_string(),
         chars,
         chapter_shas: shas,
+        chapter_body_shas: body_shas,
         chapter_chars,
         chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
         fingerprint,
@@ -939,6 +1097,7 @@ pub fn analyze_pdf(path: &std::path::Path, rev: &str) -> crate::error::Result<Bo
         rev: rev.to_string(),
         chars: 0,
         chapter_shas: Vec::new(),
+        chapter_body_shas: Vec::new(),
         chapter_chars: Vec::new(),
         chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
         fingerprint,
@@ -1600,11 +1759,30 @@ mod tests {
     }
 
     #[test]
+    fn note_containers_are_not_body_text() {
+        let html = concat!(
+            r#"<h2>威烈王<span class="ytxt duokan-note">【注：标题注】</span></h2>"#,
+            r#"<p>正文<span class="ytxt duokan-note">【注：<span class="ytxt">嵌套</span>】</span>继续</p>"#,
+            r#"<ol class="duokan-footnote-content"><li class="duokan-footnote-item">章末注</li></ol>"#,
+            r#"<p>甲<aside epub:type="footnote">旁注</aside>乙</p>"#,
+        );
+        let body = strip_note_blocks(html);
+        assert!(!body.contains("标题注"), "{body}");
+        assert!(!body.contains("嵌套"), "{body}");
+        assert!(!body.contains("章末注"), "{body}");
+        assert!(!body.contains("旁注"), "{body}");
+        assert!(body.contains("威烈王"));
+        assert!(body.contains("继续"));
+        assert_eq!(scan_html(&body).headings, vec!["威烈王".to_string()]);
+    }
+
+    #[test]
     fn grade_splits_plus_and_minus() {
         let sig = BookSignals {
             rev: "r1".into(),
             chars: 500,
             chapter_shas: vec!["ab".into()],
+            chapter_body_shas: vec!["ab".into()],
             chapter_chars: vec![120],
             chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
             fingerprint: "f".into(),
@@ -1652,6 +1830,7 @@ mod tests {
             rev: "r1".into(),
             chars: 12,
             chapter_shas: vec!["ab".into()],
+            chapter_body_shas: vec!["ab".into()],
             chapter_chars: vec![30],
             chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
             fingerprint: "f".into(),
@@ -1773,6 +1952,7 @@ mod tests {
                 rev: "r".into(),
                 chars: 0,
                 chapter_shas: Vec::new(),
+                chapter_body_shas: Vec::new(),
                 chapter_chars: Vec::new(),
                 chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
                 fingerprint: "pdf-fp".into(),
@@ -1906,6 +2086,7 @@ mod tests {
             rev: "r".into(),
             chars: 50_000,
             chapter_shas: vec!["a".into()],
+            chapter_body_shas: vec!["a".into()],
             chapter_chars: vec![50_000],
             chapter_chars_kind: CHAPTER_CHARS_PER_SPINE,
             fingerprint: "f".into(),

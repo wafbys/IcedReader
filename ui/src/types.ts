@@ -225,6 +225,7 @@ export function chapterIndex(spine: SpineItem[], href: string | undefined): numb
 /** 这几本文件之间是什么关系。 */
 export type CompareRelationKind =
   | "sameTypesetting"
+  | "nearTypesetting"
   | "sameEdition"
   | "contained"
   | "partition"
