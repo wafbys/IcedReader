@@ -825,11 +825,7 @@ fn chapter_diff(a: &BookSignals, b: &BookSignals) -> Option<ChapterDiff> {
             .zip(&b.chapter_chars)
             .map(|(x, y)| *y as i64 - *x as i64)
             .collect(),
-        identical: sha_a
-            .iter()
-            .zip(sha_b)
-            .map(|(x, y)| x == y)
-            .collect(),
+        identical: sha_a.iter().zip(sha_b).map(|(x, y)| x == y).collect(),
     })
 }
 
@@ -1016,7 +1012,8 @@ mod tests {
     /// Same 回目 but genuinely different text: say so, and don't pretend the
     /// longer one is better.
     #[test]
-    fn re_edited_edition_is_flagged_but_text_length_is_not_scored() {        let a = signals(&["a", "b"], &["第一回", "第二回"], &[100, 200], 300);
+    fn re_edited_edition_is_flagged_but_text_length_is_not_scored() {
+        let a = signals(&["a", "b"], &["第一回", "第二回"], &[100, 200], 300);
         let b = signals(&["a", "b2"], &["第一回", "第二回"], &[100, 260], 360);
         let c = compare(&[input("a.epub", 1, a), input("b.epub", 1, b)]).unwrap();
         assert_eq!(c.kind, RelationKind::SameEdition);
@@ -1248,5 +1245,4 @@ mod tests {
         }
         println!("—— 共 {related} 组非「无关」配对");
     }
-
 }

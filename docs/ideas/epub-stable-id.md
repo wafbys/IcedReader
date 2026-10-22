@@ -11,7 +11,7 @@
 
 - 同一本书常有多份 epub（不同站点 / 工具反复重打包），文件名、`dc:identifier`、封面、字体、哈希都会变。
 - 用户想用「组合方式」尽可能探测一本 epub 的**稳定标识**，用于（候选用途）识别重复、重打包后保留进度/划线。
-- `scripts/epub-id.py` 是早期实验（dc:identifier → 全内容哈希 → size+mtime），问题已知，尚未定方案。
+- 早期实验脚本 `scripts/epub-id.py` 已不在仓库中（不再维护）；当时的思路是 dc:identifier → 全内容哈希 → size+mtime，问题已知，未采用。
 
 ## 待定问题（已定稿）
 
