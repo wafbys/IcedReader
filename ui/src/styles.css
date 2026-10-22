@@ -1930,4 +1930,58 @@ body {
   cursor: pointer;
 }
 
+/* 拖拽导入：覆盖整个窗口，pointer-events 留给原生文件拖放事件。 */
+.drop-zone {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgba(246, 241, 232, 0.78);
+  border: 3px dashed #b49a76;
+  pointer-events: none;
+}
+
+.drop-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 30px;
+  background: #fffaf1;
+  border: 1px solid #d9c9ae;
+  border-radius: 10px;
+  color: #5d5245;
+  text-align: center;
+  box-shadow: 0 8px 30px rgba(60, 45, 20, 0.12);
+}
+
+.drop-card strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.drop-card span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 导入结果：一次性提示，不占版面。 */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 90;
+  max-width: min(80vw, 560px);
+  padding: 8px 16px;
+  border: 1px solid #e4d9c4;
+  border-radius: 8px;
+  background: #f6efe0;
+  color: #5d5245;
+  font-size: 13px;
+  text-align: center;
+  box-shadow: 0 6px 24px rgba(60, 45, 20, 0.14);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
 

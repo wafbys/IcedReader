@@ -654,6 +654,73 @@ async fn list_library(
     Ok(entries)
 }
 
+/// 拖拽 / 批量导入的汇总。`imported` 是新拷进书库的，`existing` 是同名复用。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportOutcome {
+    imported: usize,
+    existing: usize,
+    skipped: Vec<String>,
+    failed: Vec<String>,
+}
+
+/// 把一批外部路径导入书库（不打开）。格式过滤、同名复用与计数都在这里做，
+/// 前端只负责提示。`known` 用文件名（小写）跟踪本批已见过的名字：同一个名字
+/// 第二次出现时算「已在书库」，与 `import_book_to` 的同名复用语义一致。
+fn import_books_into(
+    library: &std::path::Path,
+    paths: &[String],
+) -> crate::error::Result<ImportOutcome> {
+    fs::create_dir_all(library)?;
+    let mut known: HashSet<String> = fs::read_dir(library)?
+        .filter_map(|item| item.ok())
+        .filter_map(|item| item.file_name().to_str().map(str::to_lowercase))
+        .collect();
+    let mut outcome = ImportOutcome {
+        imported: 0,
+        existing: 0,
+        skipped: Vec::new(),
+        failed: Vec::new(),
+    };
+    for path in paths {
+        let source = std::path::Path::new(path);
+        if !openers::is_supported(source) {
+            outcome.skipped.push(import_display_name(source));
+            continue;
+        }
+        match portable::import_book_to(source, library) {
+            Ok(dest) => {
+                let name = dest
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_lowercase();
+                if known.contains(&name) {
+                    outcome.existing += 1;
+                } else {
+                    known.insert(name);
+                    outcome.imported += 1;
+                }
+            }
+            Err(err) => outcome
+                .failed
+                .push(format!("{}：{err}", import_display_name(source))),
+        }
+    }
+    Ok(outcome)
+}
+
+fn import_display_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+#[tauri::command]
+async fn import_books(paths: Vec<String>) -> crate::error::Result<ImportOutcome> {
+    import_books_into(&portable::library_dir()?, &paths)
+}
+
 /// 同书对照: compare two or more shelf copies of one work and say which to
 /// keep. On-demand only — never part of the shelf listing.
 ///
@@ -1021,6 +1088,7 @@ pub fn run() {
             open_book,
             close_book,
             list_library,
+            import_books,
             compare_books,
             get_book_meta,
             reread_book_meta,
@@ -1050,12 +1118,43 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::window_title;
+    use super::{import_books_into, window_title};
 
     #[test]
     fn title_always_contains_version() {
         let title = window_title("IcedReader");
         assert!(title.starts_with(&format!("IcedReader {}", env!("CARGO_PKG_VERSION"))));
+    }
+
+    #[test]
+    fn import_books_counts_new_existing_and_unsupported() {
+        use std::fs;
+        let root = std::env::temp_dir().join("icedreader-import-books");
+        let _ = fs::remove_dir_all(&root);
+        let src = root.join("src");
+        let library = root.join("library");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&library).unwrap();
+        fs::write(src.join("新书.epub"), b"new").unwrap();
+        fs::write(src.join("已有.pdf"), b"new-pdf").unwrap();
+        fs::write(src.join("说明.txt"), b"no").unwrap();
+        fs::write(library.join("已有.pdf"), b"old").unwrap();
+
+        let paths = vec![
+            src.join("新书.epub").to_string_lossy().into_owned(),
+            src.join("已有.pdf").to_string_lossy().into_owned(),
+            src.join("说明.txt").to_string_lossy().into_owned(),
+        ];
+        let outcome = import_books_into(&library, &paths).unwrap();
+
+        assert_eq!(outcome.imported, 1);
+        assert_eq!(outcome.existing, 1);
+        assert_eq!(outcome.skipped, vec!["说明.txt".to_string()]);
+        assert!(outcome.failed.is_empty());
+        assert_eq!(fs::read(library.join("新书.epub")).unwrap(), b"new");
+        // Same-name import reuses the existing file instead of overwriting it.
+        assert_eq!(fs::read(library.join("已有.pdf")).unwrap(), b"old");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

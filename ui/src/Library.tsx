@@ -223,7 +223,7 @@ export default function Library({
     return (
       <div className="empty">
         <p>书库还是空的。</p>
-        <p className="hint">打开一本 EPUB / PDF，会复制进程序目录下的 data/library/。</p>
+        <p className="hint">把 EPUB / PDF 拖进窗口，或点下面的按钮；文件会复制进 data/library/。</p>
         <button type="button" className="btn" onClick={onImport} disabled={busy}>
           {busy ? "打开中…" : "打开电子书"}
         </button>

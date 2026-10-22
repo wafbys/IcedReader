@@ -1,5 +1,6 @@
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChapterFrame, {
   type ChapterFrameHandle,
@@ -38,6 +39,20 @@ function fileNameOf(b: OpenedBook): string {
   return b.path.split(/[\\/]/).pop() ?? "";
 }
 
+/** 拖拽文件是否是阅读器能收的格式（只用来决定拖拽提示，真正过滤在 Rust 侧）。 */
+function isBookPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.endsWith(".epub") || lower.endsWith(".pdf");
+}
+
+/** `import_books` 的汇总：新拷入 / 同名复用 / 不支持 / 失败。 */
+type ImportOutcome = {
+  imported: number;
+  existing: number;
+  skipped: string[];
+  failed: string[];
+};
+
 export default function App() {
   const [book, setBook] = useState<OpenedBook | null>(null);
   const [library, setLibrary] = useState<LibraryEntry[]>([]);
@@ -49,6 +64,8 @@ export default function App() {
   const [index, setIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dropActive, setDropActive] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [chapterHtml, setChapterHtml] = useState("");
   const [restoreFraction, setRestoreFraction] = useState(0);
   const [fonts, setFonts] = useState<FontSettings | null>(null);
@@ -581,6 +598,68 @@ export default function App() {
       setError(String(err));
     }
   }, []);
+
+  /**
+   * 拖拽导入：把路径交给 Rust 批量拷进 data/library/，同名复用；不自动打开。
+   * 过滤与计数都在 Rust 侧做，前端只负责提示与刷新书架。
+   */
+  const importDropped = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return;
+      try {
+        setError(null);
+        const outcome = await invoke<ImportOutcome>("import_books", { paths });
+        await loadLibrary();
+        const parts: string[] = [];
+        if (outcome.imported) parts.push(`已导入 ${outcome.imported} 本`);
+        if (outcome.existing) parts.push(`${outcome.existing} 本已在书库`);
+        if (outcome.skipped.length) {
+          parts.push(`跳过 ${outcome.skipped.length} 个不支持的文件`);
+        }
+        if (outcome.failed.length) parts.push(`${outcome.failed.length} 个失败`);
+        setNotice(parts.join(" · ") || "没有新增书籍");
+        if (outcome.failed.length) setError(outcome.failed.join("；"));
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [loadLibrary],
+  );
+
+  /** 导入结果是一次性消息，6 秒后自己收掉，不占版面。 */
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  /** Tauri 的文件拖放事件：只在能收的格式上给覆盖层，松手后批量入库。 */
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (disposed) return;
+        const payload = event.payload;
+        if (payload.type === "enter") {
+          setDropActive(payload.paths.some(isBookPath));
+        } else if (payload.type === "leave") {
+          setDropActive(false);
+        } else if (payload.type === "drop") {
+          setDropActive(false);
+          void importDropped(payload.paths);
+        }
+      })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [importDropped]);
 
   /**
    * 书架自愈的收尾动作：`list_library` 会把旧代分析（升级后才失效的缓存）
@@ -1597,6 +1676,19 @@ export default function App() {
             </div>
           )}
         </main>
+        {dropActive && (
+          <div className="drop-zone" aria-hidden="true">
+            <div className="drop-card">
+              <strong>松开导入到书库</strong>
+              <span>支持 EPUB / PDF，同名书籍直接复用</span>
+            </div>
+          </div>
+        )}
+        {notice && (
+          <div className="toast" role="status">
+            {notice}
+          </div>
+        )}
       </div>
     </div>
   );
