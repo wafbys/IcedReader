@@ -656,7 +656,14 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     const height = box.clientHeight;
     if (width < 8 || height < 8) return;
 
-    const metrics = flowMetrics(width, height, portrait);
+    // 整页封面（卷首背景图）必须与标题共用一整页：分成两栏时 body 的背景按
+    // 整幅居中，而 h1 只落在第一栏，最大化后标题会跑到图的左边、白带错位。
+    // 强制单栏（gap=0、栏宽=整页宽）后，标题与背景图同轴，也不再报「双栏」。
+    const cover = ensureCoverFit(doc);
+    const base = flowMetrics(width, height, portrait);
+    const metrics: FlowMetrics = cover
+      ? { ...base, columns: 1, columnWidth: width, gap: 0 }
+      : base;
     let style = doc.getElementById(FLOW_STYLE_ID) as HTMLStyleElement | null;
     if (!style) {
       style = doc.createElement("style");
@@ -668,7 +675,6 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     doc.documentElement.style.setProperty("width", `${metrics.stride}px`, "important");
     void doc.documentElement.offsetHeight;
     ensureWordNoteStyle(doc);
-    ensureCoverFit(doc);
     syncNoteCrossState(doc);
 
     const pages = pageCountFromContent(contentWidth(doc), metrics.stride);

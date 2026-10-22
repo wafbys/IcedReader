@@ -15,6 +15,13 @@
  *   - the body carries a real background *image* (not `none`, not a colour).
  * `background-size/repeat/position` are overridden only; the image itself and
  * every other book rule stay as authored.
+ *
+ * Returns `true` when the chapter is a cover page. The caller must also lay it
+ * out as **one column**: with two columns the body background is centred over
+ * the whole spread while the title (`h1`) stays in the first column — on a
+ * maximised window the title then sits left of the artwork and its translucent
+ * band is cut off (see the 2026-10-22 regression). One column keeps the title
+ * and the background image on the same axis.
  */
 
 export const COVER_FIT_STYLE_ID = "iced-reader-cover-fit";
@@ -28,15 +35,15 @@ const COVER_FIT_CSS = `body {
 }`;
 
 /** Inject the contain rule when this document looks like a whole-page cover. */
-export function ensureCoverFit(doc: Document): void {
+export function ensureCoverFit(doc: Document): boolean {
   const body = doc.body;
-  if (!body) return;
+  if (!body) return false;
   const text = (body.textContent ?? "").replace(/\s+/g, "");
-  if (text.length > MAX_BODY_TEXT) return;
+  if (text.length > MAX_BODY_TEXT) return false;
   const win = doc.defaultView;
-  if (!win) return;
+  if (!win) return false;
   const bg = win.getComputedStyle(body).backgroundImage;
-  if (!bg || bg === "none") return;
+  if (!bg || bg === "none") return false;
   let style = doc.getElementById(COVER_FIT_STYLE_ID) as HTMLStyleElement | null;
   if (!style) {
     style = doc.createElement("style");
@@ -44,4 +51,5 @@ export function ensureCoverFit(doc: Document): void {
     doc.head.appendChild(style);
   }
   style.textContent = COVER_FIT_CSS;
+  return true;
 }
