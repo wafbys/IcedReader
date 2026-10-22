@@ -1351,9 +1351,11 @@ export default function App() {
                           pdfState?.paired ? " · 跨页" : ""
                         }`
                       : "0 页"
-                    : `${spine.length ? `${index + 1}/${spine.length}章` : "0章"} · ${
-                        pageInfo.page + 1
-                      }/${pageInfo.pages}页${
+                    : `${
+                        spine.length
+                          ? `书中位置 ${index + 1}/${spine.length}`
+                          : "0章"
+                      } · ${pageInfo.page + 1}/${pageInfo.pages}页${
                         pageInfo.columns === 2 ? " · 双栏" : ""
                       }`}
                 </span>
