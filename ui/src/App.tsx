@@ -1332,7 +1332,7 @@ export default function App() {
                 onClick={() => (isPdf ? pdfTurn(-1) : goChapter(-1, 0))}
                 disabled={prevDisabled}
               >
-                {isPdf ? "上一页" : "上一章"}
+                {isPdf ? "上一页" : "上一处"}
               </button>
               <span
                 className="pos"
@@ -1354,7 +1354,7 @@ export default function App() {
                     : `${
                         spine.length
                           ? `书中位置 ${index + 1}/${spine.length}`
-                          : "0章"
+                          : "书中位置 0/0"
                       } · ${pageInfo.page + 1}/${pageInfo.pages}页${
                         pageInfo.columns === 2 ? " · 双栏" : ""
                       }`}
@@ -1393,7 +1393,7 @@ export default function App() {
                 onClick={() => (isPdf ? pdfTurn(1) : goChapter(1, 0))}
                 disabled={nextDisabled}
               >
-                {isPdf ? "下一页" : "下一章"}
+                {isPdf ? "下一页" : "下一处"}
               </button>
             </div>
           </>

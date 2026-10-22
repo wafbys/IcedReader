@@ -98,7 +98,7 @@ PDF 样本自检（不入库，放哪都行）：`cargo run -p iced-reader-pdf -
 ## 改 UI 时
 
 - 阅读区铺满顶栏以下。正文用 `.flow-host` 栅格居中，不要往章节 HTML 里注入 `max-width` / `margin: auto`。
-- **顶栏位置措辞：** EPUB 写「书中位置 N/M」（spine 序号，不等于章），不要写「N/M章」；PDF 写「第 N / M 页」。`上一章/下一章` 是 EPUB 的翻章按钮，保留。
+- **顶栏位置措辞：** EPUB 写「书中位置 N/M」（spine 序号，不等于章），不要写「N/M章」；PDF 写「第 N / M 页」。EPUB 的 `上一处/下一处` 是位置翻页按钮（TOC/spine 单位，不承诺是章），PDF 仍写 `上一页/下一页`。
 - 按 `book.format` 分支（`"epub"` / `"pdf"`）：**PDF 走 `ui/src/PdfView.tsx`**（连续纸带），隐藏字号 A± 与字体面板、隐藏划线入口、进度区显示「第 N / M 页」（并排时加「· 跨页」）、显示 `warnings` 提示条；**EPUB 继续走 `ChapterFrame`**（它现在对 PDF 一无所知，别把 PDF 逻辑加回去），行为一字不许变。
 - 字体面板：原书 CSS 声明 vs 本章实际绘制，规则见 `ui/src/usedFonts.ts`。在注入自定义字体之前从原 HTML/CSS 抽取；`src` 不在书内的 `@font-face` 标「书内无字体文件」。
 - 目录用 `book.toc`（否则 spine 标题）。不要在前端 parse NCX。
