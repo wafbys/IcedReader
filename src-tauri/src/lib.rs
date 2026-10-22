@@ -827,8 +827,13 @@ async fn set_book_meta(
     let old_stem = library::epub_stem(&file_name);
     let desired_stem = library::clean_file_stem(&display_title);
     let md_name = format!("{file_name}.md");
-    let target_stem =
-        library::unique_stem_ignoring(&dir, &desired_stem, &[file_name.as_str(), md_name.as_str()]);
+    let extension = book_extension(&file_name).unwrap_or("epub");
+    let target_stem = library::unique_stem_ignoring(
+        &dir,
+        &desired_stem,
+        extension,
+        &[file_name.as_str(), md_name.as_str()],
+    );
     let needs_rename = !old_stem.eq_ignore_ascii_case(&target_stem);
 
     let (_, final_md_path) = if needs_rename {
@@ -840,7 +845,6 @@ async fn set_book_meta(
         if profile.progress_key.starts_with("lib:") {
             // The key embeds the file name *and its format*: renaming a PDF
             // must not carry the EPUB of the same title along.
-            let extension = book_extension(&file_name).unwrap_or("epub");
             let new_lib_key = format!("lib:{}.{}", target_stem.to_lowercase(), extension);
             state
                 .progress

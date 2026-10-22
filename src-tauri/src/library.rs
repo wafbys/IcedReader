@@ -582,13 +582,20 @@ pub fn clean_file_stem(input: &str) -> String {
     stem
 }
 
-/// Pick a stem that does not collide with any existing library file.
-/// Collision copies use ` (2)`, ` (3)`… — not `-N`, which `lib:` progress
-/// keys treat as the same book. Case-insensitive, like NTFS.
+/// Pick a stem that does not collide with an existing library file **of the
+/// same format**. Collision copies use ` (2)`, ` (3)`… — not `-N`, which `lib:`
+/// progress keys treat as the same book. Case-insensitive, like NTFS.
 /// `preferred` is already clean (see [`clean_file_stem`]); `ignore` file names
 /// (the book being renamed) do not count as taken, so a re-save does not bump
-/// `三体 (2)` to `(3)`.
-pub fn unique_stem_ignoring(dir: &Path, preferred: &str, ignore: &[&str]) -> String {
+/// `三体 (2)` to `(3)`. `extension` is the target format (`epub` / `pdf`):
+/// an EPUB and a PDF with the same stem are two different books and must not
+/// force a `(2)` on each other.
+pub fn unique_stem_ignoring(
+    dir: &Path,
+    preferred: &str,
+    extension: &str,
+    ignore: &[&str],
+) -> String {
     let Ok(read) = fs::read_dir(dir) else {
         return preferred.to_string();
     };
@@ -601,27 +608,26 @@ pub fn unique_stem_ignoring(dir: &Path, preferred: &str, ignore: &[&str]) -> Str
         .filter(|name| !ignore_lower.contains(name))
         .filter(|name| name.ends_with(".md") || book_extension(name).is_some())
         .collect();
-    if !stem_taken(&taken, preferred) {
+    if !stem_taken(&taken, preferred, extension) {
         return preferred.to_string();
     }
     let mut n = 2;
     loop {
         let candidate = format!("{preferred} ({n})");
-        if !stem_taken(&taken, &candidate) {
+        if !stem_taken(&taken, &candidate, extension) {
             return candidate;
         }
         n += 1;
     }
 }
 
-/// A stem counts as taken when any format's book file or its companion md is
-/// already using it. The md is named after the full book file name
-/// (`三体.epub.md`), so book files are what the check really ranges over.
-fn stem_taken(taken: &std::collections::HashSet<String>, stem: &str) -> bool {
+/// A stem counts as taken when the **target format's** book file or its
+/// companion md is already using it (`三体.pdf`, `三体.pdf.md`). Other formats'
+/// files do not count: the extension is part of a book's identity.
+fn stem_taken(taken: &std::collections::HashSet<String>, stem: &str, extension: &str) -> bool {
     let s = stem.to_lowercase();
-    iced_reader_core::BOOK_EXTENSIONS.iter().any(|ext| {
-        taken.contains(&format!("{s}.{ext}")) || taken.contains(&format!("{s}.{ext}.md"))
-    })
+    let ext = extension.to_ascii_lowercase();
+    taken.contains(&format!("{s}.{ext}")) || taken.contains(&format!("{s}.{ext}.md"))
 }
 
 /// File stem of a library book name (`Foo.EPUB` → `Foo`, `Foo.pdf` → `Foo`).
@@ -928,33 +934,57 @@ mod tests {
     }
 
     #[test]
-    fn unique_stem_avoids_existing_epub_and_md() {
+    fn unique_stem_is_per_format() {
         let root = std::env::temp_dir().join("icedreader-unique-stem");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
 
         // Nothing taken → the preferred stem wins.
         assert_eq!(
-            unique_stem_ignoring(&root, "三体 - 刘慈欣", &[]),
+            unique_stem_ignoring(&root, "三体 - 刘慈欣", "epub", &[]),
             "三体 - 刘慈欣"
         );
 
         fs::write(root.join("三体 - 刘慈欣.epub"), b"a").unwrap();
-        fs::write(root.join("三体 - 刘慈欣-2.md"), b"b").unwrap();
+        fs::write(root.join("三体 - 刘慈欣.epub.md"), b"b").unwrap();
         fs::write(root.join("OTHER.EPUB"), b"c").unwrap();
-        // .epub collision → (2); existing (2) → (3). `-N` is not used (lib: aliases).
+        // Same format collides → (2); a different format does not. The extension
+        // is part of the book's identity, so an EPUB must not push a PDF to (2).
         assert_eq!(
-            unique_stem_ignoring(&root, "三体 - 刘慈欣", &[]),
+            unique_stem_ignoring(&root, "三体 - 刘慈欣", "epub", &[]),
             "三体 - 刘慈欣 (2)"
         );
-        assert_eq!(unique_stem_ignoring(&root, "other", &[]), "other (2)");
-        fs::write(root.join("三体 - 刘慈欣 (2).epub"), b"d").unwrap();
         assert_eq!(
-            unique_stem_ignoring(&root, "三体 - 刘慈欣", &[]),
-            "三体 - 刘慈欣 (3)"
+            unique_stem_ignoring(&root, "三体 - 刘慈欣", "pdf", &[]),
+            "三体 - 刘慈欣"
         );
         assert_eq!(
-            unique_stem_ignoring(&root, "三体 - 刘慈欣", &["三体 - 刘慈欣.epub"]),
+            unique_stem_ignoring(&root, "other", "epub", &[]),
+            "other (2)"
+        );
+
+        // Existing (2) → (3); `-N` is not used (lib: aliases).
+        fs::write(root.join("三体 - 刘慈欣 (2).epub"), b"d").unwrap();
+        assert_eq!(
+            unique_stem_ignoring(&root, "三体 - 刘慈欣", "epub", &[]),
+            "三体 - 刘慈欣 (3)"
+        );
+
+        // A same-format PDF collision still bumps the number.
+        fs::write(root.join("三体 - 刘慈欣.pdf"), b"e").unwrap();
+        assert_eq!(
+            unique_stem_ignoring(&root, "三体 - 刘慈欣", "pdf", &[]),
+            "三体 - 刘慈欣 (2)"
+        );
+
+        // The book being renamed (file + companion md) does not count as taken.
+        assert_eq!(
+            unique_stem_ignoring(
+                &root,
+                "三体 - 刘慈欣",
+                "epub",
+                &["三体 - 刘慈欣.epub", "三体 - 刘慈欣.epub.md"]
+            ),
             "三体 - 刘慈欣"
         );
     }
@@ -1187,7 +1217,8 @@ mod tests {
     }
 
     #[test]
-    fn single_heading_book_is_not_hinted_across_unrelated_books() {        // A single-file / TOC-as-chapters book yields one heading (here the
+    fn single_heading_book_is_not_hinted_across_unrelated_books() {
+        // A single-file / TOC-as-chapters book yields one heading (here the
         // generic 第一章). Two unrelated books must not be grouped by it, even
         // with near-equal length and different fingerprints.
         let mut a = empty_signals("rev".into());
