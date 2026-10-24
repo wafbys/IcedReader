@@ -105,6 +105,8 @@ type Props = {
   notesById: Record<string, string>;
   /** 保存/清空一条划线的备注（空串 = 撤掉该备注）。 */
   onSaveNote: (id: string, note: string) => Promise<void>;
+  /** 删除一条划线的备注（只清用户区，划线本身保留）；返回是否真的删了。 */
+  onDeleteNote: (id: string) => Promise<boolean>;
   /** This chapter's first char offset into the whole book + total chars
    *  (chapter-chars weights); lets the frame compute `pos` at stroke time. */
   bookPos?: { start: number; total: number };
@@ -208,6 +210,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     onDeleteHighlight,
     notesById,
     onSaveNote,
+    onDeleteNote,
     bookPos,
     pendingHighlight,
     onHighlightLocated,
@@ -257,6 +260,8 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   onDeleteHighlightRef.current = onDeleteHighlight;
   const onSaveNoteRef = useRef(onSaveNote);
   onSaveNoteRef.current = onSaveNote;
+  const onDeleteNoteRef = useRef(onDeleteNote);
+  onDeleteNoteRef.current = onDeleteNote;
   const notesByIdRef = useRef(notesById);
   notesByIdRef.current = notesById;
   const bookPosRef = useRef(bookPos);
@@ -320,6 +325,9 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
   noteEditorIdRef.current = noteEditorId;
   /** 备注保存重入锁（双击/连点只落一次写，防伴生 md 重复插块）。 */
   const committingNote = useRef(false);
+  /** 正在编辑的这条划线本来就有备注（显示「删除备注」）。 */
+  const editingHasNote =
+    noteEditorId !== null && (notesById[noteEditorId] ?? "") !== "";
 
   /** Repaint highlights on the current iframe document (doc must be ready). */
   const paintDoc = () => {
@@ -937,6 +945,22 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
     }
   };
 
+  /** Delete the note being edited for real; the highlight itself stays. */
+  const doDeleteNote = async () => {
+    if (toolbarBusy || !noteEditorId) return;
+    setToolbarBusy(true);
+    try {
+      // 取消确认时停在这里：备注编辑器与草稿都留着。
+      if (!(await onDeleteNoteRef.current(noteEditorId))) return;
+      closeNoteEditor();
+      setToolbar(null);
+      const doc = iframeRef.current?.contentDocument;
+      doc?.getSelection()?.removeAllRanges();
+    } finally {
+      setToolbarBusy(false);
+    }
+  };
+
   return (
     <div className="flow-host" ref={hostRef}>
       {/* The iframe fills the whole container and swallows pointer/wheel
@@ -1333,6 +1357,17 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             >
               保存备注
             </button>
+            {editingHasNote && (
+              <button
+                type="button"
+                className="btn small ghost danger"
+                disabled={toolbarBusy}
+                title="从伴生 md 里真删这条备注（划线保留）"
+                onClick={() => void doDeleteNote()}
+              >
+                删除备注
+              </button>
+            )}
             <button
               type="button"
               className="btn small ghost"
@@ -1343,7 +1378,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             </button>
           </div>
           <p className="hl-note-hint">
-            划线连同摘录已存入书的伴生 md；备注写进该条目的用户区，可在外部 md 软件继续编辑；有备注的划线删除后备注仍保留在档案里。
+            划线连同摘录已存入书的伴生 md；备注写进该条目的用户区，可在外部 md 软件继续编辑；「删除备注」只删备注、划线保留，删除划线则连同备注一起真删。
           </p>
         </div>
       )}

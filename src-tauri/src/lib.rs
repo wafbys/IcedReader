@@ -413,9 +413,9 @@ fn set_annotation_pos(
     Ok(())
 }
 
-/// 删除划线：正文记录移除；伴生 md 里该条若写过备注则打删除时间留痕、用户
-/// 笔记保留（像会计不涂改）；纯划线（从未写备注）整条移除、档案无痕。
-/// 留痕/清除的判断在 `AnnotationStore::remove` 里（它读同一份 md 决定）。
+/// 删除划线：**真删** —— 正文记录移除，伴生 md 里该条的注释块、摘抄行与用户
+/// 备注一起删掉，不留删除时间、不留删除线。判断与写回在
+/// `AnnotationStore::remove` 里（它读同一份 md）。
 #[tauri::command]
 fn delete_annotation(
     file_name: String,
@@ -426,8 +426,20 @@ fn delete_annotation(
     Ok(())
 }
 
+/// 删除备注：**真删** —— 只清该条的用户区，注释块与摘抄行逐字保留（划线还在）。
+#[tauri::command]
+fn delete_note(
+    file_name: String,
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> crate::error::Result<()> {
+    state.annotations.lock()?.clear_note(&file_name, &id)?;
+    Ok(())
+}
+
 /// 写/改一条划线的备注（伴生 md 的用户区）。空串 = 清空备注：划线条目（保护区
-/// + 摘录行）留下，只把用户区清掉（划线还在，档案不该消失）。
+/// + 摘录行）留下，只把用户区清掉（划线还在，档案不该消失）。UI 的「删除备注」
+/// 走 [`delete_note`]（只清用户区，不动块）；这里保持整条原位替换的语义。
 #[tauri::command]
 fn save_note(
     file_name: String,
@@ -1104,6 +1116,7 @@ pub fn run() {
             set_annotation_pos,
             delete_annotation,
             save_note,
+            delete_note,
             read_notes,
             get_font_settings,
             set_use_original_fonts,

@@ -10,14 +10,15 @@
 //! `text`（空白折成一行的全文）与它的段落切点 `paras`）。`paras` 是 `text`
 //! 里段落之间那个空格的字节下标，所以摘抄行在**任何一次重写**（位置回填、改
 //! 备注）之后都能从记录原样摊回多条引用，而不是写一次就不能动。摘抄行的最后
-//! 一条固定是 `> （全书 N% · 划于 …）`，删除时各条加删除线、末条附（已删于 …）。
+//! 一条固定是 `> （全书 N% · 划于 …）`。
 //! 其后到下一个保护区 / `##` 章标题 = 用户笔记区。重写只动保护区，
 //! 用户区逐字保留（阅读器备注框与外部 md 软件写的是同一处）。按「注释块后
 //! 连续的 `> ` 行」认摘抄行。缺 `id:` 的块与手写无块段落原样保留。
 //!
-//! 删除：有备注则保护区记 `deleted:`、摘抄行加删除线并附（已删于 …）；
-//! 纯划线（从未写备注）删除即整条移除、md 无痕（若用户区被外部写过，
-//! 转成普通文本保留；因此变空的章标题一并清掉）。同一处再划 = 新 id。
+//! 删除是**真删**：删划线 = 注释块、摘抄行、用户备注区一起移除（因此变空的
+//! 章标题一并清掉），md 不留痕；删备注 = 只清用户区，注释块与摘抄行保留
+//! （划线还在）。旧版档案里 `deleted:` 有值的条目仍按「已删除」跳过，但本版
+//! 不再写入这种留痕。同一处再划 = 新 id。
 //!
 //! 时间/位置等人类文本由调用方格式化后经 [`NoteEntry`] 传入。
 //!
@@ -401,70 +402,31 @@ fn upsert_body(text: &str, entry: &NoteEntry) -> String {
     }
 }
 
-/// 划线删除：在档案里给该条打删除标记（`deleted:` + 摘抄行删除线），
-/// 用户笔记区原样保留。该 id 不在档案里（纯划线从未写备注）返回 `None`。
-/// `deleted_at` 是删除时间（unix 秒）；人类可读的「已删于 …」由调用方在
-/// 摘抄行里给出。
-pub fn mark_deleted(text: &str, id: &str, deleted_at: i64) -> Option<String> {
+/// 删除备注：只清掉该条的用户区，保护区与摘抄行逐字保留（划线还在）。
+/// 用户区本来就是空的返回 `None`（无改动）；id 不在档案里也返回 `None`。
+pub fn clear_note(text: &str, id: &str) -> Option<String> {
     let (meta, body) = split_meta(text);
-    let updated = mark_deleted_body(&body, id, deleted_at)?;
+    let updated = clear_note_body(&body, id)?;
     Some(join_meta(&meta, &updated))
 }
 
-fn mark_deleted_body(text: &str, id: &str, deleted_at: i64) -> Option<String> {
+fn clear_note_body(text: &str, id: &str) -> Option<String> {
     let mut segs = parse(text);
     let pos = segs.iter().position(|s| s.id() == Some(id))?;
     let Seg::Note(note) = &mut segs[pos] else {
         return None;
     };
-    if note.open_lines.iter().any(|l| {
-        l.trim()
-            .strip_prefix("deleted:")
-            .is_some_and(|v| !v.trim().is_empty())
-    }) {
-        return None; // 已标记过（幂等保护）
+    if note.note.iter().all(|l| is_blank_line(l)) {
+        return None;
     }
-    // deleted: 行填时间。
-    let mut touched = false;
-    for line in note.open_lines.iter_mut() {
-        let t = line.trim();
-        if let Some(rest) = t.strip_prefix("deleted:") {
-            if rest.trim().is_empty() {
-                *line = format!("deleted: {deleted_at}");
-                touched = true;
-            }
-        }
-    }
-    if !touched {
-        // 宽容：缺 deleted: 行时补一行（保护区修复）。
-        let insert_at = note
-            .open_lines
-            .iter()
-            .position(|l| l.trim_start().starts_with(NOTE_CLOSE))
-            .unwrap_or(note.open_lines.len());
-        note.open_lines
-            .insert(insert_at, format!("deleted: {deleted_at}"));
-    }
-    // 摘抄行（可能多行）逐条加删除线，删除时间落在最后一条。
-    if let Some(lines) = &mut note.excerpt {
-        if !lines.is_empty() && !lines.iter().any(|l| l.contains("已删于")) {
-            let human = human_stamp(deleted_at);
-            let last = lines.len() - 1;
-            for (i, line) in lines.iter_mut().enumerate() {
-                let body = line.strip_prefix("> ").unwrap_or(line).to_string();
-                *line = if i == last {
-                    format!("> ~~{body}~~（已删于 {human}）")
-                } else {
-                    format!("> ~~{body}~~")
-                };
-            }
-        }
-    }
+    // 留一个空行：同一章里还有下一条时，摘抄行与下一个保护区之间不会贴在一起
+    // （文末的空行由 `serialize` 收尾时去掉）。
+    note.note = vec![String::new()];
     Some(serialize(&segs))
 }
 
-/// unix 秒 → `YYYY-MM-DD HH:MM`，**本机时区**。用于摘抄行与「已删于 …」这类
-/// 留痕文字；块里的 `created` / `deleted` 才是权威值，这里只负责给人看。
+/// unix 秒 → `YYYY-MM-DD HH:MM`，**本机时区**。用于摘抄行的「划于 …」；
+/// 块里的 `created` 才是权威值，这里只负责给人看。
 fn human_stamp(secs: i64) -> String {
     use chrono::{DateTime, Local};
     if secs <= 0 {
@@ -475,9 +437,8 @@ fn human_stamp(secs: i64) -> String {
         .unwrap_or_else(|| "未知时间".into())
 }
 
-/// 移除该条的注释块与摘抄行（纯划线删除：整条不留痕）。用户笔记区若被外部
-/// 编辑器写过则转成普通文本留在原位（绝不丢字）；因此变空的章标题一并清掉。
-/// id 不在档案里返回 `None`。
+/// 真删一条划线：注释块、摘抄行与用户备注区一起移除，md 不留痕；因此变空的
+/// 章标题一并清掉。id 不在档案里返回 `None`。
 pub fn remove_note(text: &str, id: &str) -> Option<String> {
     let (meta, body) = split_meta(text);
     let updated = remove_note_body(&body, id)?;
@@ -487,24 +448,9 @@ pub fn remove_note(text: &str, id: &str) -> Option<String> {
 fn remove_note_body(text: &str, id: &str) -> Option<String> {
     let mut segs = parse(text);
     let pos = segs.iter().position(|s| s.id() == Some(id))?;
-    let Seg::Note(note) = segs.remove(pos) else {
+    let Seg::Note(_) = segs.remove(pos) else {
         return None;
     };
-    let mut orphan = note.note;
-    if orphan.iter().all(|l| is_blank_line(l)) {
-        // 没有用户文字：直接移除，不留下空段。
-        return Some(serialize(&prune_empty_sections(segs)));
-    }
-    // 前面若不是空行，补一个让孤立的用户区与上方内容分开。
-    let need_lead = match segs.get(pos.wrapping_sub(1)) {
-        Some(Seg::Text(lines)) => !lines.last().is_some_and(|l| is_blank_line(l)),
-        Some(Seg::Note(_)) => true,
-        None => false,
-    };
-    if need_lead {
-        orphan.insert(0, String::new());
-    }
-    segs.insert(pos, Seg::Text(orphan));
     Some(serialize(&prune_empty_sections(segs)))
 }
 
@@ -614,8 +560,9 @@ pub fn stored_highlights(text: &str) -> Vec<StoredHighlight> {
                 }
             }
             Seg::Note(note) => {
-                // 已删除的条目留在档案里留痕（`deleted:` + 删除线），但它
+                // 旧版删除留痕的条目（`deleted:` 有值）仍留在档案里，但它
                 // 不再是划线：读记录时跳过，否则删掉的划线会被重新画出来。
+                // 本版删除即真删，不再写入这种条目。
                 if is_deleted(note) {
                     continue;
                 }
@@ -628,7 +575,7 @@ pub fn stored_highlights(text: &str) -> Vec<StoredHighlight> {
     out
 }
 
-/// 该条是否已被标记删除（保护区里 `deleted:` 有值）。
+/// 该条是否是旧版「留痕删除」的条目（保护区里 `deleted:` 有值）。
 fn is_deleted(seg: &NoteSeg) -> bool {
     seg.open_lines.iter().any(|l| {
         l.trim()
@@ -790,7 +737,7 @@ mod tests {
     }
 
     /// 多段摘抄：md 里一段一条 `> ` 引用（标签只在第一条），末条是位置/时间；
-    /// 位置回填（整条重写）之后段落结构照旧；删除时每条都加删除线。
+    /// 位置回填（整条重写）之后段落结构照旧。
     #[test]
     fn multi_paragraph_excerpt_roundtrips_and_survives_a_rewrite() {
         let (text, paras) = split_excerpt("一段。\n二段。\n三段。");
@@ -840,13 +787,6 @@ mod tests {
         assert_eq!(quote2.len(), 4, "quote after pos backfill: {quote2:?}");
         assert_eq!(quote2[1], "> 二段。");
         assert!(out.contains("> （全书 42% · 划于 "));
-
-        // 删除留痕：每条引用都加删除线，时间落在末条。
-        let del = mark_deleted(&out, "a", 1_756_987_200).unwrap();
-        assert!(del.contains("> ~~【重点】一段。~~"));
-        assert!(del.contains("> ~~二段。~~"));
-        assert!(del.contains("> ~~三段。~~"));
-        assert!(del.contains("已删于 "));
     }
 
     /// 记录进得去也出得来：坐标/颜色/位置/摘录在块里往返一致。
@@ -926,31 +866,44 @@ mod tests {
     }
 
     #[test]
-    fn mark_deleted_keeps_note_and_annotates() {
+    fn clear_note_removes_only_the_user_region() {
         let v1 = upsert("", &entry("a", "用户笔记内容\n第二行"));
-        // 2026-09-05T16:00:00Z 附近的秒数：只要是个正的 unix 秒即可。
-        let out = mark_deleted(&v1, "a", 1_756_987_200).unwrap();
-        assert!(out.contains("deleted: 1756987200"));
-        assert!(out.contains("（已删于 "), "删除线要带删除时间");
-        assert!(out.contains("> ~~【重点】摘录一"));
-        assert!(out.contains("用户笔记内容\n第二行"));
-        assert_eq!(
-            notes_of(&out),
-            vec![("a".to_string(), "用户笔记内容\n第二行".to_string())]
-        );
-        // 幂等：再次调用返回 None，内容不变。
-        assert!(mark_deleted(&out, "a", 1).is_none());
-        // 不在档案里的 id → None。
-        assert!(mark_deleted(&v1, "missing", 1).is_none());
+        let out = clear_note(&v1, "a").unwrap();
+        // 划线条目还在：保护区与摘抄行逐字保留。
+        assert!(out.contains("id: a"));
+        assert!(out.contains("> 【重点】摘录一"));
+        // 备注是真删，不是留白。
+        assert!(!out.contains("用户笔记内容"));
+        assert!(!out.contains("第二行"));
+        assert!(notes_of(&out).is_empty());
+        // 没有备注可删 / id 不存在 → None。
+        assert!(clear_note(&out, "a").is_none());
+        assert!(clear_note(&v1, "missing").is_none());
     }
 
     #[test]
-    fn remove_note_keeps_user_text_as_free_content() {
+    fn clear_note_keeps_a_separator_before_the_next_block() {
+        let v1 = upsert("", &entry("a", "备注 a"));
+        let v2 = upsert(&v1, &entry("b", "备注 b"));
+        let out = clear_note(&v2, "a").unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        let a_end = lines
+            .iter()
+            .position(|l| l.starts_with("> （"))
+            .expect("a 的位置行");
+        assert!(
+            lines.get(a_end + 1).is_some_and(|l| l.is_empty()),
+            "备注 a 清空后与 b 的保护区之间要留一个空行：{out}"
+        );
+        assert!(out.contains("备注 b"), "b 的备注不能动：{out}");
+    }
+
+    #[test]
+    fn remove_note_deletes_block_excerpt_and_user_text() {
+        // 删划线 = 真删：连用户笔记一起移除，md 不留痕。
         let v1 = upsert("", &entry("a", "我手写的笔记"));
         let out = remove_note(&v1, "a").unwrap();
-        assert!(!out.contains("icedreader-note"));
-        assert!(!out.contains("> 【重点】摘录一"));
-        assert!(out.contains("我手写的笔记"), "用户文字不丢");
+        assert_eq!(out, "", "注释块、摘抄行、备注与空章标题都不剩");
         assert!(notes_of(&out).is_empty());
     }
 

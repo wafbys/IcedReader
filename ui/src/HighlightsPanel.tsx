@@ -84,7 +84,7 @@ export default function HighlightsPanel({
                   <button
                     type="button"
                     className="hl-del"
-                    title={note ? "删除划线（伴生 md 保留内容并记删除时间）" : "删除划线"}
+                    title={note ? "删除划线（备注一起真删）" : "删除划线"}
                     aria-label="删除划线"
                     onClick={() => onDelete(rec.id)}
                   >

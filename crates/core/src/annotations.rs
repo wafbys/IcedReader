@@ -30,6 +30,10 @@
 //! needs in order to be painted live in the block, right next to the human
 //! excerpt and the user's own prose. The block parsing and the body rewriting
 //! live in [`crate::notes`]; this module is the typed front over them.
+//!
+//! Deleting a highlight removes the whole block, its excerpt line and the user
+//! note in one go; `deleted:` is only read for archives written by older
+//! versions (which used it as a tombstone) and is never filled here.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -185,7 +189,9 @@ impl AnnotationStore {
         write_atomic(&path, &updated)
     }
 
-    /// Remove one highlight; numbered stem copies are searched too.
+    /// Remove one highlight for real: the md block, its excerpt and its user note
+    /// are deleted together (no tombstone). Numbered stem copies are searched
+    /// too.
     pub fn remove(&mut self, file_name: &str, id: &str) -> Result<bool, crate::CoreError> {
         let books = self.books_for(file_name);
         let mut removed = false;
@@ -200,24 +206,30 @@ impl AnnotationStore {
             {
                 continue;
             }
-            let has_note = notes::notes_of(&text).iter().any(|(nid, _)| nid == id);
-            let updated = if has_note {
-                // 有备注：留痕（`deleted:` + 删除线），用户笔记保留。删除时间
-                // 由系统时钟给出；调用方（Tauri 层）不参与这段决策。
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                notes::mark_deleted(&text, id, now)
-            } else {
-                notes::remove_note(&text, id)
-            };
-            if let Some(updated) = updated {
+            if let Some(updated) = notes::remove_note(&text, id) {
                 write_atomic(&path, &updated)?;
                 removed = true;
             }
         }
         Ok(removed)
+    }
+
+    /// Delete one highlight's note for real, keeping the highlight itself. Only
+    /// the user region is cleared; the machine block and the excerpt stay byte
+    /// for byte. Returns whether anything changed.
+    pub fn clear_note(&mut self, file_name: &str, id: &str) -> Result<bool, crate::CoreError> {
+        let mut cleared = false;
+        for book in self.books_for(file_name) {
+            let Some(path) = self.md_path(&book) else {
+                continue;
+            };
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            if let Some(updated) = notes::clear_note(&text, id) {
+                write_atomic(&path, &updated)?;
+                cleared = true;
+            }
+        }
+        Ok(cleared)
     }
 
     /// Fill in one highlight's whole-book position once the weights are known
@@ -443,14 +455,14 @@ mod tests {
     }
 
     #[test]
-    fn deletion_ledger_survives_a_read_back() {
-        // 有备注的划线删除后：记录本身消失，但档案留下 `deleted:` 与删除线。
+    fn deletion_removes_the_block_and_the_note() {
+        // 删划线 = 真删：记录、md 注释块与用户备注一起消失，不留痕。
         let dir = std::env::temp_dir().join("icedreader-annotations-deleted");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut store = store_in(&dir);
         store.add("书.epub", hl("a", 0, 0)).unwrap();
-        // A note makes the deletion leave a trace.
+        // Write a note through the same entry path the reader uses.
         let path = store.md_path("书.epub").unwrap();
         let text = fs::read_to_string(&path).unwrap();
         let with_note = notes::upsert(
@@ -464,12 +476,40 @@ mod tests {
         fs::write(&path, &with_note).unwrap();
 
         assert!(store.remove("书.epub", "a").unwrap());
-        // Gone from the records…
         assert!(store_in(&dir).list("书.epub").is_empty());
-        // …but the ledger line and the user's note are still on disk.
         let after = fs::read_to_string(&path).unwrap();
-        assert!(after.contains("deleted: "), "missing ledger in {after}");
-        assert!(after.contains("已删于"), "missing strikethrough in {after}");
-        assert!(after.contains("我的备注"), "user note lost in {after}");
+        assert!(!after.contains("icedreader-note"), "block left in {after}");
+        assert!(!after.contains("我的备注"), "note left in {after}");
+        assert!(!after.contains("已删于"), "tombstone left in {after}");
+    }
+
+    #[test]
+    fn clear_note_keeps_the_highlight_and_removes_the_note() {
+        let dir = std::env::temp_dir().join("icedreader-annotations-clear-note");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut store = store_in(&dir);
+        store.add("书.epub", hl("a", 0, 0)).unwrap();
+        let path = store.md_path("书.epub").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let with_note = notes::upsert(
+            &text,
+            &notes::NoteEntry {
+                highlight: hl("a", 0, 0),
+                section_title: String::new(),
+                note: "要删掉的备注".into(),
+            },
+        );
+        fs::write(&path, &with_note).unwrap();
+
+        assert!(store.clear_note("书.epub", "a").unwrap());
+        // The highlight is still readable and still painted.
+        assert_eq!(store_in(&dir).list("书.epub").len(), 1);
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(after.contains("icedreader-note"), "block lost in {after}");
+        assert!(after.contains("示例摘录"), "excerpt lost in {after}");
+        assert!(!after.contains("要删掉的备注"), "note left in {after}");
+        // Nothing left to clear.
+        assert!(!store.clear_note("书.epub", "a").unwrap());
     }
 }
