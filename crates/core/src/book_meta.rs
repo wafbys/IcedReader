@@ -313,10 +313,16 @@ pub fn parse_meta(text: &str) -> Option<BookMeta> {
     Some(meta)
 }
 
-/// Read and parse one companion md file. `None` on any read/parse failure.
-pub fn read_meta_file(path: &Path) -> Option<BookMeta> {
-    let text = fs::read_to_string(path).ok()?;
-    parse_meta(&text)
+/// Read and parse one companion md file. `Ok(None)` when the file is missing
+/// or carries no metadata block; `Err` when it exists but cannot be read (for
+/// example it is not UTF-8). Writers must treat `Err` as fatal: rewriting from
+/// an empty body would drop the highlight archive and the user's notes.
+pub fn read_meta_file(path: &Path) -> io::Result<Option<BookMeta>> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(parse_meta(&text)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 fn write_field(out: &mut String, key: &str, value: &str) {
@@ -411,7 +417,11 @@ pub fn write_meta_file(path: &Path, meta: &BookMeta) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let existing = fs::read_to_string(path).unwrap_or_default();
+    let existing = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
     let (_, body) = split_meta(&existing);
     let tmp = path.with_extension("md.tmp");
     fs::write(&tmp, join_meta(&format_meta(meta), &body))?;
@@ -695,10 +705,10 @@ mod tests {
             isbn: "978-7-5366-9293-0".into(),
         };
         write_meta_file(&path, &meta).unwrap();
-        assert_eq!(read_meta_file(&path), Some(meta.clone()));
+        assert_eq!(read_meta_file(&path).unwrap(), Some(meta.clone()));
 
         // Missing file → None.
-        assert_eq!(read_meta_file(&dir.join("nope.md")), None);
+        assert_eq!(read_meta_file(&dir.join("nope.md")).unwrap(), None);
     }
 
     #[test]
@@ -774,6 +784,23 @@ mod tests {
 
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(split_meta(&text).1, body);
-        assert_eq!(read_meta_file(&path), Some(meta));
+        assert_eq!(read_meta_file(&path).unwrap(), Some(meta));
+    }
+
+    /// A companion md can be edited outside the reader and saved as GBK/ANSI.
+    /// Rewriting it from an empty body would delete the highlight archive and
+    /// the user's prose, so both readers and writers must surface the error.
+    #[test]
+    fn non_utf8_md_is_never_rewritten_from_an_empty_body() {
+        let dir = std::env::temp_dir().join("icedreader-meta-non-utf8");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("书.epub.md");
+        let bytes = b"<!-- icedreader-meta\ntitle: \xff\n-->\n\n\xff\xfe\x00";
+        fs::write(&path, bytes).unwrap();
+
+        assert!(read_meta_file(&path).is_err());
+        assert!(write_meta_file(&path, &BookMeta::default()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 }

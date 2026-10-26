@@ -31,7 +31,7 @@ pub fn stamp_import_identity(
 ) -> crate::error::Result<bool> {
     let dir = crate::portable::library_dir()?;
     let md = notes_path_for(&dir, file_name);
-    let mut meta = read_meta_file(&md).unwrap_or_default();
+    let mut meta = read_meta_file(&md)?.unwrap_or_default();
     if meta.original_book_file.is_some() && meta.md5.is_some() {
         return Ok(false);
     }

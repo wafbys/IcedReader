@@ -134,7 +134,7 @@ pub fn list_library_cached(
             // dc:title/file name). Read per listing so a metadata edit shows up
             // immediately without touching the epub-rev profile cache.
             if let Ok(meta_path) = meta_path_for(dir, &entry.file_name) {
-                if let Some(meta) = read_meta_file(&meta_path) {
+                if let Ok(Some(meta)) = read_meta_file(&meta_path) {
                     entry.title = resolved_title(Some(&meta), &entry.title);
                     if !meta.author.trim().is_empty() {
                         entry.authors = meta
@@ -339,15 +339,12 @@ fn enrich_and_sort(
 
     entries.sort_by(|a, b| {
         let q = |e: &LibraryEntry| quality_rank(e.quality.as_deref());
-        match (b.updated_at, a.updated_at) {
-            (Some(x), Some(y)) => x
-                .cmp(&y)
-                .then_with(|| q(b).cmp(&q(a)))
-                .then_with(|| a.title.cmp(&b.title)),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => q(b).cmp(&q(a)).then_with(|| a.title.cmp(&b.title)),
-        }
+        // `None < Some`, so comparing `b` to `a` puts read books first and
+        // orders the read ones newest-first; unread books go last.
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| q(b).cmp(&q(a)))
+            .then_with(|| a.title.cmp(&b.title))
     });
     entries
 }
@@ -1136,6 +1133,21 @@ mod tests {
         assert_eq!(dup("a.epub"), vec!["b.epub".to_string()]);
         assert_eq!(dup("b.epub"), vec!["a.epub".to_string()]);
         assert!(dup("c.epub").is_empty());
+    }
+
+    /// The shelf contract is "recently read first, then grade, then title".
+    /// `None` must sort after every `Some`, not before it.
+    #[test]
+    fn unread_books_sort_after_read_books() {
+        let mut recent = entry("recent.epub", "rev");
+        recent.updated_at = Some(300);
+        let mut older = entry("older.epub", "rev");
+        older.updated_at = Some(100);
+        let unread = entry("unread.epub", "rev");
+
+        let out = enrich_and_sort(vec![unread, older, recent], &HashMap::new());
+        let names: Vec<&str> = out.iter().map(|e| e.file_name.as_str()).collect();
+        assert_eq!(names, ["recent.epub", "older.epub", "unread.epub"]);
     }
 
     /// A fingerprint from an older cache generation describes a chapter list the

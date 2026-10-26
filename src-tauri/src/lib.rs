@@ -136,7 +136,7 @@ async fn open_book(
     // library.rs, so both surfaces always agree.
     if let Ok(dir) = portable::library_dir() {
         if let Ok(meta_path) = library::meta_path_for(&dir, &file_name) {
-            if let Some(meta) = read_meta_file(&meta_path) {
+            if let Ok(Some(meta)) = read_meta_file(&meta_path) {
                 metadata.title = resolved_title(Some(&meta), &metadata.title);
             }
         }
@@ -278,7 +278,7 @@ fn write_highlight_entry(
     rec: &Highlight,
     note: Option<&str>,
 ) -> crate::error::Result<()> {
-    let text = read_notes_text(file_name);
+    let text = read_notes_text(file_name)?;
     if note.is_none() {
         // 已在档案里：原位换块与摘抄行，用户区不动。
         let entry = notes::NoteEntry {
@@ -305,12 +305,19 @@ fn write_highlight_entry(
     write_notes_text(file_name, &notes::upsert(&text, &entry))
 }
 
-/// 读某本书的伴生 md（不存在返回空串）。
-fn read_notes_text(file_name: &str) -> String {
-    let Ok(dir) = portable::library_dir() else {
-        return String::new();
-    };
-    fs::read_to_string(notes::notes_path_for(&dir, file_name)).unwrap_or_default()
+/// 读某本书的伴生 md（不存在返回空串；存在但读不出来则报错——绝不把
+/// 读失败当成空文件，调用方会拿这个空串覆盖整份档案）。
+fn read_notes_text(file_name: &str) -> crate::error::Result<String> {
+    let dir = portable::library_dir()?;
+    let path = notes::notes_path_for(&dir, file_name);
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(crate::error::Error::msg(format!(
+            "读取 {} 失败：{err}",
+            path.display()
+        ))),
+    }
 }
 
 /// 写某本书的伴生 md。**不再删文件**：那个文件同时存着元数据块，删掉会
@@ -340,11 +347,11 @@ fn list_annotations(
     file_name: String,
     state: tauri::State<'_, AppState>,
 ) -> crate::error::Result<Vec<Highlight>> {
-    state
+    let store = state
         .annotations
         .lock()
-        .map_err(|e| Error::msg(e.to_string()))
-        .map(|store| store.list(&file_name))
+        .map_err(|e| Error::msg(e.to_string()))?;
+    Ok(store.list(&file_name)?)
 }
 
 // Flat IPC payload: the field names are the frontend contract, so they stay
@@ -452,7 +459,7 @@ fn save_note(
     let rec = state
         .annotations
         .lock()?
-        .list(&file_name)
+        .list(&file_name)?
         .into_iter()
         .find(|h| h.id == id)
         .ok_or_else(|| "划线不存在".to_string())?;
@@ -462,7 +469,7 @@ fn save_note(
 /// 读出整本伴生 md 的用户笔记（id → 笔记），供悬停浮层与划线列表。
 #[tauri::command]
 fn read_notes(file_name: String) -> crate::error::Result<Vec<NoteView>> {
-    let text = read_notes_text(&file_name);
+    let text = read_notes_text(&file_name)?;
     Ok(notes::notes_of(&text)
         .into_iter()
         .map(|(id, note)| NoteView { id, note })
@@ -824,7 +831,7 @@ fn get_book_meta(
     if !path.is_file() {
         return Err("书不在书库中".into());
     }
-    let overlay = read_meta_file(&md_path);
+    let overlay = read_meta_file(&md_path)?;
     let profile = {
         let mut cache = state.library_meta.lock()?;
         cache.profile(&path, &dir)
@@ -872,7 +879,7 @@ async fn set_book_meta(
         return Err("书不在书库中".into());
     }
 
-    let existing = read_meta_file(&md_path);
+    let existing = read_meta_file(&md_path)?;
     // File-bound profile (dc:title base + progress key). Opening an epub only
     // happens on a cache miss; saving metadata is low-frequency, so fine.
     let profile = state.library_meta.lock()?.profile(&path, &dir);
@@ -886,7 +893,7 @@ async fn set_book_meta(
             eprintln!("落档失败（{file_name}）：{err}");
         }
     }
-    let existing = read_meta_file(&md_path);
+    let existing = read_meta_file(&md_path)?;
 
     // The name this book will have after the save: always the join of the
     // fields (there is no hand-written override). The library file is renamed

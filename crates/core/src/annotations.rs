@@ -141,14 +141,18 @@ impl AnnotationStore {
         Some(dir.join(format!("{file_name}.md")))
     }
 
-    /// Every stored block in one book's md, in file order. `None` when the
-    /// store has no directory (in-memory) or the book name is unusable.
-    fn read_all(&self, file_name: &str) -> Vec<StoredHighlight> {
+    /// Every stored block in one book's md, in file order. Empty when the
+    /// store has no directory (in-memory), the book name is unusable, or the
+    /// file does not exist. An unreadable file is an error, not an empty one:
+    /// callers that rewrite the md must not mistake it for a fresh file.
+    fn read_all(&self, file_name: &str) -> Result<Vec<StoredHighlight>, crate::CoreError> {
         let Some(path) = self.md_path(file_name) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let text = fs::read_to_string(&path).unwrap_or_default();
-        notes::stored_highlights(&text)
+        let Some(text) = read_text(&path)? else {
+            return Ok(Vec::new());
+        };
+        Ok(notes::stored_highlights(&text))
     }
 
     /// Highlights for one book, in file order. Takes the book's **file name**
@@ -156,16 +160,16 @@ impl AnnotationStore {
     /// `id:`/`lib:` key never appears in a path. Numbered copies that share a
     /// stem (`书名-2.epub` ≡ `书名.epub`) are read as the same book, matching
     /// [`crate::progress::ProgressStore`].
-    pub fn list(&self, file_name: &str) -> Vec<Highlight> {
+    pub fn list(&self, file_name: &str) -> Result<Vec<Highlight>, crate::CoreError> {
         let mut out: Vec<Highlight> = Vec::new();
         for book in self.books_for(file_name) {
-            for s in self.read_all(&book) {
+            for s in self.read_all(&book)? {
                 if !out.iter().any(|h| h.id == s.highlight.id) {
                     out.push(s.highlight);
                 }
             }
         }
-        out
+        Ok(out)
     }
 
     /// Insert or replace (same id) one highlight. Takes the book's **file name**
@@ -179,7 +183,7 @@ impl AnnotationStore {
         let Some(path) = self.md_path(file_name) else {
             return Err(crate::CoreError::msg("没有书库目录，无法写入划线"));
         };
-        let text = fs::read_to_string(&path).unwrap_or_default();
+        let text = read_text(&path)?.unwrap_or_default();
         let entry = notes::NoteEntry {
             highlight: highlight.clone(),
             section_title: String::new(),
@@ -199,7 +203,9 @@ impl AnnotationStore {
             let Some(path) = self.md_path(&book) else {
                 continue;
             };
-            let text = fs::read_to_string(&path).unwrap_or_default();
+            let Some(text) = read_text(&path)? else {
+                continue;
+            };
             if !notes::stored_highlights(&text)
                 .iter()
                 .any(|s| s.highlight.id == id)
@@ -223,7 +229,9 @@ impl AnnotationStore {
             let Some(path) = self.md_path(&book) else {
                 continue;
             };
-            let text = fs::read_to_string(&path).unwrap_or_default();
+            let Some(text) = read_text(&path)? else {
+                continue;
+            };
             if let Some(updated) = notes::clear_note(&text, id) {
                 write_atomic(&path, &updated)?;
                 cleared = true;
@@ -252,7 +260,9 @@ impl AnnotationStore {
             let Some(path) = self.md_path(&book) else {
                 continue;
             };
-            let text = fs::read_to_string(&path).unwrap_or_default();
+            let Some(text) = read_text(&path)? else {
+                continue;
+            };
             let Some(mut stored) = notes::stored_highlights(&text)
                 .into_iter()
                 .find(|s| s.highlight.id == id)
@@ -306,6 +316,20 @@ impl AnnotationStore {
     }
 }
 
+/// Read a companion md. `Ok(None)` only for `NotFound`; any other I/O error
+/// (including invalid UTF-8) is surfaced so a caller cannot rewrite the file
+/// from an empty body.
+fn read_text(path: &Path) -> Result<Option<String>, crate::CoreError> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(crate::CoreError::msg(format!(
+            "读取 {} 失败：{err}",
+            path.display()
+        ))),
+    }
+}
+
 fn write_atomic(path: &Path, text: &str) -> Result<(), crate::CoreError> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| crate::CoreError::msg(e.to_string()))?;
@@ -352,13 +376,30 @@ mod tests {
 
         // A fresh store reads them back out of the same file.
         let reloaded = store_in(&dir);
-        let list = reloaded.list("三体.epub");
+        let list = reloaded.list("三体.epub").unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].id, "a");
         assert_eq!(list[1].start_text, 3);
         assert_eq!(list[1].start_offset, 7);
         assert_eq!(list[1].href, "/EPUB/ch2.xhtml");
         assert_eq!(list[0].pos, Some(0.25));
+    }
+
+    /// The companion md may be saved as GBK/ANSI by an external editor. A
+    /// write must fail instead of rebuilding the file from an empty body.
+    #[test]
+    fn non_utf8_md_is_not_overwritten() {
+        let dir = std::env::temp_dir().join("icedreader-annotations-non-utf8");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("书.epub.md");
+        let bytes = b"\xff\xfe\x00notes";
+        fs::write(&path, bytes).unwrap();
+
+        let mut store = store_in(&dir);
+        assert!(store.add("书.epub", hl("a", 0, 0)).is_err());
+        assert!(store.list("书.epub").is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 
     #[test]
@@ -374,7 +415,7 @@ mod tests {
         let mut store = store_in(&dir);
         store.add("书.epub", h.clone()).unwrap();
 
-        let back = store_in(&dir).list("书.epub");
+        let back = store_in(&dir).list("书.epub").unwrap();
         assert_eq!(back.len(), 1);
         assert_eq!(back[0], h);
         // A missing position stays missing — never faked as 0.
@@ -392,11 +433,11 @@ mod tests {
         let mut store = store_in(&dir);
         store.add("书.epub", hl("a", 0, 0)).unwrap();
         store.add("书-2.epub", hl("b", 1, 1)).unwrap();
-        let list = store_in(&dir).list("书.epub");
+        let list = store_in(&dir).list("书.epub").unwrap();
         assert_eq!(list.len(), 2);
         assert!(list.iter().any(|h| h.id == "b"));
         // A progress key is not a file name: it never resolves to an md.
-        assert!(store_in(&dir).list("lib:书.epub").is_empty());
+        assert!(store_in(&dir).list("lib:书.epub").unwrap().is_empty());
     }
 
     #[test]
@@ -415,7 +456,7 @@ mod tests {
         assert!(changed);
         // Second call is a no-op.
         assert!(!store.set_pos("书.epub", "a", 0.8).unwrap());
-        let list = store_in(&dir).list("书.epub");
+        let list = store_in(&dir).list("书.epub").unwrap();
         assert_eq!(list[0].pos, Some(0.8));
     }
 
@@ -476,7 +517,7 @@ mod tests {
         fs::write(&path, &with_note).unwrap();
 
         assert!(store.remove("书.epub", "a").unwrap());
-        assert!(store_in(&dir).list("书.epub").is_empty());
+        assert!(store_in(&dir).list("书.epub").unwrap().is_empty());
         let after = fs::read_to_string(&path).unwrap();
         assert!(!after.contains("icedreader-note"), "block left in {after}");
         assert!(!after.contains("我的备注"), "note left in {after}");
@@ -504,7 +545,7 @@ mod tests {
 
         assert!(store.clear_note("书.epub", "a").unwrap());
         // The highlight is still readable and still painted.
-        assert_eq!(store_in(&dir).list("书.epub").len(), 1);
+        assert_eq!(store_in(&dir).list("书.epub").unwrap().len(), 1);
         let after = fs::read_to_string(&path).unwrap();
         assert!(after.contains("icedreader-note"), "block lost in {after}");
         assert!(after.contains("示例摘录"), "excerpt lost in {after}");

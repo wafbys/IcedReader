@@ -1177,6 +1177,9 @@ pub fn grade_pdf(s: &BookSignals) -> Grade {
         }
     }
 
+    // `fonts` and `embedded_fonts` come from the same per-font census (see
+    // `PdfQuality`); `embedded_font_objects()` counts a different, document-wide
+    // set and must not be compared here.
     if pdf.fonts > 0 {
         if pdf.embedded_fonts >= pdf.fonts {
             core += 1;

@@ -58,7 +58,9 @@ pub struct PdfQuality {
     pub sampled_pages: usize,
     /// Sampled pages that draw visible text.
     pub text_pages: usize,
-    /// Distinct fonts used, and how many of them carry a font program.
+    /// Distinct fonts used in the census (first 400 pages), and how many of
+    /// them are embedded or self-contained (Type3 glyph procedures). Both
+    /// numbers describe the same set.
     pub fonts: usize,
     pub embedded_fonts: usize,
     /// Fonts used for **visible** text that are neither embedded nor one of the
@@ -107,14 +109,21 @@ pub fn analyze(doc: &PdfDoc) -> PdfQuality {
     };
 
     let info = doc.info();
+    // Count embedded fonts from the same `fonts()` sample. The document-wide
+    // `embedded_font_objects()` counts FontFile streams, a different set: one
+    // program can back several font dicts, unused programs are still counted,
+    // and Type3 fonts carry procedures instead of a FontFile. Comparing that
+    // count with `fonts` was wrong.
+    let fonts = doc.fonts();
+    let embedded_fonts = fonts.iter().filter(|font| font.embedded).count();
     PdfQuality {
         pages,
         outline_entries: count_outline(&doc.outline()),
         text_layer,
         sampled_pages: sampled,
         text_pages: visible_pages,
-        fonts: doc.fonts().len(),
-        embedded_fonts: doc.embedded_font_objects().len(),
+        fonts: fonts.len(),
+        embedded_fonts,
         unresolved_visible_fonts: doc.visible_text_risk(),
         has_title: info.title.map(|t| !t.trim().is_empty()).unwrap_or(false),
         has_author: info.author.map(|a| !a.trim().is_empty()).unwrap_or(false),
@@ -132,7 +141,7 @@ fn count_outline(nodes: &[crate::OutlineNode]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{temp_dir, write_cjk_unembedded_pdf, write_latin_pdf};
+    use crate::tests::{temp_dir, write_cjk_unembedded_pdf, write_latin_pdf, write_type3_pdf};
 
     #[test]
     fn machine_readable_pdf_is_reported_as_text() {
@@ -159,5 +168,20 @@ mod tests {
         let quality = analyze(&doc);
         assert_eq!(quality.text_layer, TextLayer::MachineReadable);
         assert_eq!(quality.unresolved_visible_fonts, vec!["SimSun".to_string()]);
+    }
+
+    /// Type3 glyphs are procedures inside the file, so the font is
+    /// self-contained even though there is no `/FontFile` object. Both counts
+    /// must come from the same `fonts()` census.
+    #[test]
+    fn type3_font_is_counted_as_embedded() {
+        let dir = temp_dir("quality-type3");
+        let path = dir.join("type3.pdf");
+        write_type3_pdf(&path);
+        let doc = PdfDoc::open(&path).unwrap();
+        assert!(doc.embedded_font_objects().is_empty());
+        let quality = analyze(&doc);
+        assert_eq!(quality.fonts, 1);
+        assert_eq!(quality.embedded_fonts, 1);
     }
 }

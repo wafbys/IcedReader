@@ -1004,6 +1004,38 @@ pub(crate) mod tests {
         std::fs::write(path, pdf).unwrap();
     }
 
+    /// One page whose only font is a Type3 font: its glyph procedures live in
+    /// the file, but there is no `/FontFile` stream. The quality census must
+    /// count it as embedded; `embedded_font_objects()` cannot see it.
+    pub(crate) fn write_type3_pdf(path: &Path) {
+        let content = "BT /F1 24 Tf 20 100 Td (a) Tj ET";
+        let char_proc = "500 0 0 0 500 500 d1 0 0 500 500 re f";
+        let objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
+             /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+                .to_string(),
+            "<< /Type /Font /Subtype /Type3 /Name /F1 \
+             /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] \
+             /CharProcs << /a 6 0 R >> \
+             /Encoding << /Type /Encoding /Differences [97 /a] >> \
+             /FirstChar 97 /LastChar 97 /Widths [500] /Resources << >> >>"
+                .to_string(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            ),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                char_proc.len(),
+                char_proc
+            ),
+        ];
+        std::fs::write(path, assemble(&objects)).unwrap();
+    }
+
     /// One page whose only font is a **non-embedded** CJK font referenced as a
     /// Type0/Identity-H font with no `/FontFile2` — the R1 case.
     pub(crate) fn write_cjk_unembedded_pdf(path: &Path) {
