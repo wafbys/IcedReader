@@ -1378,7 +1378,7 @@ const ChapterFrame = forwardRef<ChapterFrameHandle, Props>(function ChapterFrame
             </button>
           </div>
           <p className="hl-note-hint">
-            划线连同摘录已存入书的伴生 md；备注写进该条目的用户区，可在外部 md 软件继续编辑；「删除备注」只删备注、划线保留，删除划线则连同备注一起真删。
+            划线连同摘录已存入书的伴生 md；备注写进该条目的用户区，可在外部 md 软件继续编辑；「删除备注」只删备注、划线保留，删除划线会先确认，并连同备注一起真删。
           </p>
         </div>
       )}

@@ -263,22 +263,20 @@ export default function App() {
     const b = bookRef.current;
     if (!b) return;
     const note = notesRef.current[id];
-    if (note !== undefined) {
-      const preview = note.length > 60 ? `${note.slice(0, 60)}…` : note;
-      // 原生对话框（与删书同一套）：`window.confirm` 在 WebView2 里既不弹框也
-      // 不阻塞、直接返回真值，于是「有备注删除先确认」成了空转——划线不声不响就
-      // 删掉了。
-      const ok = await ask(
-        `这条划线有备注：\n「${preview}」\n\n删除后正文高亮、划线记录与备注会一起从书的伴生 md 里真删，无法恢复。\n确定删除这条划线？`,
-        {
-          title: "删除划线",
-          kind: "warning",
-          okLabel: "删除",
-          cancelLabel: "取消",
-        },
-      );
-      if (!ok) return;
-    }
+    const preview = note ? (note.length > 60 ? `${note.slice(0, 60)}…` : note) : "";
+    // 原生对话框（与删书同一套）：`window.confirm` 在 WebView2 里既不弹框也
+    // 不阻塞、直接返回真值。删除划线是真删，一律先确认；有备注时把备注预览
+    // 放进提示，避免把备注一起删掉却没人提醒。
+    const message = note
+      ? `这条划线有备注：\n「${preview}」\n\n删除后正文高亮、划线记录与备注会一起从书的伴生 md 里真删，无法恢复。\n确定删除这条划线？`
+      : `删除后正文高亮与划线记录会从书的伴生 md 里真删，无法恢复。\n确定删除这条划线？`;
+    const ok = await ask(message, {
+      title: "删除划线",
+      kind: "warning",
+      okLabel: "删除",
+      cancelLabel: "取消",
+    });
+    if (!ok) return;
     try {
       await invoke("delete_annotation", {
         fileName: fileNameOf(b),
