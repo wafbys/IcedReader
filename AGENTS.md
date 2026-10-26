@@ -50,6 +50,8 @@ PDF 样本自检（不入库，放哪都行）：`cargo run -p iced-reader-pdf -
 
 用户说 build release 时：`npm run tauri -- build --no-bundle`，再用 `Copy-Item`（禁止 Rename-Item / 硬链接）拷到 `target/release/IcedReader-{version}-windows-x64.exe`，`{version}` 取 `src-tauri/tauri.conf.json`。告诉用户这份路径，GitHub Release 上传它。不要把 Cargo 原始产物 `target/release/IcedReader.exe`（或 `deps/` 下中间 exe）当发布文件。只构建绿色版（`--no-bundle`），不要跑不带该旗标的 `build`。不要用 `--offline` 除非依赖已在本地。
 
+用户说「部署」时：先按上面的 build release 构建，再用 `Copy-Item -Force` 把 `target/release/IcedReader-{version}-windows-x64.exe` 覆盖到 `C:\Users\YF\App\IcedReader\IcedReader.exe`；旁边 `data/` 不动。部署 = 构建 + 复制，不是只 build，也不是只复制。
+
 ## Tauri 命令
 
 形状以代码为准。前端必须先确认再调 `delete_book`。
