@@ -23,7 +23,25 @@
 //!    <li class="duokan-footnote-item">伦敦时尚艺术区。——笔者注</li></ol></aside>
 //! ```
 //!
-//! Both are rewritten into the same reading shape (with `doc_base` = the
+//! 3. **Standard EPUB3 footnotes** (`epub:type="noteref"` anchor + an
+//!    `<aside epub:type="footnote" id="fn1">` at the end of the same file, as
+//!    pandoc and most EPUB3 producers write them):
+//!
+//! ```html
+//! <p>…弄醒了<a href="#fn1" class="footnote-ref" id="fnref1"
+//!    epub:type="noteref" role="doc-noteref">1</a>，…</p>
+//! <section epub:type="footnotes"><aside epub:type="footnote" id="fn1">
+//!    <p>1. 版本与译法比较：…</p><p><a href="ch003.xhtml#fnref1"
+//!    role="doc-backlink">返回正文</a></p></aside></section>
+//! ```
+//!
+//! The marker keeps the anchor's own number as its label; the aside's leading
+//! `1.` and its 返回正文 back link are dropped (the reader draws its own back
+//! link). This form matters for sliced TOC chapters: the asides sit at the end
+//! of the *file*, so a slice that stops at the next TOC anchor has no element
+//! with the referenced id — clicking the number did nothing at all.
+//!
+//! All three are rewritten into the same reading shape (with `doc_base` = the
 //! rewritten absolute URL of this document, e.g.
 //! `http://icedreader.localhost/book/{id}/OEBPS/Text/x.xhtml`):
 //! ```html
@@ -58,6 +76,10 @@ const NOTE_ATTR: &str = "data-wr-footernote";
 /// Form 2 (duokan / 读客) marker: the note text rides on the noteref icon, and
 /// the readable copy lives in an `<aside epub:type="footnote" id="…">`.
 const DUOKAN_ATTR: &str = "zy-footnote";
+/// Form 3 (standard EPUB3): `epub:type="noteref"` on the in-text anchor.
+const STD_NOTEREF: &str = "noteref";
+/// Standard EPUB3 back link inside a footnote aside.
+const BACKLINK_ATTR: &str = "doc-backlink";
 const DUOKAN_ASIDE: &str = "aside";
 const DUOKAN_ID_ATTR: &str = "id";
 const DUOKAN_HREF_ATTR: &str = "href";
@@ -79,12 +101,15 @@ use std::fmt::Write as _;
 /// belongs to (`resource_base + file`); generated note links point into that
 /// same document so the front end can route them as same-file anchors.
 pub fn expand_word_notes(html: &str, doc_base: &str) -> String {
-    if !contains_ci(html, NOTE_ATTR) && !contains_ci(html, DUOKAN_ATTR) {
+    if !contains_ci(html, NOTE_ATTR)
+        && !contains_ci(html, DUOKAN_ATTR)
+        && !(contains_ci(html, STD_NOTEREF) && contains_ci(html, "<aside"))
+    {
         return html.to_string();
     }
-    // Form 2's note text lives in `<aside>` blocks elsewhere in the file; read
-    // them first so each inline icon can re-emit its note right where it sits.
-    let mut footnotes = collect_duokan_footnotes(html);
+    // Forms 2 and 3 keep their note text in `<aside>` blocks elsewhere in the
+    // file; read them first so each marker can re-emit its note where it sits.
+    let mut footnotes = collect_footnote_asides(html);
     let mut out = String::with_capacity(html.len() + 512);
     let mut seq: u64 = 0;
     let mut pos = 0usize;
@@ -152,7 +177,7 @@ pub fn expand_word_notes(html: &str, doc_base: &str) -> String {
 
 /// `html[start..start + slice.len()]` into `out`, keeping each aside's span
 /// pointed at the same bytes *in the output* so later edits cannot shift them.
-fn push_tracked(out: &mut String, slice: &str, start: usize, footnotes: &mut [DuokanNote]) {
+fn push_tracked(out: &mut String, slice: &str, start: usize, footnotes: &mut [AsideNote]) {
     let shift = out.len() as isize - start as isize;
     for note in footnotes.iter_mut() {
         if note.start >= start && note.start < start + slice.len() {
@@ -186,7 +211,7 @@ struct Converted {
     blocks: Vec<String>,
 }
 
-struct DuokanNote {
+struct AsideNote {
     /// Decoded, lower-cased id, plus span so consumed asides can be dropped.
     key: String,
     text: String,
@@ -197,7 +222,7 @@ struct DuokanNote {
 
 /// Every `<aside epub:type="footnote" id="…">` in the file, with the plain text
 /// of its body. Non-footnote asides are ignored.
-fn collect_duokan_footnotes(html: &str) -> Vec<DuokanNote> {
+fn collect_footnote_asides(html: &str) -> Vec<AsideNote> {
     let mut notes = Vec::new();
     let mut pos = 0usize;
     while pos < html.len() {
@@ -212,7 +237,7 @@ fn collect_duokan_footnotes(html: &str) -> Vec<DuokanNote> {
         };
         let close_end = tag_end(html, close).unwrap_or(close + DUOKAN_ASIDE.len() + 3);
         if let Some((key, text)) = aside_note(&html[open..open_end], &html[open_end..close]) {
-            notes.push(DuokanNote {
+            notes.push(AsideNote {
                 key,
                 text,
                 start: open,
@@ -241,7 +266,7 @@ fn aside_note(open_tag: &str, inner: &str) -> Option<(String, String)> {
 }
 
 /// The aside's text, marking it consumed so its original copy is dropped.
-fn footnote_text(footnotes: &mut [DuokanNote], key: &str) -> Option<String> {
+fn footnote_text(footnotes: &mut [AsideNote], key: &str) -> Option<String> {
     let note = footnotes.iter_mut().find(|n| n.key == key)?;
     note.used = true;
     Some(note.text.clone())
@@ -250,7 +275,7 @@ fn footnote_text(footnotes: &mut [DuokanNote], key: &str) -> Option<String> {
 /// Remove the asides whose text was re-emitted at their markers, given their
 /// spans in `html` (output coordinates). Rebuilt from scratch — removals only
 /// ever cut bytes out, so the recorded offsets stay valid.
-fn drop_used_asides(html: &str, footnotes: &[DuokanNote]) -> String {
+fn drop_used_asides(html: &str, footnotes: &[AsideNote]) -> String {
     let mut cuts: Vec<(usize, usize)> = footnotes
         .iter()
         .filter(|n| n.used)
@@ -274,28 +299,82 @@ fn drop_used_asides(html: &str, footnotes: &[DuokanNote]) -> String {
 }
 
 /// Plain note text out of an aside's inner HTML: tags dropped, entities
-/// decoded. `duokan-footnote-item` list decoration (a bullet/number the
+/// decoded, a source back link dropped (the reader draws its own), and a
+/// leading `1.`/`12、` note number dropped because the marker label already
+/// carries it. `duokan-footnote-item` list decoration (a bullet/number the
 /// browser would draw) is stripped along with the tags.
 fn note_text(inner: &str) -> String {
+    strip_note_number(&plain_text(inner)).trim().to_string()
+}
+
+/// Text of an element body with all tags removed. Links that point back to
+/// the text (`role="doc-backlink"`, `#fnref…`) are skipped entirely so the
+/// generated note block does not end with a second 返回正文.
+fn plain_text(inner: &str) -> String {
     let mut out = String::with_capacity(inner.len());
     let mut pos = 0usize;
     while pos < inner.len() {
-        match inner[pos..].find('<') {
-            Some(rel) => {
-                let at = pos + rel;
-                out.push_str(&inner[pos..at]);
-                let Some(end) = tag_end(inner, at) else {
-                    break;
-                };
-                pos = end;
-            }
-            None => {
-                out.push_str(&inner[pos..]);
-                break;
+        let Some(rel) = inner[pos..].find('<') else {
+            out.push_str(&inner[pos..]);
+            break;
+        };
+        let at = pos + rel;
+        out.push_str(&inner[pos..at]);
+        let Some(end) = tag_end(inner, at) else {
+            break;
+        };
+        let tag = &inner[at..end];
+        let is_close = tag.starts_with("</");
+        let name = if is_close {
+            tag_name(&tag[2..]).1
+        } else {
+            tag_name(&tag[1..]).1
+        };
+        if !is_close && name == "a" && is_backlink(tag) {
+            if let Some(close) = find_close_tag(inner, end, "a") {
+                pos = tag_end(inner, close).unwrap_or(close + 4);
+                continue;
             }
         }
+        pos = end;
     }
     decode_entities(out.trim()).trim().to_string()
+}
+
+/// A link from the note back to the text. Standard EPUB3 marks it
+/// `role="doc-backlink"`; some producers only use an `#fnref…` fragment.
+fn is_backlink(tag: &str) -> bool {
+    if contains_ci(tag, BACKLINK_ATTR) {
+        return true;
+    }
+    attr_value(tag, DUOKAN_HREF_ATTR)
+        .and_then(|href| href_fragment(&href))
+        .is_some_and(|frag| frag.starts_with("fnref") || frag.starts_with("epub-note-ref"))
+}
+
+/// Drop a leading `12. ` / `12、` note number. Only strips when whitespace
+/// follows the punctuation, so a note that starts with `1.5 倍` survives.
+fn strip_note_number(text: &str) -> &str {
+    let digits = text.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digits == 0 || digits > 4 {
+        return text;
+    }
+    let rest = &text[digits..];
+    let Some(punct) = rest.chars().next() else {
+        return text;
+    };
+    if !matches!(punct, '.' | '、' | '．' | ')' | '）' | ':' | '：') {
+        return text;
+    }
+    let after = &rest[punct.len_utf8()..];
+    // `.` is also a decimal point (`1.5 倍`), so it only counts as a note
+    // number when a space follows; CJK punctuation cannot be mistaken for one.
+    let needs_space = punct == '.';
+    if after.is_empty() || !needs_space || after.starts_with(char::is_whitespace) {
+        after.trim_start()
+    } else {
+        text
+    }
 }
 
 /// Percent-decoded, percent-encoding-insensitive note key: TOC hrefs and
@@ -498,6 +577,37 @@ fn convert_paragraph(
                 continue;
             }
         }
+        // Form 3: a standard EPUB3 noteref anchor whose note is an
+        // `<aside epub:type="footnote" id="…">` later in the same file. The
+        // anchor's own number becomes the marker label; the anchor is replaced
+        // (CSS draws `[n]`), so the note block travels with the paragraph when
+        // the reader slices the file at TOC anchors.
+        if name == "a" && !is_close {
+            if let Some((key, inner_end, after)) = standard_noteref(body, at, end) {
+                *seq += 1;
+                let note = NoteMarker {
+                    seq: *seq,
+                    label: noteref_label(&body[end..inner_end]).unwrap_or(notes.len() + 1),
+                    key: Some(key),
+                    attr_text: None,
+                    block: None,
+                };
+                let mut marker = String::new();
+                if emit_note(&mut marker, &mut notes, note, doc_base, "", resolve) {
+                    out.push_str(&body[cursor..at]);
+                    out.push_str(&marker);
+                    cursor = after;
+                    pos = after;
+                } else {
+                    // The href points at something that is not a footnote
+                    // aside (a cross-reference, an external link): leave the
+                    // anchor exactly as the book wrote it.
+                    *seq -= 1;
+                    pos = at + 1;
+                }
+                continue;
+            }
+        }
         // Nothing to expand here: step over just this `<` and let the next
         // iteration carry on copying from `cursor`.
         pos = at + 1;
@@ -528,6 +638,37 @@ fn duokan_icon(body: &str, anchor: usize, anchor_end: usize) -> Option<(usize, u
         pos = end;
     }
     None
+}
+
+/// Form 3 marker inside `<a … epub:type="noteref" href="#fn1">1</a>`:
+/// `(note key, index of `</a>` or the inner end, index just past the anchor)`.
+/// The key is the decoded `#fragment`, which pairs the anchor with its aside.
+fn standard_noteref(
+    body: &str,
+    anchor: usize,
+    anchor_end: usize,
+) -> Option<(String, usize, usize)> {
+    if !contains_ci(&body[anchor..anchor_end], STD_NOTEREF) {
+        return None;
+    }
+    let href = attr_value(&body[anchor..anchor_end], DUOKAN_HREF_ATTR)?;
+    let key = href_fragment(&href)?;
+    if is_self_closing(body, anchor_end) {
+        return Some((key, anchor_end, anchor_end));
+    }
+    let close = find_close_tag(body, anchor_end, "a")?;
+    let after = tag_end(body, close).unwrap_or(close + 3);
+    Some((key, close, after))
+}
+
+/// The number the book prints on the noteref (`1`, `[12]`, `（3）`), used as
+/// the marker label so the reader sees the book's own numbering.
+fn noteref_label(inner: &str) -> Option<usize> {
+    plain_text(inner)
+        .trim()
+        .trim_matches(['[', ']', '【', '】', '(', ')', '（', '）', ' '])
+        .parse()
+        .ok()
 }
 
 /// Write the in-text marker for one note — no text of its own (the number is
@@ -1117,5 +1258,75 @@ mod tests {
         let out = expand_word_notes(html, DOC_BASE);
         assert!(out.contains(r##"data-note="标题注""##), "{out}");
         assert!(!out.contains("<img"), "{out}");
+    }
+
+    /// Standard EPUB3 footnotes as pandoc writes them: a numbered anchor in
+    /// the text, an `<aside epub:type="footnote">` at the end of the file.
+    const STD_NOTEREF_ONE_NOTE: &str = concat!(
+        r##"<p>弄醒了<a href="#fn1" class="footnote-ref" id="fnref1" epub:type="noteref" role="doc-noteref">1</a>，又<a href="#fn2" class="footnote-ref" id="fnref2" epub:type="noteref" role="doc-noteref">2</a>。</p>"##,
+        r##"<section epub:type="footnotes"><aside epub:type="footnote" role="doc-footnote" id="fn1"><p>1. 第一条注解。</p><p><a href="c.xhtml#fnref1" role="doc-backlink">返回正文</a></p></aside>"##,
+        r##"<aside epub:type="footnote" role="doc-footnote" id="fn2"><p>2. 第二条注解。</p><p><a href="c.xhtml#fnref2" role="doc-backlink">返回正文</a></p></aside></section>"##,
+    );
+
+    #[test]
+    fn standard_noteref_becomes_a_word_note_marker() {
+        let out = expand_word_notes(STD_NOTEREF_ONE_NOTE, DOC_BASE);
+        // The book's own numbers become the marker labels.
+        assert!(
+            out.contains(r##"<a id="wr-note-back-1" class="wr-note" data-label="1" data-note="第一条注解。""##),
+            "{out}"
+        );
+        assert!(
+            out.contains(r##"data-label="2" data-note="第二条注解。""##),
+            "{out}"
+        );
+        // Neither the source anchor nor the end-of-file asides remain.
+        assert!(!out.contains("epub:type=\"noteref\""), "{out}");
+        assert!(!out.contains("<aside"), "{out}");
+        // The re-emitted notes carry the reader's own back links, and the
+        // source 返回正文 is not duplicated into the text.
+        assert!(out.contains(r##">[1]</a>第一条注解。"##), "{out}");
+        assert_eq!(out.matches("返回正文").count(), 2, "{out}"); // the two back-link titles
+        assert_eq!(out.matches("<div class=\"wr-notes\">").count(), 2, "{out}");
+    }
+
+    #[test]
+    fn standard_noteref_survives_toc_slicing() {
+        // The note aside lives after the *next* TOC anchor, so slicing at that
+        // anchor used to remove the only element with `id="fn1"` — the click
+        // then did nothing. The expanded note block must stay in the slice.
+        let html = concat!(
+            r##"<section id="s1"><p>甲<a href="#fn1" epub:type="noteref">1</a>。</p></section>"##,
+            r##"<section id="s2"><p>乙</p></section>"##,
+            r##"<aside epub:type="footnote" id="fn1">1. 注在文件末尾。</aside>"##,
+        );
+        let expanded = expand_word_notes(html, DOC_BASE);
+        let slice = crate::html::slice_chapter(&expanded, Some("s1"), Some("s2"));
+        assert!(slice.contains("class=\"wr-note\""), "{slice}");
+        assert!(slice.contains("注在文件末尾。"), "{slice}");
+        assert!(!slice.contains("id=\"fn1\""), "{slice}");
+        assert!(!slice.contains("epub:type=\"noteref\""), "{slice}");
+    }
+
+    #[test]
+    fn noteref_without_a_footnote_aside_stays_a_link() {
+        // A cross-reference that merely uses `noteref` is not a footnote: with
+        // no matching aside the anchor must survive untouched.
+        let html = r##"<p>见<a href="#other" epub:type="noteref">注</a>。</p>"##;
+        assert_eq!(expand_word_notes(html, DOC_BASE), html);
+    }
+
+    #[test]
+    fn note_text_drops_the_number_but_keeps_decimals() {
+        assert_eq!(note_text("<p>12. 注文</p>"), "注文");
+        assert_eq!(note_text("<p>1、注文</p>"), "注文");
+        assert_eq!(note_text("1.5 倍"), "1.5 倍");
+        assert_eq!(note_text("<p>1949年</p>"), "1949年");
+        assert_eq!(
+            note_text(
+                r#"<p>注文。</p><p><a href="c.xhtml#fnref1" role="doc-backlink">返回正文</a></p>"#
+            ),
+            "注文。"
+        );
     }
 }

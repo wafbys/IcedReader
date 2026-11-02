@@ -53,7 +53,11 @@ pub const CHAPTER_CHARS_PER_SPINE: u8 = 2;
 /// `headings` no longer contains note text. Kind ≤ 4 `headings` can differ
 /// between two packings of one text purely because one kept its notes inline
 /// (inside `<h2>`) and the other moved them to a chapter-end list.
-pub const ANALYSIS_KIND: u8 = 5;
+/// 6 = standard EPUB3 `epub:type="noteref"` footnotes expand into the slice
+/// (`expand_word_notes`), so `chapter_chars` for such books now includes the
+/// note blocks that travel with their markers; kind ≤ 5 weights describe the
+/// old, note-less slices.
+pub const ANALYSIS_KIND: u8 = 6;
 /// Kind at which [`BookSignals`] started describing the spine *with* the pages
 /// before the first TOC entry (see `EpubBook::with_front_matter`).
 ///
