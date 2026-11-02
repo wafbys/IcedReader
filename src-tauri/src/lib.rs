@@ -1131,7 +1131,7 @@ pub fn run() {
             install_font,
             clear_font
         ])
-        .register_uri_scheme_protocol("icedreader", protocol::handle)
+        .register_asynchronous_uri_scheme_protocol("icedreader", protocol::handle_async)
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

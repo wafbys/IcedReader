@@ -21,8 +21,26 @@ pub fn font_url(slot: &str) -> String {
     format!("{}/fonts/{slot}", origin())
 }
 
-pub fn handle<R: tauri::Runtime>(
+/// Async protocol entry point: WebView2 invokes the custom-protocol callback
+/// **on its UI thread** (wry calls the handler inline inside the
+/// `WebResourceRequested` event), so doing the work here freezes the window.
+/// A PDF cold page costs 80–150 ms and the first open requests several; that
+/// was the visible hitch. Hand every request to a worker and let the webview
+/// keep painting/scrolling while it renders.
+pub fn handle_async<R: tauri::Runtime>(
     ctx: UriSchemeContext<'_, R>,
+    request: tauri::http::Request<Vec<u8>>,
+    responder: tauri::UriSchemeResponder,
+) {
+    let app = ctx.app_handle().clone();
+    std::thread::spawn(move || {
+        responder.respond(handle(app, request));
+    });
+}
+
+/// Serve one protocol request. Runs on a worker thread (see [`handle_async`]).
+pub fn handle<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
     if request.method() == "OPTIONS" {
@@ -31,10 +49,10 @@ pub fn handle<R: tauri::Runtime>(
 
     let path = percent_decode(request.uri().path());
     if let Some(slot) = path.strip_prefix("/fonts/") {
-        return serve_font(ctx, slot);
+        return serve_font(&app, slot);
     }
     if let Some(name) = path.strip_prefix("/library-cover/") {
-        let state = ctx.app_handle().state::<AppState>();
+        let state = app.state::<AppState>();
         return serve_library_cover(name, &state);
     }
 
@@ -52,7 +70,7 @@ pub fn handle<R: tauri::Runtime>(
         _ => href,
     };
 
-    let state = ctx.app_handle().state::<AppState>();
+    let state = app.state::<AppState>();
     // Clone the book handle out and release the map lock: for a PDF the fetch
     // below rasterises a page (tens of ms to ~1.7 s), and holding the lock
     // across that would stall every other book operation.
@@ -145,7 +163,7 @@ fn apply_css(css: Vec<u8>, state: &AppState) -> Vec<u8> {
 }
 
 fn serve_font<R: tauri::Runtime>(
-    ctx: UriSchemeContext<'_, R>,
+    app: &tauri::AppHandle<R>,
     slot: &str,
 ) -> tauri::http::Response<Vec<u8>> {
     let Some(slot) = FontSlot::parse(slot.split(['#', '?']).next().unwrap_or(slot)) else {
@@ -155,7 +173,7 @@ fn serve_font<R: tauri::Runtime>(
             b"unknown font slot".to_vec(),
         );
     };
-    let state = ctx.app_handle().state::<AppState>();
+    let state = app.state::<AppState>();
     let Ok(settings) = state.settings.lock() else {
         return cors(
             StatusCode::INTERNAL_SERVER_ERROR,
