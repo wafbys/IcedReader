@@ -126,6 +126,9 @@ pub struct PageContentStats {
     pub forms: usize,
     /// Image XObjects referenced by the page (`Do` on an `/Image`).
     pub image_objects: usize,
+    /// `(Width, Height)` of each image XObject above, in its own pixels.
+    /// Used to avoid rasterising a scan above its native resolution.
+    pub image_sizes: Vec<(u32, u32)>,
     /// `BI` inline images (often a whole scanned page).
     pub inline_images: usize,
     /// Total encoded bytes of the images above.
@@ -407,6 +410,46 @@ impl PdfDoc {
         out
     }
 
+    /// The widest raster that still carries every pixel of a page whose
+    /// visible content is one full-page scan. `None` for pages that draw
+    /// visible text or vector art, or that have several images: reducing those
+    /// below the requested width would soften real detail.
+    ///
+    /// Scanned pages embed a bitmap (commonly ~1760×2688) while the page box
+    /// is only ~595×908 pt. Rendering such a page at 2400 px upsamples the
+    /// bitmap by 1.36× for no extra detail, paying raster, encode and webview
+    /// memory for pixels the file does not contain. The cap is the image's own
+    /// pixel width, or its height when the scan is rotated with the page.
+    pub fn scan_native_width(&self, index: usize) -> Option<u32> {
+        let stats = self.page_content_stats(index).ok()?;
+        if stats.visible_text_ops > 0
+            || stats.path_ops > 0
+            || stats.image_objects != 1
+            || stats.inline_images > 0
+            || stats.forms > 0
+        {
+            return None;
+        }
+        let (image_w, image_h) = *stats.image_sizes.first()?;
+        let (page_w, page_h) = self.page_size(index);
+        if page_w <= 0.0 || page_h <= 0.0 || image_w == 0 || image_h == 0 {
+            return None;
+        }
+        // A full-page image has the page's aspect ratio; a rotated one has its
+        // reciprocal. Anything else is a plate on a page with other content —
+        // capping to it would blur the rest of the page.
+        let page_aspect = page_w / page_h;
+        let image_aspect = image_w as f32 / image_h as f32;
+        const ASPECT_TOLERANCE: f32 = 0.02;
+        if (image_aspect - page_aspect).abs() <= ASPECT_TOLERANCE {
+            Some(image_w)
+        } else if (1.0 / image_aspect - page_aspect).abs() <= ASPECT_TOLERANCE {
+            Some(image_h)
+        } else {
+            None
+        }
+    }
+
     /// Operator census of one page (0-based): does it draw text, paths, images?
     /// Nested form XObjects are walked too — in a lot of "text as outlines" /
     /// CID-font PDFs the visible text lives inside a single form.
@@ -481,6 +524,23 @@ impl PdfDoc {
             if subtype != b"Form" {
                 stats.image_objects += 1;
                 stats.image_bytes += stream.content.len();
+                let width = stream
+                    .dict
+                    .get(b"Width")
+                    .ok()
+                    .and_then(|obj| obj.as_i64().ok())
+                    .unwrap_or(0);
+                let height = stream
+                    .dict
+                    .get(b"Height")
+                    .ok()
+                    .and_then(|obj| obj.as_i64().ok())
+                    .unwrap_or(0);
+                // Width/Height are required on an image XObject; a missing or
+                // invalid pair must not become a bogus cap.
+                if width > 0 && height > 0 {
+                    stats.image_sizes.push((width as u32, height as u32));
+                }
                 continue;
             }
             stats.forms += 1;
@@ -1002,6 +1062,34 @@ pub(crate) mod tests {
             pdf.splice(at..at + marker.len(), insert.iter().copied());
         }
         std::fs::write(path, pdf).unwrap();
+    }
+
+    /// One page whose visible content is a single full-page 8×12 grayscale
+    /// image. `scan_native_width` must cap a 2400px request at the bitmap's own
+    /// width instead of upscaling it.
+    pub(crate) fn write_scan_pdf(path: &Path) {
+        let content = "q 300 0 0 450 0 0 cm /Im1 Do Q";
+        let image = [0u8; 8 * 12];
+        let image_body = String::from_utf8_lossy(&image).into_owned();
+        let objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 450] \
+             /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>"
+                .to_string(),
+            format!(
+                "<< /Type /XObject /Subtype /Image /Width 8 /Height 12 \
+                 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length {} >>\nstream\n{}\nendstream",
+                image.len(),
+                image_body
+            ),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            ),
+        ];
+        std::fs::write(path, assemble(&objects)).unwrap();
     }
 
     /// One page whose only font is a Type3 font: its glyph procedures live in

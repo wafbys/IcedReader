@@ -30,7 +30,7 @@
 //! spread / continuous) is the parent's job, exactly like `flowLayout.ts` is
 //! for EPUB content; see `ui/src/pdfLayout.ts`.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -52,6 +52,13 @@ const CACHE_PAGES: usize = 16;
 
 /// Pages rendered ahead/behind the page being read.
 const PREFETCH_RADIUS: usize = 2;
+
+/// Worker threads filling the prefetch cache. One worker produces roughly one
+/// page per 80–140 ms, while a fast scroller consumes one page per 60–120 ms
+/// (two-page spreads ask for two at once), so a single worker falls behind and
+/// every new screen starts cold. Two keep the queue near the read position;
+/// more would compete with the request path for CPU.
+const PREFETCH_WORKERS: usize = 2;
 
 /// Requested raster widths are rounded **up** to this step.
 ///
@@ -93,6 +100,10 @@ pub struct PdfBook {
     spine: Vec<SpineItem>,
     toc: Vec<TocNode>,
     cache: Arc<Mutex<VecDeque<CachedPage>>>,
+    /// Per-page native raster cap ([`PdfDoc::scan_native_width`]), `None` for
+    /// pages that are not a single full-page scan. Cached because the census
+    /// decodes the page content stream; every page request asks for it.
+    native: Arc<Mutex<HashMap<usize, Option<u32>>>>,
     /// Sends `(page, width)` to the prefetch worker. Dropped with the book,
     /// which ends the worker thread.
     prefetch: Option<Sender<(usize, u32)>>,
@@ -114,7 +125,9 @@ impl PdfBook {
             .collect();
         let toc = outline_to_toc(&outline);
         let cache = Arc::new(Mutex::new(VecDeque::new()));
-        let prefetch = spawn_prefetch_worker(Arc::clone(&doc), Arc::clone(&cache));
+        let native = Arc::new(Mutex::new(HashMap::new()));
+        let prefetch =
+            spawn_prefetch_worker(Arc::clone(&doc), Arc::clone(&cache), Arc::clone(&native));
         // No open-time warm-up on purpose: the raster width depends on the
         // shell's container and display scale (see `WIDTH_STEP`), so a guess
         // here would render pages the first request then re-renders at its own
@@ -124,6 +137,7 @@ impl PdfBook {
             spine,
             toc,
             cache,
+            native,
             prefetch: Some(prefetch),
         })
     }
@@ -135,6 +149,9 @@ impl PdfBook {
 
     /// Render a page (1-based), reusing the in-memory cache when possible.
     fn cached_page(&self, page: usize, width: u32) -> Result<RenderedPage, PdfError> {
+        // Ask for no more pixels than a scan actually contains before touching
+        // the cache, so a 2400px request and the capped entry share one slot.
+        let width = effective_width(&self.doc, &self.native, page, width);
         let href = page_href(page);
         {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -177,56 +194,97 @@ impl PdfBook {
         for delta in 1..=PREFETCH_RADIUS {
             if let Some(back) = page.checked_sub(delta) {
                 if back >= 1 {
+                    let width = effective_width(&self.doc, &self.native, back, width);
                     self.send_prefetch(back, width);
                 }
             }
             let forward = page + delta;
             if forward <= self.spine.len() {
+                let width = effective_width(&self.doc, &self.native, forward, width);
                 self.send_prefetch(forward, width);
             }
         }
     }
 }
 
-/// Long-lived worker rendering prefetch requests into the shared cache.
+/// Clamp a requested raster width to the page's own scan resolution.
 ///
-/// Requests are drained in batches (newest neighbours first, as sent) and pages
-/// already cached are skipped, so a fast scroller cannot queue the same page
-/// twice.
+/// A pure scan (one full-page image, no visible text or vector art) gains
+/// nothing from being rasterised above the embedded bitmap's pixel width: the
+/// extra pixels only upscale, then cost raster time, WebP encode and webview
+/// memory. `None` (not a scan) keeps the caller's width untouched.
+fn effective_width(
+    doc: &PdfDoc,
+    native: &Mutex<HashMap<usize, Option<u32>>>,
+    page: usize,
+    width: u32,
+) -> u32 {
+    let mut cache = native.lock().unwrap_or_else(|e| e.into_inner());
+    let cap = *cache
+        .entry(page)
+        .or_insert_with(|| doc.scan_native_width(page - 1));
+    match cap {
+        Some(native) => width.min(bucket_width(native)),
+        None => width,
+    }
+}
+
+/// Long-lived workers rendering prefetch requests into the shared cache.
+///
+/// Pages already cached (or being rendered by the other worker) are skipped, so
+/// a fast scroller cannot queue the same page twice. The receiver is shared
+/// behind a mutex: only one worker waits in `recv`, the other waits for the
+/// mutex and takes the next message as soon as the first is busy rendering.
 fn spawn_prefetch_worker(
     doc: Arc<PdfDoc>,
     cache: Arc<Mutex<VecDeque<CachedPage>>>,
+    native: Arc<Mutex<HashMap<usize, Option<u32>>>>,
 ) -> Sender<(usize, u32)> {
     let (tx, rx) = mpsc::channel::<(usize, u32)>();
-    std::thread::spawn(move || {
-        let mut requested: HashSet<(usize, u32)> = HashSet::new();
-        while let Ok(first) = rx.recv() {
-            let mut batch = vec![first];
-            while let Ok(next) = rx.try_recv() {
-                batch.push(next);
-            }
-            for (page, width) in batch {
-                if !requested.insert((page, width)) {
+    let rx = Arc::new(Mutex::new(rx));
+    let inflight: Arc<Mutex<HashSet<(usize, u32)>>> = Arc::new(Mutex::new(HashSet::new()));
+    for _ in 0..PREFETCH_WORKERS {
+        let doc = Arc::clone(&doc);
+        let cache = Arc::clone(&cache);
+        let native = Arc::clone(&native);
+        let rx = Arc::clone(&rx);
+        let inflight = Arc::clone(&inflight);
+        std::thread::spawn(move || loop {
+            let (page, width) = {
+                let rx = rx.lock().unwrap_or_else(|e| e.into_inner());
+                match rx.recv() {
+                    Ok(item) => item,
+                    Err(_) => break,
+                }
+            };
+            let width = effective_width(&doc, &native, page, width);
+            let href = page_href(page);
+            {
+                let cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+                if cache
+                    .iter()
+                    .any(|(cached_href, cached_w, _)| cached_href == &href && *cached_w == width)
+                {
                     continue;
                 }
-                let href = page_href(page);
-                let cached = {
-                    let cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-                    cache.iter().any(|(cached_href, cached_w, _)| {
-                        cached_href == &href && *cached_w == width
-                    })
-                };
-                if !cached {
-                    if let Ok(rendered) = doc.render_page(page - 1, &RenderOptions::webp(width)) {
-                        let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-                        cache.push_front((href, width, rendered));
-                        cache.truncate(CACHE_PAGES);
-                    }
-                }
-                requested.remove(&(page, width));
             }
-        }
-    });
+            {
+                let mut inflight = inflight.lock().unwrap_or_else(|e| e.into_inner());
+                if !inflight.insert((page, width)) {
+                    continue;
+                }
+            }
+            if let Ok(rendered) = doc.render_page(page - 1, &RenderOptions::webp(width)) {
+                let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+                cache.push_front((href, width, rendered));
+                cache.truncate(CACHE_PAGES);
+            }
+            inflight
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&(page, width));
+        });
+    }
     tx
 }
 
@@ -443,7 +501,7 @@ mod tests {
     use super::*;
     // Synthetic PDFs live with the other test helpers in `lib.rs` so the suite
     // needs no committed binary fixture.
-    use crate::tests::{temp_dir, write_cjk_unembedded_pdf, write_latin_pdf};
+    use crate::tests::{temp_dir, write_cjk_unembedded_pdf, write_latin_pdf, write_scan_pdf};
 
     #[test]
     fn page_href_roundtrip() {
@@ -554,6 +612,35 @@ mod tests {
 
         assert!(book.resource("page/9999.webp").is_err(), "out of range");
         assert!(book.chapter_html("EPUB/ch1.xhtml", "http://x/").is_err());
+    }
+
+    /// A pure scan asked for above its bitmap resolution is rendered at the
+    /// bitmap's own width; a text page keeps the requested bucket.
+    #[test]
+    fn scan_pages_are_capped_at_their_native_width() {
+        let dir = temp_dir("book-scan-cap");
+
+        let scan = dir.join("scan.pdf");
+        write_scan_pdf(&scan);
+        let book = PdfOpener.open(&scan).expect("open scan");
+        let res = book.resource("page/0001.webp?w=900").expect("scan raster");
+        let image = image::load_from_memory(&res.data).expect("decode scan webp");
+        assert_eq!(
+            image.width(),
+            WIDTH_STEP,
+            "8px scan must render at the minimum bucket, not 900"
+        );
+
+        let text = dir.join("latin.pdf");
+        write_latin_pdf(&text);
+        let book = PdfOpener.open(&text).expect("open text");
+        let res = book.resource("page/0001.webp?w=900").expect("text raster");
+        let image = image::load_from_memory(&res.data).expect("decode text webp");
+        assert_eq!(
+            image.width(),
+            bucket_width(900),
+            "a text page must keep the requested width"
+        );
     }
 
     #[test]
