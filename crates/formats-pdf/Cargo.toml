@@ -14,11 +14,11 @@ description = "PDF adapter for iced-reader-core (spike: raster + font audit)"
 iced-reader-core = { path = "../core" }
 # `embed-fonts` supplies substitutes for the 14 PDF standard fonts that are
 # allowed to be non-embedded; without it Helvetica/Times pages render blank.
-hayro = { version = "0.7", features = ["embed-fonts"] }
-# `unsafe` enables SIMD/memchr/flate2 fast paths inside the PDF reader; scanned
-# pages spend most of their time decoding embedded image streams.
-hayro-syntax = "0.7"
-lopdf = "0.45"
+hayro = { version = "0.9", features = ["embed-fonts"] }
+# SIMD is always enabled since hayro-syntax 0.9 (the old `unsafe` feature was
+# removed); scanned pages spend most of their time decoding embedded images.
+hayro-syntax = "0.9"
+lopdf = "0.46"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 serde = { workspace = true }
 thiserror.workspace = true
@@ -26,4 +26,4 @@ thiserror.workspace = true
 [dev-dependencies]
 # Probe only (see examples/svg_probe.rs): can a text PDF be served as vector SVG
 # instead of a raster? Not part of the shipped reader path.
-hayro-svg = "0.7"
+hayro-svg = "0.9"

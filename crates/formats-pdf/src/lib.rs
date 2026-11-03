@@ -21,7 +21,7 @@ use std::time::Instant;
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::palette::css::WHITE;
-use hayro::{RenderCache, RenderSettings};
+use hayro::{PixmapSettings, RenderCache, RenderSettings};
 use lopdf::{Dictionary, Document, Object, ObjectId};
 
 mod book;
@@ -775,11 +775,10 @@ impl PdfDoc {
             page,
             &cache,
             &interpreter_settings(opts.substitute_font.clone()),
-            &RenderSettings {
+            &RenderSettings::default(),
+            &PixmapSettings {
                 x_scale: scale,
                 y_scale: scale,
-                width: None,
-                height: None,
                 bg_color: WHITE,
             },
         );
