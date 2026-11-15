@@ -124,7 +124,7 @@ async fn open_book(
             eprintln!("落档失败（{file_name}）：{err}");
         }
     }
-    let cached_signals = book_signals::read_all().get(&file_name).cloned();
+    let cached_signals = book_signals::read_all_cached().get(&file_name).cloned();
     if !file_name.is_empty()
         && book_signals::needs_reanalysis(cached_signals.as_ref(), &rev, is_pdf)
     {
@@ -630,7 +630,7 @@ async fn list_library(
     // Read the signals cache once per listing. The listing itself never
     // re-computes anything; the stale entries picked below are refreshed in the
     // background.
-    let signals = book_signals::read_all();
+    let signals = book_signals::read_all_cached();
     let entries = library::list_library_cached(&dir, &progress, &mut cache, &signals);
     drop(cache);
     // Self-heal the signals cache: a book that left `data/library/` outside the
@@ -763,8 +763,8 @@ fn compare_books(
         store.snapshot()
     };
     let mut cache = state.library_meta.lock()?;
-    let entries =
-        library::list_library_cached(&dir, &progress, &mut cache, &book_signals::read_all());
+    let signals_all = book_signals::read_all_cached();
+    let entries = library::list_library_cached(&dir, &progress, &mut cache, &signals_all);
     drop(cache);
 
     let mut inputs = Vec::with_capacity(file_names.len());
@@ -795,7 +795,7 @@ fn compare_books(
         // Cached signals only count for the file revision they were computed
         // from — the same rule the shelf grades by.
         let rev = library::file_rev(&path);
-        let mut signals = book_signals::read_all()
+        let mut signals = signals_all
             .get(file_name)
             .filter(|s| s.rev == rev && s.analysis_kind == book_signals::ANALYSIS_KIND)
             .cloned()
@@ -922,7 +922,7 @@ async fn set_book_meta(
     );
     let needs_rename = !old_stem.eq_ignore_ascii_case(&target_stem);
 
-    let (_, final_md_path) = if needs_rename {
+    let (final_name, final_md_path) = if needs_rename {
         let new_name = library::rename_book_files(&dir, &file_name, &target_stem)?;
         // `id:` / `path:` progress keys survive a rename untouched; only the
         // `lib:` key (which embeds the file name) must be carried over, along
@@ -966,6 +966,12 @@ async fn set_book_meta(
         isbn: clean_title(&fields.isbn),
     };
     write_meta_file(&final_md_path, &meta)?;
+    // The md changed under the shelf's cache: drop the old and (after a rename)
+    // the new key. The book profile itself is file-bound and stays valid.
+    if let Ok(mut cache) = state.library_meta.lock() {
+        cache.forget_meta(&file_name);
+        cache.forget_meta(&final_name);
+    }
     Ok(())
 }
 
@@ -1026,7 +1032,7 @@ fn chapter_weights(file_name: String) -> crate::error::Result<Vec<u64>> {
     // (and only weights matching the current spine — see
     // `book_signals::weights_for_current_spine`).
     let rev = library::file_rev(&path);
-    let all = book_signals::read_all();
+    let all = book_signals::read_all_cached();
     Ok(book_signals::weights_for_current_spine(
         all.get(&file_name),
         &rev,

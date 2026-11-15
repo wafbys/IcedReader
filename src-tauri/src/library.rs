@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use iced_reader_core::{
-    book_extension, book_stem, clean_title, progress_key, read_meta_file, resolved_title, Locator,
-    ProgressStore, PDF_FORMAT,
+    book_extension, book_stem, clean_title, progress_key, read_meta_file, resolved_title, BookMeta,
+    Locator, ProgressStore, PDF_FORMAT,
 };
 use serde::Serialize;
 
@@ -53,7 +53,7 @@ pub struct LibraryEntry {
 #[cfg(test)]
 pub fn list_library_in(dir: &Path, progress: &ProgressStore) -> Vec<LibraryEntry> {
     let mut cache = LibraryMetaCache::default();
-    list_library_cached(dir, progress, &mut cache, &book_signals::read_all())
+    list_library_cached(dir, progress, &mut cache, &book_signals::read_all_cached())
 }
 
 /// Shelf listing with a caller-supplied signals cache (tests: grading glue
@@ -76,6 +76,12 @@ pub fn list_library_with_signals(
 #[derive(Default)]
 pub struct LibraryMetaCache {
     books: HashMap<PathBuf, (String, BookProfile)>,
+    /// Companion md metadata keyed by file name, validated by the md's
+    /// `(len, mtime)` stamp. The shelf overlays title/authors on every listing;
+    /// re-reading every `.md` each time is the slow part on a big shelf. Only
+    /// the metadata block is cached — highlights and user prose stay on disk
+    /// and are read when the book is opened.
+    meta: HashMap<String, (String, Option<BookMeta>)>,
 }
 
 impl LibraryMetaCache {
@@ -92,9 +98,36 @@ impl LibraryMetaCache {
         profile
     }
 
+    /// Metadata block of one book's companion md. Cached until the md changes;
+    /// a missing file is cached as `None` with an empty stamp, so creating the
+    /// md later is a miss and is picked up by the next listing.
+    pub fn companion_meta(&mut self, dir: &Path, file_name: &str) -> Option<BookMeta> {
+        let Ok(md_path) = meta_path_for(dir, file_name) else {
+            return None;
+        };
+        let rev = md_rev(&md_path);
+        if let Some((cached_rev, meta)) = self.meta.get(file_name) {
+            if cached_rev == &rev {
+                return meta.clone();
+            }
+        }
+        let meta = read_meta_file(&md_path).ok().flatten();
+        self.meta.insert(file_name.to_string(), (rev, meta.clone()));
+        meta
+    }
+
     /// Drop one book after deletion (keeps the map from accumulating dead entries).
     pub fn remove(&mut self, path: &Path) {
         self.books.remove(path);
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            self.meta.remove(name);
+        }
+    }
+
+    /// Drop only the companion-md cache entry (used after an explicit metadata
+    /// save, where the book file and its profile did not change).
+    pub fn forget_meta(&mut self, file_name: &str) {
+        self.meta.remove(file_name);
     }
 }
 
@@ -131,19 +164,17 @@ pub fn list_library_cached(
         .map(|path| {
             let mut entry = entry_from(&path, &cache.profile(&path, dir), progress);
             // Companion md overlays the file-bound title (joined fields →
-            // dc:title/file name). Read per listing so a metadata edit shows up
-            // immediately without touching the epub-rev profile cache.
-            if let Ok(meta_path) = meta_path_for(dir, &entry.file_name) {
-                if let Ok(Some(meta)) = read_meta_file(&meta_path) {
-                    entry.title = resolved_title(Some(&meta), &entry.title);
-                    if !meta.author.trim().is_empty() {
-                        entry.authors = meta
-                            .author
-                            .split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                    }
+            // dc:title/file name). Cached per md revision; a metadata save
+            // invalidates it explicitly, an external edit is caught by rev.
+            if let Some(meta) = cache.companion_meta(dir, &entry.file_name) {
+                entry.title = resolved_title(Some(&meta), &entry.title);
+                if !meta.author.trim().is_empty() {
+                    entry.authors = meta
+                        .author
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
                 }
             }
             entry
@@ -735,6 +766,22 @@ pub(crate) fn file_rev(path: &Path) -> String {
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{}-{}", meta.len(), mtime)
+}
+
+/// Nanosecond-resolution stamp for the companion md. Unlike [`file_rev`] this
+/// value is never persisted or compared across versions — it only guards the
+/// process-lifetime metadata cache, so it can be as fine as the filesystem.
+fn md_rev(path: &Path) -> String {
+    let Ok(meta) = fs::metadata(path) else {
+        return String::new();
+    };
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{}-{}", meta.len(), mtime)
 }
@@ -1548,6 +1595,45 @@ mod tests {
             .unwrap();
         let listed = list_library_cached(&root, &store, &mut cache, &HashMap::new());
         assert!((listed[0].fraction.unwrap() - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn companion_meta_cache_is_invalidated_when_the_md_changes() {
+        let root = std::env::temp_dir().join("icedreader-library-md-cache");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/sample.epub");
+        fs::copy(&sample, root.join("sample.epub")).unwrap();
+
+        let mut cache = LibraryMetaCache::default();
+        assert!(cache.companion_meta(&root, "sample.epub").is_none());
+
+        let md_path = meta_path_for(&root, "sample.epub").unwrap();
+        let first = BookMeta {
+            title: "标题甲".into(),
+            ..Default::default()
+        };
+        iced_reader_core::write_meta_file(&md_path, &first).unwrap();
+        assert_eq!(
+            cache.companion_meta(&root, "sample.epub").unwrap().title,
+            "标题甲"
+        );
+
+        // Same byte length, same second: the fine-grained stamp catches it.
+        let second = BookMeta {
+            title: "标题乙".into(),
+            ..Default::default()
+        };
+        iced_reader_core::write_meta_file(&md_path, &second).unwrap();
+        assert_eq!(
+            cache.companion_meta(&root, "sample.epub").unwrap().title,
+            "标题乙"
+        );
+
+        // Deleting the md must fall back to the book's own metadata, not keep
+        // serving the cached overlay.
+        fs::remove_file(&md_path).unwrap();
+        assert!(cache.companion_meta(&root, "sample.epub").is_none());
     }
 
     #[test]

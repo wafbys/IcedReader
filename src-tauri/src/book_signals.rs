@@ -22,7 +22,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::sync::{Mutex, OnceLock};
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use iced_reader_core::Book;
 use iced_reader_epub::{expand_word_notes, href_file_key, slice_chapter, split_href, ImageStats};
@@ -1471,14 +1472,84 @@ fn in_flight() -> &'static Mutex<HashSet<(String, String)>> {
     PENDING.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-pub fn read_all() -> HashMap<String, BookSignals> {
-    let Ok(path) = portable::signals_file() else {
-        return HashMap::new();
-    };
-    read_from(&path)
+/// Parsed `book-signals.json`, kept for the whole process.
+///
+/// The shelf reads this map on every listing; at 1000 books the file is tens of
+/// MB and a full `serde_json` parse per visit is pure waste. The cache is
+/// validated against the file's `(len, mtime)` before use, so an external edit
+/// or a write from another process still wins. App-owned writers refresh it
+/// after a successful `persist`.
+struct SignalsReadCache {
+    path: std::path::PathBuf,
+    stamp: String,
+    all: Arc<HashMap<String, BookSignals>>,
 }
 
-pub fn read_from(path: &std::path::Path) -> HashMap<String, BookSignals> {
+fn read_cache() -> &'static Mutex<Option<SignalsReadCache>> {
+    static CACHE: OnceLock<Mutex<Option<SignalsReadCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// File identity for cache validation. Nanoseconds (not seconds) so a rewrite
+/// within the same second is still noticed; `len` catches equal-time rewrites.
+fn file_stamp(path: &Path) -> String {
+    let Ok(meta) = fs::metadata(path) else {
+        return String::new();
+    };
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{}", meta.len(), modified)
+}
+
+/// Cached read of the signals file. Returns a cheap `Arc` clone; callers only
+/// look entries up. The raw file is the source of truth — a changed stamp
+/// re-reads and replaces the cache.
+pub fn read_all_cached() -> Arc<HashMap<String, BookSignals>> {
+    let Ok(path) = portable::signals_file() else {
+        return Arc::new(HashMap::new());
+    };
+    read_from_cached(&path)
+}
+
+fn read_from_cached(path: &Path) -> Arc<HashMap<String, BookSignals>> {
+    let stamp = file_stamp(path);
+    if let Ok(cache) = read_cache().lock() {
+        if let Some(entry) = cache.as_ref() {
+            if entry.path == path && entry.stamp == stamp {
+                return Arc::clone(&entry.all);
+            }
+        }
+    }
+    let all = Arc::new(read_from(path));
+    // Only cache if the file did not change while it was read: the map must
+    // always correspond to the stamp it is stored under.
+    if file_stamp(path) == stamp {
+        remember(path, all.clone());
+    }
+    all
+}
+
+/// Replace the cache after a successful write. `persist` swaps the file in with
+/// an atomic rename, so the parsed map and the stamp describe the same bytes.
+fn remember(path: &Path, all: Arc<HashMap<String, BookSignals>>) {
+    let stamp = file_stamp(path);
+    if stamp.is_empty() {
+        return;
+    }
+    if let Ok(mut cache) = read_cache().lock() {
+        *cache = Some(SignalsReadCache {
+            path: path.to_path_buf(),
+            stamp,
+            all,
+        });
+    }
+}
+
+pub fn read_from(path: &Path) -> HashMap<String, BookSignals> {
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
         Err(_) => HashMap::new(),
@@ -1516,7 +1587,9 @@ fn write_one_at(
     }
     let mut all = read_from(signals_path);
     all.insert(file_name.to_string(), signals.clone());
-    persist(signals_path, &all);
+    if persist(signals_path, &all) {
+        remember(signals_path, Arc::new(all));
+    }
 }
 
 /// True when `file_name` is a plain name of a file that still sits in the shelf
@@ -1554,11 +1627,17 @@ pub fn prune_missing_from(path: &std::path::Path, present: &HashSet<String>) {
     let _guard = signals_write_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let mut all = read_from(path);
-    let before = all.len();
+    // Use the parsed cache here too: this runs on **every** shelf listing, and
+    // a second full `serde_json` parse of a big file would undo the read cache.
+    // Only a real stale entry pays for the clone + write.
+    let cached = read_from_cached(path);
+    if !cached.keys().any(|name| !present.contains(name)) {
+        return;
+    }
+    let mut all = (*cached).clone();
     all.retain(|name, _| present.contains(name));
-    if all.len() != before {
-        persist(path, &all);
+    if persist(path, &all) {
+        remember(path, Arc::new(all));
     }
 }
 
@@ -1575,8 +1654,8 @@ pub fn remove_from(path: &std::path::Path, file_name: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let mut all = read_from(path);
-    if all.remove(file_name).is_some() {
-        persist(path, &all);
+    if all.remove(file_name).is_some() && persist(path, &all) {
+        remember(path, Arc::new(all));
     }
 }
 
@@ -1598,7 +1677,9 @@ pub fn rename_key(old_file_name: &str, new_file_name: &str) {
         return;
     };
     all.insert(new_file_name.to_string(), signals);
-    persist(&path, &all);
+    if persist(&path, &all) {
+        remember(&path, Arc::new(all));
+    }
 }
 
 fn approx_zh(n: u64) -> String {
@@ -1609,16 +1690,17 @@ fn approx_zh(n: u64) -> String {
     }
 }
 
-fn persist(path: &std::path::Path, all: &HashMap<String, BookSignals>) {
+fn persist(path: &Path, all: &HashMap<String, BookSignals>) -> bool {
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
     let tmp = path.with_extension("json.tmp");
     if let Ok(data) = serde_json::to_vec_pretty(all) {
         if fs::write(&tmp, data).is_ok() {
-            let _ = fs::rename(&tmp, path);
+            return fs::rename(&tmp, path).is_ok();
         }
     }
+    false
 }
 
 #[cfg(test)]
@@ -1870,6 +1952,35 @@ mod tests {
         persist(&file, &all);
         let back = read_from(&file);
         assert_eq!(back.get("a.epub").unwrap().fingerprint, "f");
+    }
+
+    #[test]
+    fn cached_read_reuses_the_map_until_the_file_changes() {
+        let dir = std::env::temp_dir().join("icedreader-signals-read-cache");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("book-signals.json");
+
+        let mut all = HashMap::new();
+        let mut first_sig = sig(IdQuality::None, false, 0, 0, false);
+        first_sig.fingerprint = "first".into();
+        all.insert("a.epub".to_string(), first_sig);
+        assert!(persist(&file, &all));
+
+        let first = read_from_cached(&file);
+        assert_eq!(first.get("a.epub").unwrap().fingerprint, "first");
+        let again = read_from_cached(&file);
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "unchanged file must reuse the Arc"
+        );
+
+        let mut changed = (*first).clone();
+        changed.get_mut("a.epub").unwrap().fingerprint = "second".into();
+        assert!(persist(&file, &changed));
+        let third = read_from_cached(&file);
+        assert_eq!(third.get("a.epub").unwrap().fingerprint, "second");
+        assert!(!Arc::ptr_eq(&first, &third), "changed file must re-read");
     }
 
     /// Deleting a book drops its cached signals, and a first-import analysis
