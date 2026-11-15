@@ -595,7 +595,10 @@ fn iter_properties(block: &str) -> Vec<(&str, &str)> {
             i += 1;
         }
         if i >= bytes.len() || bytes[i] != b':' {
-            i += 1;
+            // Junk in the declaration list may be a multi-byte char (some
+            // publishers put U+2029 between properties). Step over the whole
+            // char: `i += 1` would land inside it and the next slice panics.
+            i = next_char_boundary(block, i);
             continue;
         }
         i += 1;
@@ -888,7 +891,7 @@ fn parse_attrs(tag: &str) -> Vec<(String, String)> {
             i += 1;
         }
         if i == name_start {
-            i += 1;
+            i = next_char_boundary(tag, i);
             continue;
         }
         let name = tag[name_start..i].to_ascii_lowercase();
@@ -1023,6 +1026,13 @@ fn is_ident_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'-' || c == b'_'
 }
 
+/// Byte offset of the next UTF-8 scalar. The scanners advance byte by byte,
+/// but every slice must start on a char boundary; call this when the current
+/// byte is not ASCII and the scanner is about to skip it.
+fn next_char_boundary(s: &str, i: usize) -> usize {
+    i + s[i..].chars().next().map_or(1, char::len_utf8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1107,6 +1117,32 @@ body { font-family: "MyEmb", serif; }"#,
             r.declarations
         );
         assert!(r.unloadable_faces.is_empty(), "{:?}", r.unloadable_faces);
+    }
+
+    #[test]
+    fn unicode_paragraph_separator_in_css_does_not_panic() {
+        // Some publisher tools write U+2029 between declarations. The byte
+        // scanner used to step into the middle of that 3-byte char and panic
+        // when slicing the next property name; the chapter then never loaded.
+        let css = "ul.list {\n\tfont-size: 1em;\n\u{2029}\tlist-style-type: square;\n\tfont-family: \"SimHei\";\n}";
+        let html = format!("<html><head><style>{css}</style></head><body></body></html>");
+        let r = report(&html, &[]);
+        assert!(
+            r.declarations.iter().any(|d| d.value.contains("SimHei")),
+            "{:?}",
+            r.declarations
+        );
+    }
+
+    #[test]
+    fn unicode_separator_between_tag_attributes_does_not_panic() {
+        let attrs = parse_attrs("font\u{2029}face=\"SimHei\"");
+        assert!(
+            attrs
+                .iter()
+                .any(|(name, value)| name == "face" && value == "SimHei"),
+            "{attrs:?}"
+        );
     }
 
     #[test]
