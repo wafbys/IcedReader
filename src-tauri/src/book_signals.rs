@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use iced_reader_core::Book;
@@ -1480,14 +1480,13 @@ fn in_flight() -> &'static Mutex<HashSet<(String, String)>> {
 /// or a write from another process still wins. App-owned writers refresh it
 /// after a successful `persist`.
 struct SignalsReadCache {
-    path: std::path::PathBuf,
     stamp: String,
     all: Arc<HashMap<String, BookSignals>>,
 }
 
-fn read_cache() -> &'static Mutex<Option<SignalsReadCache>> {
-    static CACHE: OnceLock<Mutex<Option<SignalsReadCache>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(None))
+fn read_cache() -> &'static Mutex<HashMap<PathBuf, SignalsReadCache>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, SignalsReadCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// File identity for cache validation. Nanoseconds (not seconds) so a rewrite
@@ -1518,8 +1517,8 @@ pub fn read_all_cached() -> Arc<HashMap<String, BookSignals>> {
 fn read_from_cached(path: &Path) -> Arc<HashMap<String, BookSignals>> {
     let stamp = file_stamp(path);
     if let Ok(cache) = read_cache().lock() {
-        if let Some(entry) = cache.as_ref() {
-            if entry.path == path && entry.stamp == stamp {
+        if let Some(entry) = cache.get(path) {
+            if entry.stamp == stamp {
                 return Arc::clone(&entry.all);
             }
         }
@@ -1541,11 +1540,7 @@ fn remember(path: &Path, all: Arc<HashMap<String, BookSignals>>) {
         return;
     }
     if let Ok(mut cache) = read_cache().lock() {
-        *cache = Some(SignalsReadCache {
-            path: path.to_path_buf(),
-            stamp,
-            all,
-        });
+        cache.insert(path.to_path_buf(), SignalsReadCache { stamp, all });
     }
 }
 
