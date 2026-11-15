@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "iced-reader"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "iced-reader-core",
  "iced-reader-epub",
@@ -1832,7 +1832,7 @@ dependencies = [
 
 [[package]]
 name = "iced-reader-core"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "chrono",
  "serde",
@@ -1842,7 +1842,7 @@ dependencies = [
 
 [[package]]
 name = "iced-reader-epub"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "iced-reader-core",
  "rbook",
@@ -1852,7 +1852,7 @@ dependencies = [
 
 [[package]]
 name = "iced-reader-pdf"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "hayro",
  "hayro-svg",
